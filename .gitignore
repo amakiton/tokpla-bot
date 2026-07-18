@@ -1,0 +1,6 @@
+node_modules/
+*.log
+bot.txt
+bot2.txt
+.DS_Store
+Thumbs.db
