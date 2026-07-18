@@ -24,11 +24,12 @@
 
 ## ✅ ขั้นตอนมาตรฐานหลังแก้โค้ด
 
-1. bump `// @version` ในหัวไฟล์
+1. bump `// @version` ในหัวไฟล์ (+ `BOT_VER` ให้ตรง)
 2. `node --check tokpla-autofish.user.js`
 3. grep หา dangling refs ของสิ่งที่ลบ/เปลี่ยนชื่อ
 4. ถ้าแก้ตรรกะเงิน/สถิติ → เขียนเทสต์ Node จำลองใน scratchpad รันยืนยัน
 5. อัปเดต `docs/CHANGELOG.md` (เวอร์ชัน + สิ่งที่แก้ + เหตุผล) และ `docs/ARCHITECTURE.md`/`GAME.md` ถ้าโครง/selector เปลี่ยน
+6. **deploy (v6.129+):** `git -C <โฟลเดอร์> add -A && commit && push` → repo **public** `github.com/amakiton/tokpla-bot` (raw URL คือ `@updateURL`) · บอทรันบน **VPS คนละเครื่องกับไฟล์** — Tampermonkey บน VPS ตั้ง `@updateURL` = raw URL นี้ → ผู้ใช้กด "ตรวจหาอัปเดต" หรือรอ auto = ได้เวอร์ชันใหม่ (bump `@version` เท่านั้นถึงจะเด้ง) · **ห้าม commit ไฟล์ที่มีความลับ** (token อยู่ localStorage ไม่ใช่ในโค้ด — repo จึง public ได้)
 
 ## แนวโค้ด
 
