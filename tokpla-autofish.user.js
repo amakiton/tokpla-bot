@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.130
+// @version      6.131
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.130';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.131';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -797,7 +797,10 @@
     if (energyResting) return '⚡ นั่งพักรอพลัง';
     if (pauseUntil > now()) return '⚡ พักรอพลัง';
     if (breakUntil > now()) return `😌 ${breakLabel}`;
+    // 👹/🌈 บอกโหมดพิเศษที่กำลังทำงาน (ไว้ดูสถานะระยะไกลผ่าน heartbeat — v6.131)
+    if (bossPhase !== 'idle') return '👹 กำลังล่าบอส';
     if (busy || orchestrating) return '🛒 จัดการเมนู';
+    if (mythicActive()) return `🌈 กำลังล่าปลาเทพ${mythicPotOff ? ' (งดยา)' : ''}`;
     return '🎣 กำลังตกปลา';
   }
   // กำไรสุทธิสะสม = รายได้ − เหยื่อ − กาแฟ − ยา − ทุ่น (หักต้นทุนครบ)
@@ -809,13 +812,19 @@
     const up = Math.max(0, Math.round((now() - sessionStart) / 60000));
     const upStr = up >= 60 ? `${Math.floor(up / 60)} ชม ${up % 60} นาที` : `${up} นาที`;
     const e = energyPct();
-    const bt = cfg.baitTier, bn = BAIT_TIERS[bt - 1]?.name ?? '?';
+    // v6.131: โชว์เหยื่อขั้น "จริง" ที่ใช้ตอนนี้ (targetBait รวม override โหมดล่าปลาเทพ/auto) ไม่ใช่แค่ cfg
+    const bt = targetBait(), bn = BAIT_TIERS[bt - 1]?.name ?? '?';
+    const myt = mythicActive();
+    const baitLine = myt && !(parseInt(cfg.mythicBait, 10) > 0)
+      ? `🪱 เหยื่อขั้น ${bt} (${bn}) · 🤖 auto`
+      : `🪱 เหยื่อขั้น ${bt} (${bn})`;
     return `📊 <b>สถานะบอท</b>\n` +
       `${botStateLabel()} · รันมา ${upStr}\n` +
       `🎣 เหวี่ยง ${casts} · ติดปลา ${sessCatches}${earned > 0 ? ` · ขายได้ ${earned.toLocaleString()} 🪙` : ''}\n` +
       `💵 รอบนี้: กำไร ${signed(sessNet())} 🪙 (ปลา ${sessRev.toLocaleString()} − เหยื่อ ${sessBait.toLocaleString()})\n` +
-      `⚡ พลัง ${e != null ? Math.round(e) + '%' : '?'} · 🪱 เหยื่อขั้น ${bt} (${bn})\n` +
+      `⚡ พลัง ${e != null ? Math.round(e) + '%' : '?'} · ${baitLine}\n` +
       `📈 สะสม: กำไรสุทธิ <b>${signed(lifeNet())}</b> 🪙 (หักเหยื่อ+กาแฟ+ยา+ทุ่น)` +
+      (myt ? `\n🌈 ล่าปลาเทพ: เจอเทพรอบนี้ ${mythicRoundCount()} ตัว` : '') +
       (testRunning ? `\n${esc(testStatus())}` : '');
   }
   function maybeHeartbeat() {
@@ -1704,6 +1713,12 @@
   let lastMythicChk = 0, lastMythicMoveAt = 0, lastMapLearnAt = 0;
   function mythicActive() { return isOn('mythicHunt') && !testRunning; }
   const MYTHIC_RAR = new Set(['legendary', 'mythic']);
+  // จำนวนปลาเทพ (legendary+mythic) ที่ได้ตั้งแต่เริ่มล่ารอบนี้ — ใช้ใน heartbeat/สถานะ
+  function mythicRoundCount() {
+    const since = mythicStartAt || 0; let n = 0;
+    for (const t of Object.keys(profit.recs || {})) for (const r of (profit.recs[t] || [])) if ((r.at || 0) >= since && MYTHIC_RAR.has(r.rarity)) n++;
+    return n;
+  }
   // เรียนรู้ "ชื่อแมพบน HUD ↔ id ใน Phaser" อัตโนมัติ — สถิติ (recs) เก็บชื่อ แต่ระบบเดินข้ามแมพใช้ id
   const MAP_NAME_KEY = 'tokpla_map_names';
   function learnMapName() {
@@ -1816,6 +1831,7 @@
     if (mythicStrikes === 1) {
       mythicPotOff = true;
       say(`🌈 กำไรสุทธิติดลบ (${rate.toLocaleString()}/ชม.) — งดยาโหมดล่าปลาเทพชั่วคราว (กันขาดทุน)`);
+      if (isOn('tgOn') && isOn('tgWarn')) void tgSend(`🌈 <b>ล่าปลาเทพ: กำไรเริ่มติดลบ</b> (${rate.toLocaleString()}/ชม.) — งดยาชั่วคราว · ถ้าลบอีกรอบจะพักโหมดเอง`);
     } else {
       mythicStrikes = 0; mythicPotOff = false;
       disableForSession('mythicHunt', `🌈 กำไรสุทธิติดลบ 2 รอบติด (${rate.toLocaleString()}/ชม.) — พักโหมดล่าปลาเทพ กลับฟาร์มปกติ (เปิดใหม่ได้ในแผง)`);
@@ -4151,7 +4167,11 @@ ${esc(reason)}
 
         // 🌈 โหมดล่าปลาเทพ — no-loss gate + เรียนรู้ชื่อ↔id แมพ + ย้ายไปแมพสถิติดีสุด (บอสสำคัญกว่า จึงอยู่หลังเช็คบอส)
         if (mythicActive()) {
-          if (!mythicStartAt) { mythicStartAt = now(); mythicNetPrev = null; say('🌈 เริ่มล่าปลาเทพ — เหยื่อถูกสุด + ตกถี่สุด + ยา + เลือกแมพจากสถิติจริง (ดู /mythic)'); }
+          if (!mythicStartAt) {
+            mythicStartAt = now(); mythicNetPrev = null;
+            say('🌈 เริ่มล่าปลาเทพ — เหยื่อถูกสุด + ตกถี่สุด + ยา + เลือกแมพจากสถิติจริง (ดู /mythic)');
+            if (isOn('tgOn') && isOn('tgStart')) void tgSend('🌈 <b>เริ่มโหมดล่าปลาเทพ</b> — ตกถี่สุด + เลือกเหยื่อ/แมพจากสถิติจริง + กันขาดทุน (no-loss gate) · เช็ค /mythic');
+          }
           learnMapName();
           mythicGateTick();
           const mv = mythicMoveDue();
