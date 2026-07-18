@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.129
+// @version      6.130
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.129';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.130';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4852,7 +4852,12 @@ ${esc(reason)}
 
     const title = document.createElement('div');
     title.style.cssText = 'font-size:13px;font-weight:900;text-align:center;padding-bottom:6px;';
-    title.textContent = '⚙️ ตั้งค่าบอท';
+    title.textContent = '⚙️ ตั้งค่าบอท ';
+    const verSpan = document.createElement('span');   // เวอร์ชัน — ไว้เช็คว่าอัปเดตล่าสุดแล้วหรือยัง (เทียบกับ @version บน GitHub)
+    verSpan.textContent = 'v' + BOT_VER;
+    verSpan.style.cssText = 'font-weight:700;opacity:.55;font-size:11px;';
+    verSpan.title = 'เวอร์ชันบอทที่ติดตั้งอยู่ — เทียบกับล่าสุดบน GitHub (กด "ตรวจหาอัปเดต" ใน Tampermonkey)';
+    title.appendChild(verSpan);
     panel.appendChild(title);
 
     // ---- ปุ่มลัด (โชว์ตลอด ไม่พับ) ----
