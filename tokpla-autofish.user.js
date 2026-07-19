@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.150
+// @version      6.151
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.150';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.151';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1837,41 +1837,51 @@
     return !!await waitFor(() => { try { return getPhaserScene()?.nearNpcId === id; } catch { return false; } }, 15000, 300);
   }
   const npcCloseDialog = () => { const x = [...document.querySelectorAll('button')].find((b) => /^✕$|^×$/.test((b.textContent || '').trim())); if (x) fireClick(x); };
-  // ยายแก่น: คลิกปุ่มปลา rare+ ในหน้าต่าง = แลกเป็นแก่นทีละตัว จนไม่มีที่เข้าเกณฑ์
+  const npcVisible = (el) => { try { const r = el.getBoundingClientRect(); return el.offsetParent !== null && r.width > 10 && r.height > 10; } catch { return false; } };
+  const NPC_RARWORD = { 'ไม่ธรรมดา': 'uncommon', 'หายาก': 'rare', 'สุดยอด': 'epic', 'ตำนาน': 'legendary', 'เทพนิยาย': 'mythic' };
+  const npcDismissCatchPopup = () => { const c = [...document.querySelectorAll('button')].find((b) => /^ตกต่อ/.test((b.textContent || '').trim())); if (c) fireClick(c); };   // ปิด popup ผลตกปลาที่ค้างบัง
+  // 🧪 ยายแก่น (v6.151 ยืนยันสด): คลิกแถวปลา (เลือก) → กด "สกัดเลย!" → ได้แก่น · ทีละตัวจนไม่มีปลาเข้าเกณฑ์ (rare+/ตาม config)
   async function npcDoEssence() {
+    npcDismissCatchPopup(); await sleep(200);
     const talk = [...document.querySelectorAll('button')].find((b) => /คุยกับยายแก่น/.test(b.textContent || ''));
     if (!talk) { say('🧪 หาปุ่มคุยยายแก่นไม่เจอ'); return 0; }
     fireClick(talk);
     if (!(await waitFor(() => [...document.querySelectorAll('*')].some((e) => /โต๊ะปรุงของยายแก่น/.test(e.textContent || '')), 4000))) return 0;
     const essMin = rarityRank(cfg.npcEssenceRarity);
-    const RW = { 'ไม่ธรรมดา': 'uncommon', 'หายาก': 'rare', 'สุดยอด': 'epic', 'ตำนาน': 'legendary', 'เทพนิยาย': 'mythic' };
     let done = 0;
     for (let i = 0; i < 80; i++) {
       const fb = [...document.querySelectorAll('button')].find((b) => {
-        const t = (b.textContent || '').trim(); if (!/^🐟/.test(t) || b.disabled) return false;
-        const w = Object.keys(RW).find((k) => t.includes(k)); return w && rarityRank(RW[w]) >= essMin;
+        if (!npcVisible(b) || b.disabled) return false; const t = (b.textContent || ''); if (!/kg/.test(t)) return false;   // แถวปลา = มีน้ำหนัก "N kg"
+        const w = Object.keys(NPC_RARWORD).find((k) => t.includes(k)); return w && rarityRank(NPC_RARWORD[w]) >= essMin;
       });
       if (!fb) break;
-      fireClick(fb); done++; await sleep(500);
+      fireClick(fb); await sleep(350);                       // เลือกปลา
+      const craft = [...document.querySelectorAll('button')].find((b) => /สกัดเลย/.test(b.textContent || '') && npcVisible(b) && !b.disabled);
+      if (!craft) break;
+      fireClick(craft); done++; await sleep(800);            // สกัด → ได้แก่น
     }
     npcCloseDialog(); await sleep(300); return done;
   }
-  // ลุงคลัง: เปิดคลัง → แท็บปลา → เลือกปลาระดับ >= ขั้นต่ำ (ปลดล็อก) → กด "ฝาก →"
+  // 🏬 ลุงคลัง (v6.151 ยืนยันสด): คลิกการ์ดปลา(ที่มองเห็น) → popup จำนวน → "ทั้งหมด" → "เลือก N ตัว" → "ฝาก →"
+  //   ระวัง: เกมมี layout ซ้อน (มือถือ sm:hidden + จอใหญ่) → readBag เจอการ์ดซ้ำ ต้องเลือกเฉพาะ "ที่มองเห็น" (npcVisible)
   async function npcDoStorage() {
+    npcDismissCatchPopup(); await sleep(200);
     const talk = [...document.querySelectorAll('button')].find((b) => /ฝากของ/.test(b.textContent || b.getAttribute('aria-label') || ''));
     if (!talk) { say('🏬 หาปุ่มฝากของไม่เจอ'); return 0; }
     fireClick(talk);
     if (!(await waitFor(() => [...document.querySelectorAll('*')].some((e) => /คลังลุงคลัง/.test(e.textContent || '')), 4000))) return 0;
-    const ft = [...document.querySelectorAll('button')].find((b) => /🐟\s*ปลา/.test(b.textContent || '')); if (ft) { fireClick(ft); await sleep(300); }
+    const ft = [...document.querySelectorAll('button')].find((b) => /🐟\s*ปลา/.test(b.textContent || '') && npcVisible(b)); if (ft) { fireClick(ft); await sleep(300); }
     const stoMin = rarityRank(cfg.npcStorageRarity);
     let done = 0;
     for (let round = 0; round < 40; round++) {
-      const cards = readBag().filter((c) => c.rarity != null && rarityRank(c.rarity) >= stoMin && (c.count - c.lockedCount) > 0);
-      if (!cards.length) break;
-      fireClick(cards[0].el); await sleep(200);
-      const dep = [...document.querySelectorAll('button')].find((b) => /ฝาก\s*→/.test(b.textContent || '') && !b.disabled);
+      const card = readBag().find((c) => c.rarity != null && rarityRank(c.rarity) >= stoMin && (c.count - c.lockedCount) > 0 && npcVisible(c.el));
+      if (!card) break;
+      fireClick(card.el); await sleep(400);                  // เปิด popup เลือกจำนวน
+      const all = [...document.querySelectorAll('button')].find((b) => /^ทั้งหมด$/.test((b.textContent || '').trim()) && npcVisible(b)); if (all) { fireClick(all); await sleep(200); }
+      const sel = [...document.querySelectorAll('button')].find((b) => /^เลือก\s*\d+\s*ตัว/.test((b.textContent || '').trim()) && npcVisible(b)); if (sel) { fireClick(sel); await sleep(400); }
+      const dep = [...document.querySelectorAll('button')].find((b) => /ฝาก\s*→/.test(b.textContent || '') && npcVisible(b) && !b.disabled);
       if (!dep) break;
-      fireClick(dep); done++; await sleep(500);
+      fireClick(dep); done++; await sleep(800);              // ฝาก
     }
     npcCloseDialog(); await sleep(300); return done;
   }
