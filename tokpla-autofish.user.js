@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.155
+// @version      6.156
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.155';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.156';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1627,14 +1627,16 @@
       if (raid && _sc.player && !raid.dodged) {
         const dx = raid.cx - _sc.player.x, dy = raid.cy - _sc.player.y, dist = Math.hypot(dx, dy);
         const green = raid.mode === 'reach';                     // reach=เขียว(เข้า) · flee=แดง(หนี)
-        const safe = green ? dist < raid.r * 0.7 : dist > raid.r * 1.3;   // margin กันคาบเส้น
+        // 🎯 v6.156: relax margin (เกมเช็ค dist<r/dist>r เป๊ะ) — หยุดขยับทันทีที่ "ปลอดภัยพอ+เผื่อ latency นิดเดียว"
+        //   เดิม 0.7/1.3 ต้องวิ่งเลยเส้นเยอะ = ช้า/ไม่ทัน deadline (โดยเฉพาะวงโผล่ไกล) → ตาย · 0.9/1.12 = วิ่งน้อยลง ถึงเร็วขึ้น
+        const safe = green ? dist < raid.r * 0.9 : dist > raid.r * 1.12;
         if (!safe) {
           const gx = green ? dx : -dx, gy = green ? dy : -dy;     // เขียว=เข้าหาศูนย์ · แดง=ทิศตรงข้าม
           const dirs = [];
-          if (gx > 10) dirs.push('right'); else if (gx < -10) dirs.push('left');
-          if (gy > 10) dirs.push('down'); else if (gy < -10) dirs.push('up');
+          if (gx > 6) dirs.push('right'); else if (gx < -6) dirs.push('left');   // dead zone แคบลง (6) = เล็งแม่นขึ้น
+          if (gy > 6) dirs.push('down'); else if (gy < -6) dirs.push('up');
           bossMoveDirs(dirs);
-          if (!bossDodging) { bossDodging = true; aoeDodges++; logInfo(`🎯 ${green ? 'เข้าวงเขียว' : 'หนีวงแดง'} (ระยะ ${Math.round(dist)}/${Math.round(raid.r)})`); }
+          if (!bossDodging) { bossDodging = true; aoeDodges++; logInfo(`🎯 ${green ? 'เข้าวงเขียว' : 'หนีวงแดง'} วง@${Math.round(raid.cx)},${Math.round(raid.cy)} r${Math.round(raid.r)} · ตัว@${Math.round(_sc.player.x)},${Math.round(_sc.player.y)} ระยะ${Math.round(dist)}`); }   // v6.156: log ตำแหน่งวง เก็บข้อมูลออกแบบ recenter
           await sleep(80); continue;   // react ไว กว่าจังหวะตี
         }
         if (bossDodging) { bossReleaseAll(); bossDodging = false; }   // ถึงที่ปลอดภัยแล้ว → ปล่อยปุ่ม
