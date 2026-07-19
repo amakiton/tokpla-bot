@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.143
+// @version      6.144
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.143';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.144';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1450,19 +1450,28 @@
   // เดินเข้าหา (tx,ty) จนใกล้/ติด/หมดเวลา — คืน 'arrived'|'stuck'|'timeout'|'mapchanged'|'err'
   async function bossWalkTo(tx, ty, opts = {}) {
     const thresh = opts.thresh || 20, maxMs = opts.maxMs || 22000, startMap = bossMapId();
-    const t0 = now(); let lastX = null, lastY = null, stuck = 0;
+    const t0 = now(); let lastX = null, lastY = null, stuck = 0, slide = 0, slideDir = 1;
     try {
       while (enabled && (isOn('bossHunt') || mythicActive()) && now() - t0 < maxMs) {   // v6.132: โหมดล่าปลาเทพยืมระบบเดิน — ห้ามผูกกับสวิตช์ล่าบอส
         if (bossMapId() !== startMap) { bossReleaseAll(); return 'mapchanged'; }
         const p = bossPlayerXY(); if (!p) { bossReleaseAll(); return 'err'; }
         const dx = tx - p.x, dy = ty - p.y;
         if (Math.abs(dx) < thresh && Math.abs(dy) < thresh) { bossReleaseAll(); return 'arrived'; }
-        if (lastX != null && Math.abs(p.x - lastX) < 2 && Math.abs(p.y - lastY) < 2) stuck++; else stuck = 0;
+        if (lastX != null && Math.abs(p.x - lastX) < 3 && Math.abs(p.y - lastY) < 3) stuck++; else stuck = 0;
         lastX = p.x; lastY = p.y;
-        if (stuck > 10) { bossReleaseAll(); return 'stuck'; }
-        // เลือกแกนหลัก · ถ้าติด สลับไปแกนตั้งฉากชั่วคราว (หลบสิ่งกีดขวางแบบหยาบ)
-        const preferX = (Math.abs(dx) > Math.abs(dy)) !== (stuck >= 5);
-        bossHold(preferX ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up'));
+        if (stuck > 20) { bossReleaseAll(); return 'stuck'; }
+        // 🧱 v6.144: ติด → "สไลด์" แกนตั้งฉากเป็นชุดยาว (~12 tick) สลับทิศทุกครั้งที่ติดใหม่ (up↔down / left↔right)
+        //   เดิม: แค่สลับแกนราย tick + ยอมแพ้ stuck>10 → ข้ามสะพาน/เลี่ยงแม่น้ำไม่ได้ · พิสูจน์สด: สไลด์ยาวสลับทิศ = ข้ามสะพาน river_bank สำเร็จ
+        if (stuck >= 4 && slide === 0) { slide = 12; slideDir = -slideDir; }
+        let dir;
+        if (slide > 0) {
+          slide--;
+          const slideX = Math.abs(dx) <= Math.abs(dy);   // แกนหลัก Y → สไลด์แกน X (และกลับกัน)
+          dir = slideX ? (slideDir > 0 ? 'right' : 'left') : (slideDir > 0 ? 'down' : 'up');
+        } else {
+          dir = (Math.abs(dx) > Math.abs(dy)) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
+        }
+        bossHold(dir);
         await sleep(140);
       }
     } finally { bossReleaseAll(); }
