@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.147
+// @version      6.148
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.147';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.148';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1559,7 +1559,13 @@
     return false;
   }
   async function bossFight(maxMin) {
-    const until = now() + maxMin * 60000;
+    // 🕐 v6.148: รอให้ "ครอบเวลาบอสจริง" — ถ้าบอสยังอีก N นาที ต้องรออย่างน้อย N+3 นาที
+    //   บั๊กที่ทำให้พลาดบอส: bossLeadMin(เช่น 20) > bossMaxWaitMin(10) → ออกไปถ้ำ 20 นาทีก่อน แต่รอแค่ 10 → ยอมแพ้ตอนบอสยังอีก 10 นาที เดินกลับ = พลาดตลอด
+    //   แก้: เวลารอ = min(45, max(maxMin, เวลาบอสจากป้าย HUD + 3)) → รอจนบอสมาจริงเสมอ ไม่ขึ้นกับ config lead/wait ที่ตั้งเพี้ยน
+    const tmin = bossTimerMin();
+    const effMin = Math.min(45, Math.max(maxMin, (tmin != null && tmin >= 0 ? tmin : 0) + 3));
+    const until = now() + effMin * 60000;
+    if (effMin > maxMin) say(`👹 บอสยังอีก ~${tmin} นาที — รอในถ้ำถึง ${effMin} นาที (กันยอมแพ้ก่อนบอสมา)`);
     const fz = bossFishingZone();
     // เหยื่อจุดอ่อน (วิดีโอ: ขั้น2 มัดอ้วน / ขั้น4 กุ้งฝอย = ดาเมจ x1.5) — สลับก่อนตี (DOM ไม่ต้องเดิน)
     //   v6.121: จำขั้นเดิมไว้สลับคืนหลังสู้จบ — ไม่งั้นถ้าผู้ใช้ปิด forceBait เหยื่อจะค้างขั้นจุดอ่อนตลอด (ฟาร์มต่อผิดเหยื่อ)
@@ -1812,11 +1818,15 @@
   //   v6.121: idle branch เรียกทุก 150ms แต่ bossTimerMin = TreeWalker ทั้ง DOM (แพง) → cache ผล 5 วิ (เวลาบอสละเอียดระดับนาที เหลือเฟือ)
   let bossTimerCache = null, bossTimerCacheAt = 0;
   function bossHuntDue() {
-    if (!isOn('bossHunt') || orchestrating || busy || testRunning || bossPhase !== 'idle') return false;
+    if (!isOn('bossHunt') || orchestrating || busy || bossPhase !== 'idle') return false;
     if (now() - lastBossHuntAt < 10 * 60000) return false;   // กันล่าซ้ำถี่ (บอสห่างเป็นชั่วโมง)
     if (now() - bossTimerCacheAt > 5000) { bossTimerCacheAt = now(); bossTimerCache = bossTimerMin(); }
     const min = bossTimerCache;
-    return min != null && min <= clamp(cfg.bossLeadMin, 1, 60);
+    const due = min != null && min <= clamp(cfg.bossLeadMin, 1, 60);
+    // 🧪 v6.148: ถ้ามีเทสต์เหยื่อรันอยู่ = ปกติไม่ล่า (เทสต์คุมเหยื่อ) · แต่ถ้า "บอสใกล้มาแล้ว" → หยุดเทสต์ให้ไปล่าบอสก่อน
+    //   (บอสสำคัญ+นานๆ ครั้ง · เทสต์กด "ทำต่อจากเดิม" ทีหลังได้) — แก้บั๊ก: เทสต์ค้าง (เช่น autoResume ปลุก) บล็อกล่าบอสถาวร → พลาดบอส
+    if (testRunning) { if (due) stopTest(); return false; }
+    return due;
   }
 
   // ===== 🌈 โหมดล่าปลาเทพ (v6.122) — legendary/mythic + ปลาหนัก · อัตโนมัติ · กันขาดทุน =====
