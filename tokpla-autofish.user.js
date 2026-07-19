@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.134
+// @version      6.135
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.134';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.135';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3942,7 +3942,7 @@
 
   // สุ่มระยะพักก่อนเหวี่ยงตัวถัดไป — บางครั้ง "เหม่อ" นานกว่าปกติ
   function sampleCastGap() {
-    if (turboEff()) return randInt(150, 350);   // ⚡ เร็วสุด: เหวี่ยงทันทีที่ตัวก่อนจบ (มี guard sceneIsFishing กันเหวี่ยงซ้ำอยู่แล้ว)
+    if (turboEff()) return randInt(120, 260);   // ⚡ เร็วสุด (v6.135 บีบจาก 150-350): เหวี่ยงทันทีที่ตัวก่อนจบ (มี guard sceneIsFishing กันเหวี่ยงซ้ำ)
     if (!hOn('hCastGap')) return 900;
     if (Math.random() * 100 < cfg.distractChance) return randInt(cfg.distractMinMs, cfg.distractMaxMs);
     return randInt(cfg.castGapMinMs, cfg.castGapMaxMs);
@@ -4078,7 +4078,9 @@ ${esc(reason)}
         }
       } else if (state === 'gauge') {
         // 🎯 เกจวงล้อ: ดาวที่ 0° · เข็มเกิด ~2° กวาดขึ้น ~0.27°/ms · วน 1 รอบ ~1340ms (หมุนไม่รู้จบจนกว่าจะกด)
-        // ผู้ใช้สั่ง: "รอเข็มหมุนครบ 1 รอบก่อน ค่อยกดตอนโดนดาว" — ข้ามการกดตอนเกิด (2-9°) รอเข็มวนกลับมาข้าม 0° แล้วกดให้ลงดาวเป๊ะ
+        // ⚡ v6.135 (ผู้ใช้สั่งตัด "รอครบรอบ"): กด "รอบแรก" ทุกครั้งที่เฟรมทัน — เข็มอยู่ในดาวแค่ ~22ms หลังเกิด
+        //   (0.27°/ms × โซนดาว 8° — เร็วกว่า 1-2 เฟรม) → กดรอบแรกได้เฉพาะเฟรมที่จับทัน = โอกาสฟรี ประหยัด ~1.3 วิ
+        //   จับไม่ทัน (ส่วนใหญ่) → รอเข็มวนกลับมาลงดาวเหมือนเดิม (fallback — ความแม่นไม่ลดทุกกรณี)
         resetRound(); zoneKey = null;
         const w2 = wheelCache || readGaugeWheel();
         traceHook();   // เผื่อ trace ยังไม่ได้เซ็ต hook (เข้าเกจแปลว่าตวัดติดแล้ว)
@@ -4094,16 +4096,19 @@ ${esc(reason)}
           const inStar = ang >= 0 && ang <= GAUGE_STAR_DEG;            // 0..8° = ในแดงด้วย + ในดาวด้วย
           const inRed = ang >= w2.a0 && ang <= w2.a1;
           const bail = nowMs - gaugeStartMs > 4000;   // safety: รอเกิน ~3 รอบยังไม่ได้จังหวะ → กดตอนอยู่ในแดง กันเสียปลา
-          const wantPress = gaugeSwept && (gaugeMiss ? (inRed && !inStar) : inStar);
+          // กดรอบแรก: เข็มยังในดาว + เพิ่งเกิด (<250ms กันเข้าใจผิดกับรอบท้ายๆ) — เฉพาะโหมดไม่จงใจพลาด
+          const firstPassStar = !gaugeSwept && inStar && nowMs - gaugeStartMs < 250 && !gaugeMiss;
+          const wantPress = firstPassStar || (gaugeSwept && (gaugeMiss ? (inRed && !inStar) : inStar));
           if (wantPress || (bail && inRed)) {
             const orbEl = qBtn('ตกปลา (F)');
-            if (orbEl && !orbEl.disabled) { fireClick(orbEl); gaugeDone = true; recordGaugePress(ang, rev); }
+            if (orbEl && !orbEl.disabled) { fireClick(orbEl); gaugeDone = true; recordGaugePress(ang, firstPassStar ? 0 : rev); }
           }
         }
       } else if (state === 'fight') {
-        // 💪 ปลาสู้ (orb "🔥"): กดรัว (throttle ~55ms + สุ่มนิดหน่อย ไม่ยิงทุกเฟรม)
+        // 💪 ปลาสู้ (orb "🔥"): กดรัว — v6.135 เร่งเป็น ~35-60ms/กด (จาก 45-85) · เฟส "สู้" progress ผูกกับจำนวนกด
+        //   → กดถี่ขึ้น = จบเฟสเร็วขึ้นตรงๆ (~0.5-0.8 วิ/ตัว) · ยังสุ่ม jitter ไม่ยิงทุกเฟรมเป๊ะ
         resetRound(); zoneKey = null;
-        if (now() - lastFightTap > 45 + Math.random() * 40) {
+        if (now() - lastFightTap > 35 + Math.random() * 25) {
           lastFightTap = now();
           const orbEl = qBtn('ตกปลา (F)');
           if (orbEl && !orbEl.disabled) { fireClick(orbEl); if (fishTrace) fishTrace.fightTaps++; }
@@ -4211,7 +4216,7 @@ ${esc(reason)}
 
         // ปิด popup: กลไกใหม่มีปุ่ม "เก็บปลา" · เก่าเป็น "ตกต่อ!" (ทำทุกโหมด เพื่อให้ gameauto เก็บสถิติจาก popup ได้ด้วย)
         const cont = btnByText('ตกต่อ!') || btnByText('เก็บปลา');
-        if (cont && now() - lastCast > 300) {
+        if (cont && now() - lastCast > (turboEff() ? 180 : 300)) {   // v6.135: turbo ปิด popup ผลไวขึ้น (~0.12 วิ/ตัว)
           lastCast = now();
           fireClick(cont);
         }
