@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.152
+// @version      6.153
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.152';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.153';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1813,6 +1813,9 @@
   //   เดินไปด้วย A* ในตัวเกม (bossGameNavTo/autoWalker) แล้วกลับแมพเดิมฟาร์มต่อ · นับปลาจาก readBag (เปิดกระเป๋าอ่าน rarity จากสีขอบ)
   const NPC_POS = { khlang: { x: 447, y: 470 }, kaen: { x: 1048, y: 400 }, orbsmith: { x: 1123, y: 476 } };
   const rarityRank = (k) => { const i = RARITY.findIndex((r) => r.key === k); return i < 0 ? 99 : i; };
+  // 🧠 v6.153: ยายแก่นแลกเฉพาะช่วง [essenceMin, storageMin) — "ตัวสูงสุดเก็บเข้าคลัง, ตัวกลางทำแก่น" · กันแลก+ฝากทับกัน
+  //   ทำงานเมื่อ storage เปิด + ตั้งระดับสูงกว่า essence เท่านั้น (ไม่งั้นไม่ cap = แลกตามช่วงเดิม)
+  const npcEssTake = (rk, essMin, stoMin) => rk >= essMin && (!isOn('npcStorageOn') || !(stoMin > essMin) || rk < stoMin);
   let lastNpcErrandAt = 0, lastNpcCheckAt = 0;
   // เปิดกระเป๋าอ่าน → นับปลา "ปลดล็อก + ระดับ >= ขั้นต่ำ" ของแต่ละบริการ → ปิด (แพง เลยเรียกแบบ throttle)
   async function npcCountBag() {
@@ -1829,7 +1832,7 @@
         if (c.rarity == null) continue;                       // อ่านสีไม่ออก = ข้าม (กันฝาก/แลกผิดตัว)
         const rk = rarityRank(c.rarity), n = Math.max(0, c.count - c.lockedCount);   // ไม่นับตัวที่ผู้เล่นล็อก
         if (isOn('npcStorageOn') && rk >= stoMin) res.storage += n;
-        if (isOn('npcEssenceOn') && rk >= essMin) res.essence += n;
+        if (isOn('npcEssenceOn') && npcEssTake(rk, essMin, stoMin)) res.essence += n;   // 🧠 ไม่แลกตัวที่ลุงคลังจะเก็บ (ระดับ >= storage)
       }
       await closeMenu();
     } catch (e) { logErr('npcCountBag', e); }
@@ -1852,12 +1855,12 @@
     if (!talk) { say('🧪 หาปุ่มคุยยายแก่นไม่เจอ'); return 0; }
     fireClick(talk);
     if (!(await waitFor(() => [...document.querySelectorAll('*')].some((e) => /โต๊ะปรุงของยายแก่น/.test(e.textContent || '')), 4000))) return 0;
-    const essMin = rarityRank(cfg.npcEssenceRarity);
+    const essMin = rarityRank(cfg.npcEssenceRarity), stoMin = rarityRank(cfg.npcStorageRarity);
     let done = 0;
     for (let i = 0; i < 80; i++) {
       const fb = [...document.querySelectorAll('button')].find((b) => {
         if (!npcVisible(b) || b.disabled) return false; const t = (b.textContent || ''); if (!/kg/.test(t)) return false;   // แถวปลา = มีน้ำหนัก "N kg"
-        const w = Object.keys(NPC_RARWORD).find((k) => t.includes(k)); return w && rarityRank(NPC_RARWORD[w]) >= essMin;
+        const w = Object.keys(NPC_RARWORD).find((k) => t.includes(k)); return w && npcEssTake(rarityRank(NPC_RARWORD[w]), essMin, stoMin);   // 🧠 ไม่แลกตัวที่ลุงคลังจะเก็บ
       });
       if (!fb) break;
       fireClick(fb); await sleep(350);                       // เลือกปลา
@@ -5425,7 +5428,8 @@ ${esc(reason)}
     ));
     panel.appendChild(row(
       '🧪 ยายแก่น — แลกปลาเป็นแก่นปลา',
-      'พอในกระเป๋ามีปลา "ระดับที่เลือกขึ้นไป" ครบจำนวน → บอทเดินไปแลกกับยายแก่นเป็น 🧪 แก่นปลา (วัตถุดิบสุ่มหินออร์บที่ช่างหิน) แล้วกลับมาฟาร์มต่อ · แนะนำ 💙 หายาก (rare) ขึ้นไป',
+      'พอในกระเป๋ามีปลา "ระดับที่เลือกขึ้นไป" ครบจำนวน → บอทเดินไปแลกกับยายแก่นเป็น 🧪 แก่นปลา (วัตถุดิบสุ่มหินออร์บ) แล้วกลับมาฟาร์มต่อ · แนะนำ 💙 หายาก (rare) · '
+      + '🧠 ฉลาด: ถ้าเปิดลุงคลังด้วย + ตั้งระดับสูงกว่า → ยายแก่นจะ "แลกเฉพาะช่วงกลาง" ไม่แตะตัวสูงที่ลุงคลังเก็บ (เช่น แลก rare–epic, เก็บ legendary+ เข้าคลัง) กันแลก/ฝากทับกัน',
       labeled('เปิด', checkbox('npcEssenceOn')),
       labeled('ระดับขึ้นไป', selectInput('npcEssenceRarity', RAR_OPTS)),
       labeled('เมื่อมี (ตัว)', numInput('npcEssenceMin', 1, 300, 48)),
