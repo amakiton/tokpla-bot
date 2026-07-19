@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.149
+// @version      6.150
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.149';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.150';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -93,6 +93,14 @@
     bossMaxWaitMin: 8,           // อยู่ในถ้ำบอสสูงสุดกี่นาที (รอบอส+สู้) — ครบแล้วกลับบ้านแม้บอสไม่ตาย/ไม่มา
     bossHomeMap: '',             // แมพที่จะกลับไปฟาร์มต่อ (ว่าง = แมพที่อยู่ตอนเริ่มล่า)
     bossBaitTier: 2,             // 👹 เหยื่อ "จุดอ่อนบอส" ระหว่างตี (วิดีโอ: มัดอ้วนขั้น2/กุ้งฝอยขั้น4 = ดาเมจ x1.5) · 0 = ไม่สลับ
+
+    // 🏪 ระบบ NPC เมืองชาวประมง (v6.150) — เดินไปด้วย game A* แล้วกลับแมพเดิมฟาร์มต่อ
+    npcStorageOn: false,         // 🏬 ลุงคลัง: ฝากปลาระดับ >= npcStorageRarity เข้าคลัง (ปลอดภัย+ไม่กินช่องกระเป๋า) เมื่อมี >= npcStorageMin ตัว
+    npcStorageRarity: 'legendary',
+    npcStorageMin: 5,
+    npcEssenceOn: false,         // 🧪 ยายแก่น: แลกปลาระดับ >= npcEssenceRarity เป็นแก่นปลา เมื่อมี >= npcEssenceMin ตัว
+    npcEssenceRarity: 'rare',
+    npcEssenceMin: 10,
 
     // 🌈 โหมดล่าปลาเทพ (legendary/mythic + ปลาหนัก) — "ชั้นนโยบาย" override ที่จุดอ่าน ไม่เขียนทับค่าผู้ใช้ (ปิด = กลับค่าเดิมทันที)
     mythicHunt: false,           // เปิดโหมดล่าปลาเทพ
@@ -1794,6 +1802,106 @@
     } catch (e) { logErr('สู้บอส(ในถ้ำ)ล้มเหลว', e); }
     finally { bossReleaseAll(); bossPhase = 'idle'; clearBossState(); lastBossHuntAt = now(); orchestrating = false; lastCast = now(); pendingCast = 0; }
   }
+
+  // ===== 🏪 ระบบ NPC เมืองชาวประมง (v6.150) — ลุงคลัง(ฝากของ) + ยายแก่น(แลกแก่นปลา) =====
+  //   NPC จริงในเกม: questNpcs · khlang(service 'storage') @≈447,434 · kaen(service 'essence') @≈1048,365 · scene.nearNpcId บอกตัวที่อยู่ใกล้
+  //   เดินไปด้วย A* ในตัวเกม (bossGameNavTo/autoWalker) แล้วกลับแมพเดิมฟาร์มต่อ · นับปลาจาก readBag (เปิดกระเป๋าอ่าน rarity จากสีขอบ)
+  const NPC_POS = { khlang: { x: 447, y: 470 }, kaen: { x: 1048, y: 400 } };
+  const rarityRank = (k) => { const i = RARITY.findIndex((r) => r.key === k); return i < 0 ? 99 : i; };
+  let lastNpcErrandAt = 0, lastNpcCheckAt = 0;
+  // เปิดกระเป๋าอ่าน → นับปลา "ปลดล็อก + ระดับ >= ขั้นต่ำ" ของแต่ละบริการ → ปิด (แพง เลยเรียกแบบ throttle)
+  async function npcCountBag() {
+    const res = { storage: 0, essence: 0 };
+    try {
+      await ensureMenuOpen();
+      const bagBtn = qBtn('กระเป๋า'); if (!bagBtn) return res;
+      fireClick(bagBtn);
+      if (!(await waitFor(() => readBagCount(), 3000))) { await closeMenu(); return res; }
+      await sleep(250);
+      const stoMin = rarityRank(cfg.npcStorageRarity), essMin = rarityRank(cfg.npcEssenceRarity);
+      for (const c of readBag()) {
+        if (c.rarity == null) continue;                       // อ่านสีไม่ออก = ข้าม (กันฝาก/แลกผิดตัว)
+        const rk = rarityRank(c.rarity), n = Math.max(0, c.count - c.lockedCount);   // ไม่นับตัวที่ผู้เล่นล็อก
+        if (isOn('npcStorageOn') && rk >= stoMin) res.storage += n;
+        if (isOn('npcEssenceOn') && rk >= essMin) res.essence += n;
+      }
+      await closeMenu();
+    } catch (e) { logErr('npcCountBag', e); }
+    return res;
+  }
+  // ไปเมืองประมง (A*) แล้วเดินเข้าใกล้ NPC จน scene.nearNpcId ตรง
+  async function npcGoTo(id) {
+    if (!(await bossGameNavTo('fisher_town', 90000))) return false;
+    const t = NPC_POS[id]; if (!t) return false;
+    try { getPhaserScene().autoWalker.navigate({ x: t.x, y: t.y, mapId: 'fisher_town' }); } catch {}
+    return !!await waitFor(() => { try { return getPhaserScene()?.nearNpcId === id; } catch { return false; } }, 15000, 300);
+  }
+  const npcCloseDialog = () => { const x = [...document.querySelectorAll('button')].find((b) => /^✕$|^×$/.test((b.textContent || '').trim())); if (x) fireClick(x); };
+  // ยายแก่น: คลิกปุ่มปลา rare+ ในหน้าต่าง = แลกเป็นแก่นทีละตัว จนไม่มีที่เข้าเกณฑ์
+  async function npcDoEssence() {
+    const talk = [...document.querySelectorAll('button')].find((b) => /คุยกับยายแก่น/.test(b.textContent || ''));
+    if (!talk) { say('🧪 หาปุ่มคุยยายแก่นไม่เจอ'); return 0; }
+    fireClick(talk);
+    if (!(await waitFor(() => [...document.querySelectorAll('*')].some((e) => /โต๊ะปรุงของยายแก่น/.test(e.textContent || '')), 4000))) return 0;
+    const essMin = rarityRank(cfg.npcEssenceRarity);
+    const RW = { 'ไม่ธรรมดา': 'uncommon', 'หายาก': 'rare', 'สุดยอด': 'epic', 'ตำนาน': 'legendary', 'เทพนิยาย': 'mythic' };
+    let done = 0;
+    for (let i = 0; i < 80; i++) {
+      const fb = [...document.querySelectorAll('button')].find((b) => {
+        const t = (b.textContent || '').trim(); if (!/^🐟/.test(t) || b.disabled) return false;
+        const w = Object.keys(RW).find((k) => t.includes(k)); return w && rarityRank(RW[w]) >= essMin;
+      });
+      if (!fb) break;
+      fireClick(fb); done++; await sleep(500);
+    }
+    npcCloseDialog(); await sleep(300); return done;
+  }
+  // ลุงคลัง: เปิดคลัง → แท็บปลา → เลือกปลาระดับ >= ขั้นต่ำ (ปลดล็อก) → กด "ฝาก →"
+  async function npcDoStorage() {
+    const talk = [...document.querySelectorAll('button')].find((b) => /ฝากของ/.test(b.textContent || b.getAttribute('aria-label') || ''));
+    if (!talk) { say('🏬 หาปุ่มฝากของไม่เจอ'); return 0; }
+    fireClick(talk);
+    if (!(await waitFor(() => [...document.querySelectorAll('*')].some((e) => /คลังลุงคลัง/.test(e.textContent || '')), 4000))) return 0;
+    const ft = [...document.querySelectorAll('button')].find((b) => /🐟\s*ปลา/.test(b.textContent || '')); if (ft) { fireClick(ft); await sleep(300); }
+    const stoMin = rarityRank(cfg.npcStorageRarity);
+    let done = 0;
+    for (let round = 0; round < 40; round++) {
+      const cards = readBag().filter((c) => c.rarity != null && rarityRank(c.rarity) >= stoMin && (c.count - c.lockedCount) > 0);
+      if (!cards.length) break;
+      fireClick(cards[0].el); await sleep(200);
+      const dep = [...document.querySelectorAll('button')].find((b) => /ฝาก\s*→/.test(b.textContent || '') && !b.disabled);
+      if (!dep) break;
+      fireClick(dep); done++; await sleep(500);
+    }
+    npcCloseDialog(); await sleep(300); return done;
+  }
+  async function runNpcErrand(kind) {
+    if (orchestrating || busy) return;
+    orchestrating = true;
+    const home = bossMapId();
+    try {
+      say(kind === 'essence' ? '🧪 ไปแลกแก่นที่ยายแก่น (เมืองประมง)' : '🏬 ไปฝากของที่ลุงคลัง (เมืองประมง)');
+      if (!(await npcGoTo(kind === 'essence' ? 'kaen' : 'khlang'))) { say('🏪 เดินไปหา NPC ไม่สำเร็จ'); return; }
+      const n = kind === 'essence' ? await npcDoEssence() : await npcDoStorage();
+      say(kind === 'essence' ? `🧪 แลกแก่นเสร็จ ${n} ตัว — กลับไปฟาร์ม` : `🏬 ฝากของเสร็จ ${n} รายการ — กลับไปฟาร์ม`);
+      if (isOn('tgOn')) void tgSend(kind === 'essence' ? `🧪 แลกแก่น ${n} ตัวเสร็จ` : `🏬 ฝากของ ${n} รายการเสร็จ`);
+      lastNpcErrandAt = now();
+      if (home && home !== 'fisher_town') await bossGameNavTo(home, 90000);   // กลับแมพเดิม
+    } catch (e) { logErr('runNpcErrand', e); }
+    finally { orchestrating = false; lastCast = now(); pendingCast = 0; }
+  }
+  // เช็คถึงเกณฑ์ไปหา NPC ไหม (เรียกจาก idle branch · throttle หนักเพราะเปิดกระเป๋านับ = แพง/หยุดตกชั่วคราว)
+  async function npcErrandCheck() {
+    if (orchestrating || busy || testRunning || bossPhase !== 'idle' || mythicActive()) return;
+    if (!isOn('npcStorageOn') && !isOn('npcEssenceOn')) return;
+    if (now() - lastNpcErrandAt < 3 * 60000) return;          // เพิ่งไปมา = พัก 3 นาที
+    if (now() - lastNpcCheckAt < 120000) return;              // นับกระเป๋าอย่างมากทุก 2 นาที
+    lastNpcCheckAt = now();
+    const c = await npcCountBag();
+    if (isOn('npcEssenceOn') && c.essence >= clamp(cfg.npcEssenceMin, 1, 300)) return void runNpcErrand('essence');
+    if (isOn('npcStorageOn') && c.storage >= clamp(cfg.npcStorageMin, 1, 300)) return void runNpcErrand('storage');
+  }
+
   // 👹 เฝ้าบันทึกสถานะบอส — เรียกทุก ~1 วิ (ทุกโหมด) · log เฉพาะตอน "สถานะเปลี่ยน" (present/dead/phase/ปุ่ม/HP)
   //   เก็บลง log ring → /report เห็นได้ · ไว้ถอดรหัสกลไกสู้บอส (ตีเอง/บอทตี ก็จับได้)
   //   บันทึกไทม์ไลน์บอสตัวล่าสุดแยกไว้ (bossFightLog) เผื่ออยากดูเป็นชุด
@@ -4330,6 +4438,8 @@ ${esc(reason)}
         if (now() > lastBossEscapeAt && now() - lastBossEscapeAt > 15000 && strandedInBossCave()) {
           lastBossEscapeAt = now(); void escapeBossCave(); return requestAnimationFrame(tick);
         }
+        // 🏪 v6.150: ระบบ NPC เมืองประมง — ถึงเกณฑ์ปลา (ระดับ+จำนวน) → ไปฝากลุงคลัง/แลกยายแก่น แล้วกลับ (self-throttle เปิดกระเป๋านับทุก 2 นาที)
+        void npcErrandCheck();
 
         // 🌈 โหมดล่าปลาเทพ — no-loss gate + เรียนรู้ชื่อ↔id แมพ + ย้ายไปแมพสถิติดีสุด (บอสสำคัญกว่า จึงอยู่หลังเช็คบอส)
         if (mythicActive()) {
@@ -5246,6 +5356,24 @@ ${esc(reason)}
       + 'ไม่ต้องกลัวตาย: โดนบอสตีแค่สลบชั่วคราวแล้ว respawn HP เต็ม (พิสูจน์จาก log จริง — จึงไม่มีตัวเลือกถอยหนี)',
       labeled('เหยื่อจุดอ่อน (ขั้น)', numInput('bossBaitTier', 0, 8, 44)),
       labeled('แมพบ้าน', smallTextInput('bossHomeMap', 'ว่าง=อัตโนมัติ', 96)),
+    ));
+
+    // ---------- 🏪 ระบบ NPC เมืองชาวประมง ----------
+    sectionHead('🏪 NPC เมืองชาวประมง (ฝากของ/แลกแก่น)', false);
+    const RAR_OPTS = RARITY.map((r) => [r.key, r.label]);
+    panel.appendChild(row(
+      '🏬 ลุงคลัง — ฝากปลาเข้าคลัง',
+      'พอในกระเป๋ามีปลา "ระดับที่เลือกขึ้นไป" ครบจำนวน → บอทเดินไปเมืองประมง (A* ในเกม) ฝากเข้าคลังลุงคลัง (ปลอดภัย+ไม่กินช่องกระเป๋า) แล้วกลับมาฟาร์มต่อ · ปลาที่ผู้เล่นล็อกไว้จะไม่ถูกฝาก',
+      labeled('เปิด', checkbox('npcStorageOn')),
+      labeled('ระดับขึ้นไป', selectInput('npcStorageRarity', RAR_OPTS)),
+      labeled('เมื่อมี (ตัว)', numInput('npcStorageMin', 1, 300, 48)),
+    ));
+    panel.appendChild(row(
+      '🧪 ยายแก่น — แลกปลาเป็นแก่นปลา',
+      'พอในกระเป๋ามีปลา "ระดับที่เลือกขึ้นไป" ครบจำนวน → บอทเดินไปแลกกับยายแก่นเป็น 🦴 แก่นปลา (วัตถุดิบอัปเกรดออร์บ) แล้วกลับมาฟาร์มต่อ · แนะนำ 💙 หายาก (rare) ขึ้นไป',
+      labeled('เปิด', checkbox('npcEssenceOn')),
+      labeled('ระดับขึ้นไป', selectInput('npcEssenceRarity', RAR_OPTS)),
+      labeled('เมื่อมี (ตัว)', numInput('npcEssenceMin', 1, 300, 48)),
     ));
 
     // ---------- 🌈 ล่าปลาเทพ ----------
