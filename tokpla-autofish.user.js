@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.157
+// @version      6.158
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.157';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.158';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1757,6 +1757,45 @@
     } catch (e) { logErr('ล่าบอสล้มเหลว', e); }
     finally { bossReleaseAll(); bossPhase = 'idle'; clearBossState(); lastBossHuntAt = now(); orchestrating = false; lastCast = now(); pendingCast = 0; }
   }
+
+  // 📬 v6.158: รับรางวัลบอสจากจดหมายอัตโนมัติ — บอสตายจะเด้ง dialog "รางวัลส่งเข้าจดหมายแล้ว" (ปุ่ม "📬 เปิดจดหมาย")
+  //   บอทรัน 24 ชม. ไม่มีคนกดรับ → รางวัล (เหรียญ/เศษบอส) กองค้างในเมล์ · trigger = ปุ่มเปิดจดหมาย หรือ mail เปิดค้างที่มี "รับของ"
+  //   จดหมาย = modal ที่ "ไม่บล็อกฟิชชิ่ง" (ตกปลาทำงานใต้จอได้ + minigame re-render ปิดเอง) → ปิดด้วย × / Escape + auto-close (ไม่ deadlock)
+  //   ไม่มีปุ่ม "รับทั้งหมด" → กด "รับของ" ทีละใบ (รับแล้ว = ปุ่ม disabled ข้อความ "รับแล้ว") · ทุกปุ่ม tk-btn-primary ข้าม UI บอท (data-tkbot)
+  let mailClaiming = false;
+  const mailOpenBtn = () => [...document.querySelectorAll('button')].find((b) => !isBotUI(b) && b.offsetParent && /เปิดจดหมาย/.test(b.textContent || '')) || null;
+  const mailClaimBtns = () => [...document.querySelectorAll('button.tk-btn-primary')].filter((b) => !isBotUI(b) && !b.disabled && b.offsetParent && b.textContent.trim() === 'รับของ');
+  async function claimBossMail() {
+    if (mailClaiming || busy || orchestrating) return 0;
+    const ob = mailOpenBtn();
+    if (!ob && !mailClaimBtns().length) return 0;      // ไม่มี dialog รางวัล/ของค้างรับ → ออก (เบา: query ทุก 2 วิ)
+    if (gameState() === 'minigame') return 0;          // อย่าแทรกตอนกำลังดึงปลา (เกจ core — กฎเหล็ก #1)
+    mailClaiming = true; busy = true;
+    let claimed = 0;
+    try {
+      if (ob) { fireClick(ob); await sleep(900); }     // เปิดจดหมายจาก victory dialog
+      for (let i = 0; i < 20; i++) {                    // กด "รับของ" ทุกใบ (เผื่อมีหลายบอสค้าง)
+        const b = mailClaimBtns()[0];
+        if (!b) break;
+        fireClick(b); claimed++;
+        await sleep(400);
+      }
+      // ปิดจดหมาย — เฉพาะเมื่อ mail เปิดจริง (ยืนยันด้วยแถว "รับแล้ว"/"รับของ") เพื่อกันคลิกปุ่มผิด
+      const mailOpen = [...document.querySelectorAll('button.tk-btn-primary')].some((b) => !isBotUI(b) && b.offsetParent && /^รับ(ของ|แล้ว)$/.test(b.textContent.trim()));
+      if (mailOpen) {
+        const x = [...document.querySelectorAll('button')].find((b) => !isBotUI(b) && b.offsetParent && (/^(✕|×|✖|❌)$/.test(b.textContent.trim()) || /^(ปิด|close)/i.test(b.getAttribute('aria-label') || '')));
+        if (x) fireClick(x);
+        for (const t of ['keydown', 'keyup']) document.dispatchEvent(new KeyboardEvent(t, { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+      }
+      if (claimed) {
+        say(`📬 รับรางวัลบอสจากจดหมาย ${claimed} ใบ`);
+        if (isOn('tgOn')) void tgSend(`📬 รับรางวัลบอส ${claimed} ใบจากจดหมายแล้ว`);
+      }
+    } catch (e) { logErr('รับรางวัลบอสล้มเหลว', e); }
+    finally { busy = false; mailClaiming = false; }
+    return claimed;
+  }
+
   let lastBossHuntAt = 0, lastBossEscapeAt = 0, bossEscapeFails = 0, bossLastMapId = '', lastBossHereChk = 0;
   // 👹 v6.112: "ติดอยู่ในถ้ำบอส" โดยไม่ได้กำลังล่า/ไม่มีบอส — ถ้ำบอสตกปกติไม่ได้ → บอทตกไม่ออก → recoveryWatch รีโหลดวนเปล่า
   //   (เกิดเมื่อ bossHunt เดินไปแล้วกลับบ้านไม่สำเร็จ เพราะ WASD ไม่เสถียร) · แก้: เดินออกไปแมพบ้านเอง · เดินไม่ได้ = แจ้ง+หยุดลองสแปม
@@ -6393,6 +6432,8 @@ ${esc(reason)}
       if (!enabled || orchestrating || busy || now() - catchPopupSince > 1500) fireClick(cont);
     } catch {}
   }, 600);
+  // 📬 v6.158: เฝ้ารับรางวัลบอสจากจดหมายอัตโนมัติ (ดู claimBossMail) — เช็คทุก 2 วิ เฉพาะตอนเปิดบอท+ไม่พัก · guard busy/minigame อยู่ในฟังก์ชัน
+  setInterval(() => { try { if (enabled && !paused) void claimBossMail(); } catch {} }, 2000);
   setInterval(tgPoll, 4000);            // รับคำสั่งควบคุมผ่าน Telegram ทุก 4 วิ
   setInterval(ensureChatObserver, 3000); // ผูก/ต่อ observer แชทโลก (เมื่อเปิดโหมดบริดจ์)
   setInterval(gameEventWatch, 3000);     // เฝ้าเหตุการณ์เกม (เลเวลอัพ/สภาพอากาศ) -> แจ้ง TG
