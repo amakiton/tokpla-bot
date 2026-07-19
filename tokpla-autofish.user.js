@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.141
+// @version      6.142
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.141';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.142';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1419,11 +1419,19 @@
   // ---- เดิน WASD สังเคราะห์ ----
   const bossKeyEv = (type, code, kc) => new KeyboardEvent(type, { key: code.replace('Key', '').toLowerCase(), code, keyCode: kc, which: kc, bubbles: true });
   const BOSS_DIRK = { up: ['KeyW', 87], down: ['KeyS', 83], left: ['KeyA', 65], right: ['KeyD', 68] };
+  // 🎯 v6.142: เกมฟังปุ่มที่ document (+ canvas) ไม่ใช่ window! — ทดสอบสด: ยิง window ตัวขยับ 12px, ยิง document ขยับ 706px
+  // นี่คือต้นตอที่ auto-travel/หนีถ้ำ/เดินหาบอส พังมาตลอด: บอทยิงที่ W (window) เกมไม่ได้ยิน → ตัวไม่เดิน
+  // ยิงทั้ง document + canvas + window (สร้าง event ใหม่ทุกเป้า เพราะ 1 event dispatch ได้ครั้งเดียว)
+  const bossFireKey = (type, c, k) => {
+    try { document.dispatchEvent(bossKeyEv(type, c, k)); } catch {}
+    try { const cv = document.querySelector('canvas'); if (cv) cv.dispatchEvent(bossKeyEv(type, c, k)); } catch {}
+    try { W.dispatchEvent(bossKeyEv(type, c, k)); } catch {}
+  };
   function bossHold(dir) {
     for (const d of Object.keys(BOSS_DIRK)) {
       const want = d === dir, on = heldKeys.has(d);
-      if (want && !on) { const [c, k] = BOSS_DIRK[d]; W.dispatchEvent(bossKeyEv('keydown', c, k)); heldKeys.add(d); }
-      else if (!want && on) { const [c, k] = BOSS_DIRK[d]; W.dispatchEvent(bossKeyEv('keyup', c, k)); heldKeys.delete(d); }
+      if (want && !on) { const [c, k] = BOSS_DIRK[d]; bossFireKey('keydown', c, k); heldKeys.add(d); }
+      else if (!want && on) { const [c, k] = BOSS_DIRK[d]; bossFireKey('keyup', c, k); heldKeys.delete(d); }
     }
   }
   const bossReleaseAll = () => bossHold(null);
