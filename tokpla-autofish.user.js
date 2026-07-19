@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.137
+// @version      6.138
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.137';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.138';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1629,7 +1629,8 @@
   let lastBossHuntAt = 0, lastBossEscapeAt = 0, bossEscapeFails = 0, bossLastMapId = '', lastBossHereChk = 0;
   // 👹 v6.112: "ติดอยู่ในถ้ำบอส" โดยไม่ได้กำลังล่า/ไม่มีบอส — ถ้ำบอสตกปกติไม่ได้ → บอทตกไม่ออก → recoveryWatch รีโหลดวนเปล่า
   //   (เกิดเมื่อ bossHunt เดินไปแล้วกลับบ้านไม่สำเร็จ เพราะ WASD ไม่เสถียร) · แก้: เดินออกไปแมพบ้านเอง · เดินไม่ได้ = แจ้ง+หยุดลองสแปม
-  const strandedInBossCave = () => bossMapId() === BOSS_MAP && bossPhase === 'idle' && !orchestrating && !busy && !(raidBossState() || {}).present;
+  //   v6.138: หนีออกเฉพาะตอน "ปิดล่าบอส" — ถ้าเปิดล่าบอสแล้วอยู่ในถ้ำ = ผู้ใช้/บอทตั้งใจมารอตีบอส ห้ามเดินหนีออก
+  const strandedInBossCave = () => !isOn('bossHunt') && bossMapId() === BOSS_MAP && bossPhase === 'idle' && !orchestrating && !busy && !(raidBossState() || {}).present;
   async function escapeBossCave() {
     if (orchestrating || busy) return;
     orchestrating = true;
@@ -3976,6 +3977,12 @@ ${esc(reason)}
     //   v6.111: ตอนมีบอส (context) จับถี่ 350ms (เกจหมุนเร็ว 1 วิพลาด) · แมพปกติ 1.2 วิ (ประหยัด)
     if (now() - lastBossObs > (bossObsHot ? 350 : 1200)) { lastBossObs = now(); bossObserve(); }
     if (enabled && !busy && !orchestrating) {
+      // 👹 v6.138: เช็ค "ยึดถ้ำบอส" ก่อนคิดตกปลา — ถ้ำบอสมีบ่อตกปลาด้วย บอสโผล่มาบอทต้องตีทันที ไม่ใช่ตกปลาแทน
+      //   บั๊ก: เดิมเช็คนี้อยู่ในสาขา idle (เข้าถึงเฉพาะตอนว่าง) → บอทตกปลารัวจนแทบไม่ได้ยิง = บอสมา 110 วิ ตกปลาเฉยๆ
+      if (isOn('bossHunt') && bossPhase === 'idle' && now() - lastBossHereChk > 800) {
+        lastBossHereChk = now();
+        if (bossMapId() === BOSS_MAP && (raidBossState() || {}).present) { void bossFightHere(); return requestAnimationFrame(tick); }
+      }
       const state = gameState();
       if (state !== 'bite') biteAt = 0;      // ออกจากจังหวะปลาฮุบ = ล้างตัวจับเวลารีแอค
       if (state !== 'idle') castArmed = false;   // กำลังตกอยู่ = ยังไม่ถึงจังหวะตั้งเวลาเหวี่ยง
@@ -4180,12 +4187,7 @@ ${esc(reason)}
         //   บั๊ก v6.118 (bot.log): ในถ้ำบอสปุ่มตกปลาถูกปิดตลอด → โค้ดไป early-return ที่สาขานั้น →
         //   bossHuntDue/ตีบอส/หนีออกถ้ำ ไม่มีวันได้รัน = บอสโผล่ก็ไม่ตี (ตกปลาเปล่าๆ), บอสตายก็ค้างในถ้ำ
         if (bossHuntDue()) { void runBossHunt(); return requestAnimationFrame(tick); }
-        // บอสอยู่ตรงหน้า + อยู่ในถ้ำแล้ว (เดินเอง/มาถึงก่อน timer) → ตีเลย ไม่ต้องรอ timer สั่ง
-        //   throttle ~800ms: bossMapId/raidBossState เดิน React fiber (แพงเกินกว่าจะทำทุก 150ms · บอสอยู่นาน ~100วิ ไม่พลาด)
-        if (isOn('bossHunt') && !orchestrating && bossPhase === 'idle' && now() - lastBossHereChk > 800) {
-          lastBossHereChk = now();
-          if (bossMapId() === BOSS_MAP && (raidBossState() || {}).present) { void bossFightHere(); return requestAnimationFrame(tick); }
-        }
+        // (👹 v6.138 ย้ายเช็ค "ตีบอสในถ้ำ" ขึ้นไปบนสุดของ tick แล้ว — ก่อนตกปลา ไม่งั้นถ้ำบอสมีบ่อ บอทตกปลาแทนตี)
         // ติดอยู่ในถ้ำบอส (ไม่มีบอส/ไม่ได้กำลังล่า) → เดินออกไปฟาร์มต่อ (กันตกไม่ได้+รีโหลดวน)
         if (now() > lastBossEscapeAt && now() - lastBossEscapeAt > 15000 && strandedInBossCave()) {
           lastBossEscapeAt = now(); void escapeBossCave(); return requestAnimationFrame(tick);
