@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.144
+// @version      6.145
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.144';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.145';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1494,6 +1494,17 @@
       if (!exit) exit = exits.find((e) => e.targetMap === 'village') || exits.find((e) => e.targetMap !== bossHome) || exits[0];
       if (!exit) { say('👹 หาทางออกจากแมพนี้ไม่เจอ — ยกเลิกล่าบอส'); return false; }
       say(`👹 เดินทาง: ${cur} → ${exit.targetMap} (เป้า ${targetMap})`);
+      // 🧭 v6.145: เดินตาม waypoint ที่ "เรียนรู้จากการเดินจริง" (tokpla_route_wps) ก่อนถึงปากทาง —
+      //   เลี่ยงสระบัวกลาง village (เลียบขอบเหนืออ้อมสระ) + จุดติดหินก่อนสะพาน river_bank ที่เดินตรงๆ ไม่ผ่าน
+      //   key = 'fromMap>toMap' · ไม่มี = เดินตรงแบบเดิม (backward-compatible) · waypoint สุดท้ายมักเป็นจุด trigger ปากทาง
+      try {
+        const rw = (JSON.parse(W.localStorage.getItem('tokpla_route_wps') || '{}') || {})[cur + '>' + exit.targetMap];
+        if (Array.isArray(rw)) for (const wp of rw) {
+          if (bossMapId() !== cur) break;
+          if (await bossWalkTo(wp[0], wp[1], { thresh: 40, maxMs: 12000 }) === 'mapchanged') break;
+        }
+      } catch {}
+      if (bossMapId() !== cur) { await sleep(1200); continue; }   // waypoint สุดท้าย trigger ปากทางแล้ว
       const r = await bossWalkTo(exit.x, exit.y, { thresh: 24 });
       if (r === 'mapchanged') { await sleep(1200); continue; }   // เข้า transition แล้ว
       // เดินถึงปากทางแล้วแต่ยังไม่เปลี่ยนแมพ → เดินย้ำเข้าโซนอีกนิด (เผื่อ trigger ต้อง overlap)
