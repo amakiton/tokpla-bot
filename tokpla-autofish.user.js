@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.133
+// @version      6.134
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.133';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.134';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1565,6 +1565,32 @@
   function saveBossState() { try { W.localStorage.setItem(BOSS_STATE_KEY, JSON.stringify({ phase: bossPhase, home: bossHome, ts: Date.now() })); } catch {} }
   function clearBossState() { try { W.localStorage.removeItem(BOSS_STATE_KEY); } catch {} }
 
+  // 👹 v6.134: ซื้อเหยื่อจุดอ่อนบอสให้พร้อม "ก่อน" เดินเข้าถ้ำ — ในถ้ำบอสไม่มีร้าน ซื้อไม่ได้
+  //   (เดิม bossFight แค่ "สลับ" ไปขั้นจุดอ่อน ถ้าไม่มีในกระเป๋า = ตีด้วยเหยื่อผิด ไม่ได้ดาเมจ x1.5)
+  //   1 แพ็ค (100 ชิ้น) พอตีบอส 1 ตัว (~110 วิ) เหลือเผื่อรอบถัดไป · ราคาถูก (ขั้น2 = ~1,200🪙)
+  async function ensureBossBaitStock() {
+    const bt = cfg.bossBaitTier;
+    if (!(bt > 0) || bossMapId() === BOSS_MAP) return;
+    busy = true;
+    try {
+      if (!await openShop()) return;
+      await shopTab('🪱 เหยื่อ'); await sleep(300);
+      const row = shopRows().find((r) => r.tier === bt);
+      if (!row) { say(`👹 หาเหยื่อจุดอ่อนขั้น ${bt} ในร้านไม่เจอ — ตีด้วยเหยื่อปัจจุบัน`); await closeShop(); return; }
+      if (row.lockedLv) { say(`👹 เหยื่อจุดอ่อนขั้น ${bt} ยังไม่ปลดล็อก (Lv.${row.lockedLv}) — ตีด้วยเหยื่อปัจจุบัน`); await closeShop(); return; }
+      if ((row.stock || 0) >= 100) { await closeShop(); return; }   // มีพอแล้ว (≥1 แพ็ค)
+      if (!row.addBtn || row.addBtn.disabled) { await closeShop(); return; }
+      fireClick(row.addBtn); await sleep(300);
+      const buy = btnByText('ซื้อเลย!') || btnByText('เหรียญไม่พอ');
+      if (!buy || buy.disabled || /เหรียญไม่พอ/.test(buy.textContent)) { say(`👹 เงินไม่พอซื้อเหยื่อจุดอ่อนขั้น ${bt} — ตีด้วยเหยื่อปัจจุบัน`); await closeShop(); return; }
+      fireClick(buy);
+      const done = await waitFor(() => { const t = document.body.innerText; if (t.includes('✅ ซื้อสำเร็จ!')) return 'ok'; if (t.includes('❌')) return 'fail'; return null; }, 8000);
+      if (done === 'ok') { profit.life.baitCost += baitUnit(bt) * PACK_SIZE; saveProfit(); say(`👹 เตรียมเหยื่อจุดอ่อนขั้น ${bt} (1 แพ็ค) พร้อมล่าบอส`); }
+      await sleep(300); await closeShop();
+    } catch (e) { logErr('เตรียมเหยื่อบอสล้มเหลว', e); await closeShop(); }
+    finally { busy = false; }
+  }
+
   // orchestrator หลัก — เดินไปล่าแล้วกลับ (ครอบด้วย orchestrating เพื่อหยุดฟาร์มปกติชั่วคราว)
   async function runBossHunt(resumeHome) {
     // ถูกเรียกตอน resume แต่มีงานอื่นยึดอยู่ (เช่น ทดสอบเหยื่อ resume ก่อน) → ล้าง state ทิ้ง (ไม่มีใคร retry ให้ —
@@ -1590,6 +1616,7 @@
         say('👹 ใกล้เวลาบอส — ออกเดินทางไปถ้ำบ่อโบราณ');
         if (isOn('tgOn')) void tgSend(`👹 <b>ออกล่าบอส</b> — จากแมพ ${bossHome} → ถ้ำบ่อโบราณ (จะกลับมาฟาร์มต่อ)`);
         recordBossGraph();
+        await ensureBossBaitStock();   // 👹 v6.134: ซื้อเหยื่อจุดอ่อนก่อนเข้าถ้ำ (ในถ้ำซื้อไม่ได้)
         const reached = await bossTravelTo(BOSS_MAP);
         if (!reached) { say('👹 ไปถ้ำบอสไม่สำเร็จ — กลับบ้าน'); }
         else { bossPhase = 'fight'; saveBossState(); await bossFight(cfg.bossMaxWaitMin); }
