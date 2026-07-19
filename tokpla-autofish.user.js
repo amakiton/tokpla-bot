@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.139
+// @version      6.140
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.139';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.140';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1632,7 +1632,12 @@
   // 👹 v6.112: "ติดอยู่ในถ้ำบอส" โดยไม่ได้กำลังล่า/ไม่มีบอส — ถ้ำบอสตกปกติไม่ได้ → บอทตกไม่ออก → recoveryWatch รีโหลดวนเปล่า
   //   (เกิดเมื่อ bossHunt เดินไปแล้วกลับบ้านไม่สำเร็จ เพราะ WASD ไม่เสถียร) · แก้: เดินออกไปแมพบ้านเอง · เดินไม่ได้ = แจ้ง+หยุดลองสแปม
   //   v6.138: หนีออกเฉพาะตอน "ปิดล่าบอส" — ถ้าเปิดล่าบอสแล้วอยู่ในถ้ำ = ผู้ใช้/บอทตั้งใจมารอตีบอส ห้ามเดินหนีออก
-  const strandedInBossCave = () => !isOn('bossHunt') && bossMapId() === BOSS_MAP && bossPhase === 'idle' && !orchestrating && !busy && !(raidBossState() || {}).present;
+  //   🐛 v6.140: ตัดเงื่อนไข !isOn('bossHunt') ออก — v6.138 กัน escape ทุกกรณีที่เปิดล่าบอส ทำให้ถ้า return จากถ้ำล้มเหลว
+  //     (bossTravelTo คืน false) บอทติดในถ้ำถาวร: ตกปลาไม่ได้ ("ปุ่มตกปลากดไม่ได้" วนรัว) + บอส "ไม่มาในเวลาที่รอ" วนเปล่า
+  //     (ยืนยันจาก log จริง healthcheck: ติด 30+ นาที ฟาร์มศูนย์) · ความจริง: บอทไม่เคย "ตั้งใจ" idle ในถ้ำ —
+  //     ช่วงเดินไป/สู้บอสจริงถูกกันด้วย orchestrating + bossPhase!=='idle' อยู่แล้ว → idle+ในถ้ำ+ไม่มีบอส = ติดเสมอ (แม้เปิดล่าบอส)
+  //     ถ้าบอสโผล่จริง (present) → !present กันไว้ → tick เรียก bossFightHere เข้าตีแทน · escape ยิงเฉพาะตอน "ไม่มีบอส"
+  const strandedInBossCave = () => bossMapId() === BOSS_MAP && bossPhase === 'idle' && !orchestrating && !busy && !(raidBossState() || {}).present;
   async function escapeBossCave() {
     if (orchestrating || busy) return;
     orchestrating = true;
@@ -4577,6 +4582,20 @@ ${esc(reason)}
     lastMythicBtnTxt = txt;
     mythicBtn.textContent = txt;
     mythicBtn.style.background = bg;
+  }
+  // 👹 ปุ่มเริ่ม/หยุดล่าบอส — แยกจากปุ่มบอทตกปลาปกติ (v6.140) · สถานะสด: กำลังเดิน/สู้/รอเวลา/ปิด
+  let bossBtn = null, lastBossBtnTxt = '';
+  function refreshBossBtn() {
+    if (!bossBtn) return;
+    const [txt, bg] = bossPhase !== 'idle'
+      ? [`👹 กำลังล่าบอส (${bossPhase === 'travel' ? 'เดินไปถ้ำ' : bossPhase === 'fight' ? 'สู้บอส' : 'กลับบ้าน'}) — กดหยุด`, '#3e7d24']
+      : isOn('bossHunt')
+        ? ['👹 โหมดล่าบอส เปิดอยู่ · รอเวลาบอส — กดเพื่อหยุด', '#8a5a1e']
+        : ['👹 เริ่มล่าบอส', '#8a3030'];
+    if (txt === lastBossBtnTxt) return;
+    lastBossBtnTxt = txt;
+    bossBtn.textContent = txt;
+    bossBtn.style.background = bg;
   }
   function updateBadge(note) {
     refreshMythicBtn();
