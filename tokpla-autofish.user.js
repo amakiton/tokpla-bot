@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.151
+// @version      6.152
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.151';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.152';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -101,6 +101,11 @@
     npcEssenceOn: false,         // 🧪 ยายแก่น: แลกปลาระดับ >= npcEssenceRarity เป็นแก่นปลา เมื่อมี >= npcEssenceMin ตัว
     npcEssenceRarity: 'rare',
     npcEssenceMin: 10,
+    npcStorageBagPct: 0,         // 🛡️ C: ฝากปลา(เข้าเกณฑ์)เมื่อกระเป๋าเต็มถึง % นี้ (กันบอทขายปลาแพงตอนกระเป๋าเต็ม) · 0=ปิด (ใช้เกณฑ์จำนวนอย่างเดียว)
+    npcOrbOn: false,             // 🪨 A: สุ่มหินสถานะ Orb อัตโนมัติ "ระหว่างไปเมืองประมง" (ใช้แก่น 🧪 · ต้องเปิดยายแก่นด้วยถึงจะมีทริปไปเมือง)
+    npcOrbSlot: 'rod',           // ช่องใส่หิน: rod(เบ็ด) / float(ทุ่น) / both(ทั้งคู่)
+    npcOrbStatus: 'rare',        // สถานะที่อยากได้: rare(โชคปลาแรร์) / bait(เซียนเหยื่อ) / crit(คริติคอล) / boss(ดาเมจบอส)
+    npcOrbReroll: false,         // สุ่มทับหินเดิมเพื่อลุ้นค่าดีกว่า (ปิด=สุ่มเฉพาะช่องว่าง กันทับบัฟดีทิ้ง)
 
     // 🌈 โหมดล่าปลาเทพ (legendary/mythic + ปลาหนัก) — "ชั้นนโยบาย" override ที่จุดอ่าน ไม่เขียนทับค่าผู้ใช้ (ปิด = กลับค่าเดิมทันที)
     mythicHunt: false,           // เปิดโหมดล่าปลาเทพ
@@ -1806,18 +1811,19 @@
   // ===== 🏪 ระบบ NPC เมืองชาวประมง (v6.150) — ลุงคลัง(ฝากของ) + ยายแก่น(แลกแก่นปลา) =====
   //   NPC จริงในเกม: questNpcs · khlang(service 'storage') @≈447,434 · kaen(service 'essence') @≈1048,365 · scene.nearNpcId บอกตัวที่อยู่ใกล้
   //   เดินไปด้วย A* ในตัวเกม (bossGameNavTo/autoWalker) แล้วกลับแมพเดิมฟาร์มต่อ · นับปลาจาก readBag (เปิดกระเป๋าอ่าน rarity จากสีขอบ)
-  const NPC_POS = { khlang: { x: 447, y: 470 }, kaen: { x: 1048, y: 400 } };
+  const NPC_POS = { khlang: { x: 447, y: 470 }, kaen: { x: 1048, y: 400 }, orbsmith: { x: 1123, y: 476 } };
   const rarityRank = (k) => { const i = RARITY.findIndex((r) => r.key === k); return i < 0 ? 99 : i; };
   let lastNpcErrandAt = 0, lastNpcCheckAt = 0;
   // เปิดกระเป๋าอ่าน → นับปลา "ปลดล็อก + ระดับ >= ขั้นต่ำ" ของแต่ละบริการ → ปิด (แพง เลยเรียกแบบ throttle)
   async function npcCountBag() {
-    const res = { storage: 0, essence: 0 };
+    const res = { storage: 0, essence: 0, bagPct: 0 };
     try {
       await ensureMenuOpen();
       const bagBtn = qBtn('กระเป๋า'); if (!bagBtn) return res;
       fireClick(bagBtn);
       if (!(await waitFor(() => readBagCount(), 3000))) { await closeMenu(); return res; }
       await sleep(250);
+      const bc = readBagCount(); if (bc && bc.slots > 0) res.bagPct = bc.count / bc.slots * 100;   // 🛡️ C: ความเต็มกระเป๋า
       const stoMin = rarityRank(cfg.npcStorageRarity), essMin = rarityRank(cfg.npcEssenceRarity);
       for (const c of readBag()) {
         if (c.rarity == null) continue;                       // อ่านสีไม่ออก = ข้าม (กันฝาก/แลกผิดตัว)
@@ -1829,9 +1835,8 @@
     } catch (e) { logErr('npcCountBag', e); }
     return res;
   }
-  // ไปเมืองประมง (A*) แล้วเดินเข้าใกล้ NPC จน scene.nearNpcId ตรง
-  async function npcGoTo(id) {
-    if (!(await bossGameNavTo('fisher_town', 90000))) return false;
+  // เดินเข้าใกล้ NPC ในเมืองประมง (สมมติอยู่ fisher_town แล้ว) จน scene.nearNpcId ตรง
+  async function npcWalkNear(id) {
     const t = NPC_POS[id]; if (!t) return false;
     try { getPhaserScene().autoWalker.navigate({ x: t.x, y: t.y, mapId: 'fisher_town' }); } catch {}
     return !!await waitFor(() => { try { return getPhaserScene()?.nearNpcId === id; } catch { return false; } }, 15000, 300);
@@ -1885,31 +1890,70 @@
     }
     npcCloseDialog(); await sleep(300); return done;
   }
-  async function runNpcErrand(kind) {
+  // 🪨 ช่างหิน (v6.152 · A): สุ่มหินสถานะ Orb — เลือกช่อง(เบ็ด/ทุ่น)+สถานะ+หินส้ม แล้ว "สุ่มหิน!" ถ้าจ่ายแก่นไหว (ปุ่มไม่ disabled)
+  //   กันทับบัฟดี: สุ่มเฉพาะช่องที่ "ยังไม่มีหิน" (เว้นเปิด npcOrbReroll) · ⚠️ result-flow ยังไม่ได้ทดสอบสด (แก่นไม่พอตอนพัฒนา) — log ผลไว้ยืนยันรอบแรก
+  const NPC_ORB_STATUS = { boss: 'ดาเมจบอส', crit: 'คริติคอล', bait: 'เซียนเหยื่อ', rare: 'โชคปลาแรร์' };
+  const NPC_ORB_SLOT = { rod: 'เบ็ดที่ใช้', float: 'ทุ่นที่ใช้' };
+  async function npcDoOrbsmith() {
+    npcDismissCatchPopup(); await sleep(200);
+    const open = [...document.querySelectorAll('button')].find((b) => /สกัดสถานะ/.test(b.textContent || ''));
+    if (!open) { say('🪨 หาปุ่มช่างหินไม่เจอ'); return 0; }
+    fireClick(open);
+    if (!(await waitFor(() => [...document.querySelectorAll('*')].some((e) => /โต๊ะหินสกัด Orb/.test(e.textContent || '')), 4000))) return 0;
+    const statusPat = NPC_ORB_STATUS[cfg.npcOrbStatus] || 'โชคปลาแรร์';
+    const slots = cfg.npcOrbSlot === 'both' ? ['เบ็ดที่ใช้', 'ทุ่นที่ใช้'] : [NPC_ORB_SLOT[cfg.npcOrbSlot] || 'เบ็ดที่ใช้'];
+    let rolled = 0;
+    for (const slotPat of slots) {
+      const slotBtn = [...document.querySelectorAll('button')].find((b) => new RegExp(slotPat).test(b.textContent || '') && npcVisible(b));
+      if (slotBtn) { fireClick(slotBtn); await sleep(400); }
+      const emptySlot = [...document.querySelectorAll('*')].some((e) => /ยังไม่มีหิน/.test([...e.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join('')));
+      if (!emptySlot && !isOn('npcOrbReroll')) { logInfo(`🪨 ช่อง ${slotPat} มีหินแล้ว — ข้าม (เปิด reroll ถ้าอยากลุ้นอัปเกรด)`); continue; }
+      const stat = [...document.querySelectorAll('button')].find((b) => new RegExp(statusPat).test(b.textContent || '') && npcVisible(b)); if (stat) { fireClick(stat); await sleep(300); }
+      const orange = [...document.querySelectorAll('button')].find((b) => /หินส้ม/.test(b.textContent || '') && npcVisible(b)); if (orange) { fireClick(orange); await sleep(300); }
+      const roll = [...document.querySelectorAll('button')].find((b) => /สุ่มหิน/.test(b.textContent || '') && npcVisible(b));
+      if (roll && !roll.disabled) {
+        fireClick(roll); rolled++; await sleep(1300);
+        const conf = [...document.querySelectorAll('button')].find((b) => /ยืนยัน|ใส่หิน|เก็บ|ตกลง|ใช่|รับ/.test(b.textContent || '') && npcVisible(b) && !b.disabled);
+        if (conf) { fireClick(conf); await sleep(700); }
+        logInfo(`🪨 สุ่มหิน "${statusPat}" ช่อง ${slotPat} สำเร็จ`);
+        if (isOn('tgOn')) void tgSend(`🪨 สุ่มหิน ${statusPat} (${slotPat}) แล้ว`);
+      } else { logInfo(`🪨 แก่นไม่พอสุ่มหิน ${statusPat} — ข้าม`); }
+    }
+    npcCloseDialog(); await sleep(300); return rolled;
+  }
+  // 🏪 v6.152 (B): ไปทำธุระเมืองประมง "ครั้งเดียวทำครบ" (แลกแก่น + ฝากของ + สุ่มหิน ตามที่ถึงเกณฑ์/เปิด) แล้วกลับแมพเดิม
+  async function runTownErrands(due) {
     if (orchestrating || busy) return;
     orchestrating = true;
     const home = bossMapId();
     try {
-      say(kind === 'essence' ? '🧪 ไปแลกแก่นที่ยายแก่น (เมืองประมง)' : '🏬 ไปฝากของที่ลุงคลัง (เมืองประมง)');
-      if (!(await npcGoTo(kind === 'essence' ? 'kaen' : 'khlang'))) { say('🏪 เดินไปหา NPC ไม่สำเร็จ'); return; }
-      const n = kind === 'essence' ? await npcDoEssence() : await npcDoStorage();
-      say(kind === 'essence' ? `🧪 แลกแก่นเสร็จ ${n} ตัว — กลับไปฟาร์ม` : `🏬 ฝากของเสร็จ ${n} รายการ — กลับไปฟาร์ม`);
-      if (isOn('tgOn')) void tgSend(kind === 'essence' ? `🧪 แลกแก่น ${n} ตัวเสร็จ` : `🏬 ฝากของ ${n} รายการเสร็จ`);
+      const plan = [due.essence && 'แลกแก่น', due.storage && 'ฝากของ', isOn('npcOrbOn') && 'สุ่มหิน'].filter(Boolean).join(' + ');
+      say(`🏪 ไปทำธุระเมืองประมง: ${plan}`);
+      if (!(await bossGameNavTo('fisher_town', 90000))) { say('🏪 ไปเมืองประมงไม่สำเร็จ'); return; }
+      let es = 0, st = 0, orb = 0;
+      if (due.essence) { if (await npcWalkNear('kaen')) es = await npcDoEssence(); }
+      if (due.storage) { if (await npcWalkNear('khlang')) st = await npcDoStorage(); }
+      if (isOn('npcOrbOn')) { if (await npcWalkNear('orbsmith')) orb = await npcDoOrbsmith(); }
+      say(`🏪 ธุระเสร็จ — แลกแก่น ${es} · ฝาก ${st} · สุ่มหิน ${orb} — กลับไปฟาร์ม`);
+      if (isOn('tgOn')) void tgSend(`🏪 ธุระเมืองประมงเสร็จ: แลกแก่น ${es} · ฝาก ${st} · สุ่มหิน ${orb}`);
       lastNpcErrandAt = now();
       if (home && home !== 'fisher_town') await bossGameNavTo(home, 90000);   // กลับแมพเดิม
-    } catch (e) { logErr('runNpcErrand', e); }
+    } catch (e) { logErr('runTownErrands', e); }
     finally { orchestrating = false; lastCast = now(); pendingCast = 0; }
   }
-  // เช็คถึงเกณฑ์ไปหา NPC ไหม (เรียกจาก idle branch · throttle หนักเพราะเปิดกระเป๋านับ = แพง/หยุดตกชั่วคราว)
+  // เช็คถึงเกณฑ์ไปเมืองประมงไหม (เรียกจาก idle branch · throttle หนักเพราะเปิดกระเป๋านับ = แพง/หยุดตกชั่วคราว)
+  //   B: รวมทริป (ธุระที่ถึงเกณฑ์ทำครบทีเดียว) · C: ฝากเมื่อกระเป๋าเต็มถึง % (กันขายปลาแพง) · A: สุ่มหินพ่วงไปตอนถึงเมือง
   async function npcErrandCheck() {
     if (orchestrating || busy || testRunning || bossPhase !== 'idle' || mythicActive()) return;
-    if (!isOn('npcStorageOn') && !isOn('npcEssenceOn')) return;
+    if (!isOn('npcStorageOn') && !isOn('npcEssenceOn') && !isOn('npcOrbOn')) return;
     if (now() - lastNpcErrandAt < 3 * 60000) return;          // เพิ่งไปมา = พัก 3 นาที
     if (now() - lastNpcCheckAt < 120000) return;              // นับกระเป๋าอย่างมากทุก 2 นาที
     lastNpcCheckAt = now();
     const c = await npcCountBag();
-    if (isOn('npcEssenceOn') && c.essence >= clamp(cfg.npcEssenceMin, 1, 300)) return void runNpcErrand('essence');
-    if (isOn('npcStorageOn') && c.storage >= clamp(cfg.npcStorageMin, 1, 300)) return void runNpcErrand('storage');
+    const essenceDue = isOn('npcEssenceOn') && c.essence >= clamp(cfg.npcEssenceMin, 1, 300);
+    const storageDue = isOn('npcStorageOn') && (c.storage >= clamp(cfg.npcStorageMin, 1, 300)
+      || (cfg.npcStorageBagPct > 0 && c.bagPct >= cfg.npcStorageBagPct && c.storage > 0));   // 🛡️ C: กระเป๋าเต็มถึง% + มีปลาเข้าเกณฑ์
+    if (essenceDue || storageDue) return void runTownErrands({ essence: essenceDue, storage: storageDue });
   }
 
   // 👹 เฝ้าบันทึกสถานะบอส — เรียกทุก ~1 วิ (ทุกโหมด) · log เฉพาะตอน "สถานะเปลี่ยน" (present/dead/phase/ปุ่ม/HP)
@@ -5377,13 +5421,23 @@ ${esc(reason)}
       labeled('เปิด', checkbox('npcStorageOn')),
       labeled('ระดับขึ้นไป', selectInput('npcStorageRarity', RAR_OPTS)),
       labeled('เมื่อมี (ตัว)', numInput('npcStorageMin', 1, 300, 48)),
+      labeled('🛡️ หรือกระเป๋าเต็ม %', numInput('npcStorageBagPct', 0, 100, 48)),
     ));
     panel.appendChild(row(
       '🧪 ยายแก่น — แลกปลาเป็นแก่นปลา',
-      'พอในกระเป๋ามีปลา "ระดับที่เลือกขึ้นไป" ครบจำนวน → บอทเดินไปแลกกับยายแก่นเป็น 🦴 แก่นปลา (วัตถุดิบอัปเกรดออร์บ) แล้วกลับมาฟาร์มต่อ · แนะนำ 💙 หายาก (rare) ขึ้นไป',
+      'พอในกระเป๋ามีปลา "ระดับที่เลือกขึ้นไป" ครบจำนวน → บอทเดินไปแลกกับยายแก่นเป็น 🧪 แก่นปลา (วัตถุดิบสุ่มหินออร์บที่ช่างหิน) แล้วกลับมาฟาร์มต่อ · แนะนำ 💙 หายาก (rare) ขึ้นไป',
       labeled('เปิด', checkbox('npcEssenceOn')),
       labeled('ระดับขึ้นไป', selectInput('npcEssenceRarity', RAR_OPTS)),
       labeled('เมื่อมี (ตัว)', numInput('npcEssenceMin', 1, 300, 48)),
+    ));
+    panel.appendChild(row(
+      '🪨 ช่างหิน — สุ่มหินสถานะ Orb (ใช้แก่น)',
+      'ระหว่างไปเมืองประมง (ต้องเปิดยายแก่นด้วยถึงจะมีทริป) → บอทเอา 🧪 แก่นปลา 50 สุ่ม "หินสถานะ" ใส่เบ็ด/ทุ่น = บัฟตกปลาถาวร · '
+      + 'กันทับบัฟดี: สุ่มเฉพาะช่องว่าง (ปิด reroll ไว้) · ⚠️ ยังไม่ได้ทดสอบสด (ตอนพัฒนาแก่นไม่พอ) — เปิดแล้วดู log รอบแรก',
+      labeled('เปิด', checkbox('npcOrbOn')),
+      labeled('ช่อง', selectInput('npcOrbSlot', [['rod', '🎣 เบ็ด'], ['float', '🛟 ทุ่น'], ['both', 'ทั้งคู่']])),
+      labeled('สถานะ', selectInput('npcOrbStatus', [['rare', 'โชคปลาแรร์'], ['bait', 'เซียนเหยื่อ'], ['crit', 'คริติคอล'], ['boss', 'ดาเมจบอส']])),
+      labeled('สุ่มทับ (reroll)', checkbox('npcOrbReroll')),
     ));
 
     // ---------- 🌈 ล่าปลาเทพ ----------
