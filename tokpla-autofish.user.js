@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.138
+// @version      6.139
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.138';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.139';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1469,6 +1469,8 @@
       if (cur === targetMap) return true;
       recordBossGraph();
       let nextTarget = bossNextHop(cur, targetMap);
+      // v6.139: ไปถ้ำบอสแต่ยังไม่รู้ route → มุ่งไป "village" ก่อน (boss_cave ต่อ village) → ถึง village = เรียน village→boss_cave (passive) แล้วไปต่อ
+      if (!nextTarget && targetMap === BOSS_MAP && cur !== 'village') nextTarget = bossNextHop(cur, 'village');
       const exits = bossMapExits();
       // ไม่รู้ทาง → heuristic: ลอง "หมู่บ้าน" (hub) ก่อน ไม่งั้นสำรวจ exit แรกที่ยังไม่เคยไป
       let exit = nextTarget ? exits.find((e) => e.targetMap === nextTarget) : null;
@@ -1665,16 +1667,27 @@
       say('👹 เจอบอสในถ้ำ — เข้าตี (เกจ→กดแถบแดง + กระโดดหลบ)');
       if (isOn('tgOn')) void tgSend('👹 <b>เจอบอสในถ้ำ</b> — เข้าตีทันที (ไม่ต้องเดินทาง)');
       await bossFight(cfg.bossMaxWaitMin);
+      // 👹 v6.139: หลังตีจบ เดินกลับแมพบ้าน — ฟาร์มต่อ (เช่น sea_dock ที่สถิติปลาเทพดี) + "เรียนรู้เส้นทาง" ระหว่างเดินผ่าน village
+      //   → ครั้งหน้า runBossHunt auto-travel ไป boss_cave ได้เอง (แก้บั๊กบอทไม่รู้ route ต้องเดินเอง) · เดินไม่ได้ = ฟาร์มในถ้ำต่อ
+      if (bossMapId() === BOSS_MAP && bossHome && bossHome !== BOSS_MAP) {
+        bossPhase = 'return'; saveBossState();
+        say(`👹 ตีบอสจบ — เดินกลับ ${bossHome} (เรียนรู้เส้นทางไปด้วย)`);
+        const back = await bossTravelTo(bossHome);
+        say(back ? `👹 กลับถึง ${bossHome} — ฟาร์มต่อ` : `👹 กลับบ้านไม่สำเร็จ (อยู่ ${bossMapId()}) — ฟาร์มที่นี่ก่อน`);
+      }
     } catch (e) { logErr('สู้บอส(ในถ้ำ)ล้มเหลว', e); }
     finally { bossReleaseAll(); bossPhase = 'idle'; clearBossState(); lastBossHuntAt = now(); orchestrating = false; lastCast = now(); pendingCast = 0; }
   }
   // 👹 เฝ้าบันทึกสถานะบอส — เรียกทุก ~1 วิ (ทุกโหมด) · log เฉพาะตอน "สถานะเปลี่ยน" (present/dead/phase/ปุ่ม/HP)
   //   เก็บลง log ring → /report เห็นได้ · ไว้ถอดรหัสกลไกสู้บอส (ตีเอง/บอทตี ก็จับได้)
   //   บันทึกไทม์ไลน์บอสตัวล่าสุดแยกไว้ (bossFightLog) เผื่ออยากดูเป็นชุด
-  let lastBossObs = 0, bossObsPrev = '', bossFightLog = [], bossObsHot = false, bossGaugeDom = '';
+  let lastBossObs = 0, bossObsPrev = '', bossFightLog = [], bossObsHot = false, bossGaugeDom = '', lastGraphMap = '';
   function bossObserve() {
     try {
       const cm = bossMapId(); if (cm && cm !== BOSS_MAP) bossLastMapId = cm;   // v6.117: จำแมพฟาร์มล่าสุด (ไว้เป็นบ้าน)
+      // 👹 v6.139: เรียนรู้กราฟแมพ "passive" — บันทึก exit ของแมพปัจจุบันทุกครั้งที่เปลี่ยนแมพ (จากการเดินปกติ/ผู้ใช้เดินเอง)
+      //   แก้บั๊ก bossTravelTo ไม่รู้ route (เช่น village→boss_cave) — เดิม recordBossGraph เรียกเฉพาะตอน hunt · ตอนนี้เรียนจากทุกการเดิน
+      if (cm && cm !== lastGraphMap) { lastGraphMap = cm; recordBossGraph(); }
       const rb = raidBossState();
       const orb = document.querySelector('button[aria-label="ตีบอส"]');
       const orbOn = !!(orb && !orb.disabled);
