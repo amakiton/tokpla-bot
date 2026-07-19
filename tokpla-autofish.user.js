@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.145
+// @version      6.146
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.145';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.146';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1478,8 +1478,39 @@
     return 'timeout';
   }
 
+  // 🎮 v6.146: ใช้ A* pathfinder "ในตัวเกม" (scene.autoWalker) เดินข้ามแมพอัตโนมัติ — เลี่ยงสิ่งกีดขวาง (สระบัว/แม่น้ำ) + ข้ามแมพเอง
+  //   ทดสอบสด: navigate({x,y,mapId}) เรียกครั้งเดียว เกมเดินยาว sea_dock↔boss_cave ครบ 3 แมพ (~17-28s) เลี่ยงสระ/ข้ามสะพานเนียน 0 ติด
+  //   ⚠️ ต้องมี mapId! (planCurrentLeg: currentMapId()===target.mapId → เดินในแมพ; ไม่งั้นเข้า branch ข้ามแมพหา mapId=undefined = fail)
+  //   เกม pump step() เองใน update loop → ไม่ต้องกดปุ่มเอง · จุดถึงต่อแมพ = โซนตกปลา/สู้ (เดินไปจุดไหนก็ได้ เกมหาเส้นเอง)
+  const BOSS_NAV_TARGET = { boss_cave: { x: 841, y: 445 }, sea_dock: { x: 350, y: 490 }, village: { x: 752, y: 490 }, river_bank: { x: 1467, y: 700 }, fisher_town: { x: 687, y: 770 }, ice_village: { x: 700, y: 500 }, lotus_marsh: { x: 700, y: 500 } };
+  const gameWalker = () => { try { const sc = getPhaserScene(); return sc && sc.autoWalker && typeof sc.autoWalker.navigate === 'function' ? sc.autoWalker : null; } catch { return null; } };
+  async function bossGameNavTo(targetMap, maxMs = 90000) {
+    const aw = gameWalker(); if (!aw) return false;
+    const t = BOSS_NAV_TARGET[targetMap] || { x: 700, y: 500 };
+    const t0 = now(); let lastNav = 0, lastP = null, stillFor = 0;
+    while (enabled && (isOn('bossHunt') || mythicActive()) && now() - t0 < maxMs) {
+      const cur = bossMapId(), p = bossPlayerXY();
+      if (cur === targetMap && p && Math.abs(p.x - t.x) < 70 && Math.abs(p.y - t.y) < 70) { aw.cancel && aw.cancel(); return true; }
+      // นับว่า "นิ่ง" (ไม่ขยับ) กี่รอบ — ถ้านิ่งนานทั้งที่ยังไม่ถึง = สั่ง navigate ใหม่ (เผื่อ NPC/หลุด)
+      if (lastP && p && Math.abs(p.x - lastP.x) < 3 && Math.abs(p.y - lastP.y) < 3) stillFor++; else stillFor = 0;
+      lastP = p;
+      if ((!aw.walking || stillFor >= 6) && now() - lastNav > 2500) {
+        lastNav = now(); stillFor = 0;
+        let ok = false; try { ok = aw.navigate({ x: t.x, y: t.y, mapId: targetMap }); } catch {}
+        if (!ok) { if (bossMapId() === targetMap) return true; return false; }   // หาเส้นไม่ได้ → ให้ fallback ทำต่อ (ยกเว้นถึงแล้ว)
+      }
+      await sleep(400);
+    }
+    return bossMapId() === targetMap;
+  }
   // เดินทางไปแมพเป้าหมาย (ข้ามหลายแมพผ่านกราฟ) — คืน true ถ้าถึง
   async function bossTravelTo(targetMap) {
+    // 🎮 v6.146: ลอง A* ในตัวเกมก่อน (เชื่อถือได้กว่าเดิน WASD สุ่ม + ข้ามแมพเอง) · ไปไม่ถึง = fallback วิธีเดิม (waypoint + wall-slide)
+    if (gameWalker()) {
+      say(`👹 เดินทาง (A* เกม): → ${targetMap}`);
+      if (await bossGameNavTo(targetMap)) return true;
+      say('👹 A* เกมไปไม่ถึง — สลับไปเดินเอง');
+    }
     for (let hop = 0; hop < 10 && enabled && (isOn('bossHunt') || mythicActive()); hop++) {   // v6.132: ล่าปลาเทพใช้ bossTravelTo ด้วย — เดิม bossHunt ปิด = เดินไม่ออกเงียบๆ
       const cur = bossMapId();
       if (!cur) { await sleep(1000); continue; }
