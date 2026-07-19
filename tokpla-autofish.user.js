@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.156
+// @version      6.157
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.156';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.157';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1610,9 +1610,12 @@
       // 💀 v6.149: ตายถูกส่งออกจากถ้ำ (บ่อน้ำหมู่บ้าน · เลือดหมดจากโดน AoE) → รอ respawn ~10 วิ แล้วกลับเข้าถ้ำสู้ต่อ (เดิมหลุดออก = จบเลย เสีย reward)
       if (bossSeen && bossMapId() !== BOSS_MAP) {
         bossReleaseAll(); bossDodging = false; deaths++;
-        say(`💀 ตาย/หลุดจากถ้ำ (ครั้งที่ ${deaths}) — รอเกิดใหม่แล้วกลับเข้าถ้ำสู้ต่อ`);
-        await sleep(10000);   // รอ respawn ที่บ่อหมู่บ้าน
-        if (!(await bossGameNavTo(BOSS_MAP, 60000))) { say('💀 กลับเข้าถ้ำไม่สำเร็จ — เลิกสู้'); break; }
+        // v6.157: หลุดออกจากถ้ำได้ 2 กรณี — ตายจริง (เลือดหมด→respawn ~10วิ) หรือเดินหลบทะลุปากทาง (แก้แล้วด้วย exit-clamp แต่กันเหนียว)
+        //   HP ~0 = ตายจริงต้องรอเกิดใหม่ · HP ยังอยู่ = แค่เดินออก กลับได้เลย (ไม่เสีย 10 วิเปล่า)
+        const hp = bossPlayerHpPct(), died = (hp == null || hp < 8);
+        say(`⚠️ หลุดออกจากถ้ำ (ครั้งที่ ${deaths}${died ? ' · เลือดหมด/ตาย' : ' · เดินหลบออก'}) — กลับเข้าถ้ำสู้ต่อ`);
+        await sleep(died ? 10000 : 800);   // ตาย = รอ respawn · เดินออก = กลับทันที
+        if (!(await bossGameNavTo(BOSS_MAP, 60000))) { say('⚠️ กลับเข้าถ้ำไม่สำเร็จ — เลิกสู้'); break; }
         continue;
       }
       // 🏁 บอสเคยมาแล้วตอนนี้หายไป (ยืนยัน >1.5วิ กันอ่านพลาด) → จบทันที เก็บ reward กลับไปฟาร์ม (ไม่รอครบ maxMin เปล่าๆ)
@@ -1635,6 +1638,17 @@
           const dirs = [];
           if (gx > 6) dirs.push('right'); else if (gx < -6) dirs.push('left');   // dead zone แคบลง (6) = เล็งแม่นขึ้น
           if (gy > 6) dirs.push('down'); else if (gy < -6) dirs.push('up');
+          // 🚪 v6.157: กัน "เดินหลบทะลุปากทางออกถ้ำ" (boss_cave→village @≈836,915) แล้วหลุดออกจากถ้ำกลางสู้ (เข้าใจผิดว่าตาย)
+          //   ต้นเหตุ: หลบ (เข้าเขียว/หนีแดง) ดันตัวไปทางปากทาง → เหยียบพอร์ทัล → เปลี่ยนแมพ · แก้: ใกล้ปากทาง <120px = ตัด "ทิศที่เข้าหาปากทาง" ออก (ยังเดินแนวขนานหลบได้ แต่ไม่ออกถ้ำ)
+          try {
+            for (const ex of (bossMapExits() || [])) {
+              const ecx = ex.x + (ex.w || 0) / 2, ecy = ex.y + (ex.h || 0) / 2, edx = ecx - _sc.player.x, edy = ecy - _sc.player.y;
+              if (Math.hypot(edx, edy) < 120) {
+                let i; if (edx > 10) { if ((i = dirs.indexOf('right')) >= 0) dirs.splice(i, 1); } else if (edx < -10 && (i = dirs.indexOf('left')) >= 0) dirs.splice(i, 1);
+                if (edy > 10) { if ((i = dirs.indexOf('down')) >= 0) dirs.splice(i, 1); } else if (edy < -10 && (i = dirs.indexOf('up')) >= 0) dirs.splice(i, 1);
+              }
+            }
+          } catch {}
           bossMoveDirs(dirs);
           if (!bossDodging) { bossDodging = true; aoeDodges++; logInfo(`🎯 ${green ? 'เข้าวงเขียว' : 'หนีวงแดง'} วง@${Math.round(raid.cx)},${Math.round(raid.cy)} r${Math.round(raid.r)} · ตัว@${Math.round(_sc.player.x)},${Math.round(_sc.player.y)} ระยะ${Math.round(dist)}`); }   // v6.156: log ตำแหน่งวง เก็บข้อมูลออกแบบ recenter
           await sleep(80); continue;   // react ไว กว่าจังหวะตี
