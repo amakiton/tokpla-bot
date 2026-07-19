@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.153
+// @version      6.154
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.153';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.154';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -6354,6 +6354,17 @@ ${esc(reason)}
   setInterval(mountUI, 2000);
   setInterval(maybeHeartbeat, 30000);   // เช็คส่งรายงานสถานะทุก 30 วิ
   setInterval(recoveryWatch, 5000);     // เฝ้าเด้งออก/ค้าง ทุก 5 วิ
+  // 🧹 v6.154: กัน popup ผลตกปลา "ตกต่อ!" ค้างบังจอ (ตอนหยุดบอท/เดินทาง/ทำ NPC — ลูปตกปลาไม่ได้ปิดให้ = บัง input เดิน/คลิก)
+  //   หยุด(!enabled)/orchestrate/busy → ปิดทันที · ระหว่างตกปกติ → ปิดเฉพาะถ้าค้าง >1.5วิ (เผื่อลูปหลักปิดเอง + กันชนการอ่านผลปลา readGameCatchArr)
+  let catchPopupSince = 0;
+  setInterval(() => {
+    try {
+      const cont = [...document.querySelectorAll('button')].find((b) => /^ตกต่อ/.test((b.textContent || '').trim()) && b.offsetParent !== null);
+      if (!cont) { catchPopupSince = 0; return; }
+      if (!catchPopupSince) catchPopupSince = now();
+      if (!enabled || orchestrating || busy || now() - catchPopupSince > 1500) fireClick(cont);
+    } catch {}
+  }, 600);
   setInterval(tgPoll, 4000);            // รับคำสั่งควบคุมผ่าน Telegram ทุก 4 วิ
   setInterval(ensureChatObserver, 3000); // ผูก/ต่อ observer แชทโลก (เมื่อเปิดโหมดบริดจ์)
   setInterval(gameEventWatch, 3000);     // เฝ้าเหตุการณ์เกม (เลเวลอัพ/สภาพอากาศ) -> แจ้ง TG
