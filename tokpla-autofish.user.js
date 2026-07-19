@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.140
+// @version      6.141
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.140';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.141';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4599,6 +4599,7 @@ ${esc(reason)}
   }
   function updateBadge(note) {
     refreshMythicBtn();
+    refreshBossBtn();
     if (!btn) return;
     const text = note ? `🤖 หยุดแล้ว — ${note}` : badgeText();
     if (text === lastBadge) return;   // ตอนพักรอพลัง ฟังก์ชันนี้ถูกเรียกทุกเฟรม
@@ -5088,13 +5089,32 @@ ${esc(reason)}
     // ---------- ⚔️ ระบบตีบอส ----------
     sectionHead('⚔️ ระบบตีบอส (ถ้ำบ่อโบราณ)', false);
 
+    // 👹 ปุ่มเริ่ม/หยุดล่าบอส — แยกจากปุ่มบอทตกปลาปกติ (v6.141) · กด = เปิดบอท+เปิดโหมดล่าบอสเต็มตัว
+    bossBtn = document.createElement('button');
+    bossBtn.style.cssText = 'width:100%;padding:8px;border-radius:8px;border:none;color:#fff;font-weight:900;font-size:12.5px;cursor:pointer;margin:2px 0 6px;';
+    bossBtn.addEventListener('click', () => {
+      if (isOn('bossHunt')) {
+        cfg.bossHunt = false; saveCfg(); syncPanel();
+        if (bossPhase !== 'idle') { bossReleaseAll(); bossPhase = 'idle'; clearBossState(); }   // ยกเลิกการล่าที่ค้างอยู่
+        say('👹 หยุดโหมดล่าบอส — กลับฟาร์มปกติ');
+      } else {
+        cfg.bossHunt = true; sessionOff.delete('bossHunt'); saveCfg(); syncPanel();
+        if (!enabled) toggle();   // ปุ่มนี้ = "เริ่มล่าบอสเต็มตัว" → เปิดบอทให้เลยถ้ายังปิด
+        say('👹 เริ่มล่าบอสเต็มตัว! — ใกล้เวลาบอทจะเดินไปถ้ำ/ตีเอง · ถ้าอยู่ในถ้ำแล้วบอสมา = ตีทันที (เปิดแท็บเกมไว้หน้าสุด)');
+        if (isOn('tgOn')) void tgSend('👹 <b>เริ่มโหมดล่าบอส</b> — บอทจะเดินไปถ้ำ/ตีบอสอัตโนมัติ');
+      }
+      refreshBossBtn();
+    });
+    refreshBossBtn();
+    panel.appendChild(bossBtn);
+
     panel.appendChild(row(
       '👹 ล่า & ตีบอสอัตโนมัติ',
       'ใกล้เวลาบอสเกิด บอทจะ "หยุดฟาร์ม → เดินไปถ้ำบ่อโบราณ → รอ/ตีบอส → กลับแมพเดิมฟาร์มต่อ" อัตโนมัติ · อ่านเวลาจากป้าย HUD "บอสถัดไป" · เดินข้ามแมพเรียนรู้เส้นทางเอง · '
       + 'ตีบอส = เกจวงล้อ (กดตอนเข็มเข้าแถบแดง — ถอดรหัสเกจบอสจริงแล้ว v6.118) + กระโดดหลบตอน "บอสหมุน" · '
       + 'ถ้าคุณเดินเข้าถ้ำเอง/อยู่ในถ้ำอยู่แล้ว พอบอสโผล่บอทจะเข้าตีทันทีไม่ต้องรอ timer (v6.119) · '
       + '⚠️ ตอนบอทเดิน/ตี ต้องเปิดแท็บเกมไว้หน้าสุด (เกมไม่รับปุ่มตอนแท็บไม่โฟกัส — บอทจะยกเลิก+ฟาร์มต่อเองถ้าเดินไม่ได้)',
-      labeled('เปิด', checkbox('bossHunt')),
+      labeled('เปิด', checkbox('bossHunt', refreshBossBtn)),
       labeled('ไปก่อน (นาที)', numInput('bossLeadMin', 1, 60, 48)),
       labeled('รอสูงสุด (นาที)', numInput('bossMaxWaitMin', 1, 30, 48)),
     ));
