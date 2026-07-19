@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.131
+// @version      6.132
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.131';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.132';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1446,7 +1446,7 @@
     const thresh = opts.thresh || 20, maxMs = opts.maxMs || 22000, startMap = bossMapId();
     const t0 = now(); let lastX = null, lastY = null, stuck = 0;
     try {
-      while (enabled && isOn('bossHunt') && now() - t0 < maxMs) {
+      while (enabled && (isOn('bossHunt') || mythicActive()) && now() - t0 < maxMs) {   // v6.132: โหมดล่าปลาเทพยืมระบบเดิน — ห้ามผูกกับสวิตช์ล่าบอส
         if (bossMapId() !== startMap) { bossReleaseAll(); return 'mapchanged'; }
         const p = bossPlayerXY(); if (!p) { bossReleaseAll(); return 'err'; }
         const dx = tx - p.x, dy = ty - p.y;
@@ -1465,7 +1465,7 @@
 
   // เดินทางไปแมพเป้าหมาย (ข้ามหลายแมพผ่านกราฟ) — คืน true ถ้าถึง
   async function bossTravelTo(targetMap) {
-    for (let hop = 0; hop < 10 && enabled && isOn('bossHunt'); hop++) {
+    for (let hop = 0; hop < 10 && enabled && (isOn('bossHunt') || mythicActive()); hop++) {   // v6.132: ล่าปลาเทพใช้ bossTravelTo ด้วย — เดิม bossHunt ปิด = เดินไม่ออกเงียบๆ
       const cur = bossMapId();
       if (!cur) { await sleep(1000); continue; }
       if (cur === targetMap) return true;
@@ -1752,34 +1752,48 @@
     if (mbState) return mbState;
     try { mbState = JSON.parse(W.localStorage.getItem(MYTHIC_BAIT_KEY) || 'null'); } catch {}
     if (!mbState || !mbState.tiers) mbState = { tiers: {}, cur: 0, left: 0, seeded: false };
+    // v6.132: seed ตั้งแต่โหลดครั้งแรก (ก่อนตัวนับสดเริ่มเดิน) — เดิม seed ตอน mbPick ครั้งแรก = "เขียนทับ" ตัวนับสดที่สะสมมาก่อน
+    if (!mbState.seeded) mbSeed(mbState);
     return mbState;
   }
   function mbSave() { if (restoring) return; try { W.localStorage.setItem(MYTHIC_BAIT_KEY, JSON.stringify(mbState)); } catch {} }
   function mbSeed(st) {   // เครดิตประวัติจริงที่มีอยู่ให้ก่อน — ขั้นที่เคยตกเยอะไม่ต้องสำรวจซ้ำ
+    // v6.132: merge แบบ max (ไม่ทับตัวนับสด/skipUntil) · หมายเหตุ: recs นับ "ติดปลา" ไม่ใช่เหวี่ยง แต่อัตราติด ~99% (11090/11199) เพี้ยน <1%
     for (const t of Object.keys(profit.recs || {})) {
       const list = profit.recs[t] || []; if (!list.length) continue;
       const lm = list.filter((r) => MYTHIC_RAR.has(r.rarity));
-      st.tiers[t] = { c: list.length, mn: lm.length, mv: lm.reduce((a, r) => a + (r.price || 0), 0) };
+      const cur = st.tiers[t] || {};
+      st.tiers[t] = {
+        c: Math.max(cur.c || 0, list.length),
+        mn: Math.max(cur.mn || 0, lm.length),
+        mv: Math.max(cur.mv || 0, lm.reduce((a, r) => a + (r.price || 0), 0)),
+        ...(cur.skipUntil ? { skipUntil: cur.skipUntil } : {}),
+      };
     }
     st.seeded = true;
   }
   const mbScore = (s, t) => s && s.c ? s.mv / s.c - (baitUnit(t) - baitUnit(1)) : null;
   function mbPick() {
     const st = mbLoad();
-    if (!st.seeded) mbSeed(st);
     const cands = []; for (let t = 1; t <= (baitCeil || 8); t++) cands.push(t);
-    const under = cands.filter((t) => (st.tiers[t]?.c || 0) < MB_MIN_SAMPLE);
+    // v6.132: ข้ามขั้นที่เพิ่งซื้อไม่ไหว (skipUntil) + ขั้นที่เงินตอนนี้ไม่พอ 1 แพ็ค (กันเดินเข้าร้านเก้อ)
+    //   ใช้ pool เดียวกันทุกสาขา (สำรวจ/ตัวเด่น/สุ่ม) — เดิมกรองแค่สาขาสำรวจ ตัวเด่น/สุ่มยังเลือกขั้นที่ skip ได้ = วนซื้อพลาดซ้ำ
+    const coins = coinsNow();
+    const canTry = (t) => !(st.tiers[t]?.skipUntil > now()) && (coins == null || coins >= baitUnit(t) * PACK_SIZE);
+    const pool = cands.filter(canTry);
+    if (!pool.length) { st.cur = 1; st.left = MB_ROUND; mbSave(); return 1; }   // ซื้อไม่ไหวสักขั้น → ขั้น 1 (ถูกสุด/มีของเดิม)
+    const under = pool.filter((t) => (st.tiers[t]?.c || 0) < MB_MIN_SAMPLE);
     let pick;
     if (under.length) pick = under[0];   // สำรวจขั้นถูกสุดที่ข้อมูลยังไม่พอก่อน
     else {
-      let bestSc = -Infinity; pick = 1;
-      for (const t of cands) {
+      let bestSc = -Infinity; pick = pool[0];
+      for (const t of pool) {
         const s = st.tiers[t], sc = mbScore(s, t);
         if (sc == null) continue;
         if (t > 1 && (s.mn || 0) < MB_MIN_MYTH) continue;   // ขั้นแพงต้องพิสูจน์ด้วยปลาเทพ ≥3 ตัว
         if (sc > bestSc) { bestSc = sc; pick = t; }
       }
-      if (Math.random() < 0.1) { const oth = cands.filter((t) => t !== pick); if (oth.length) pick = oth[randInt(0, oth.length - 1)]; }
+      if (Math.random() < 0.1) { const oth = pool.filter((t) => t !== pick); if (oth.length) pick = oth[randInt(0, oth.length - 1)]; }
     }
     st.cur = pick; st.left = MB_ROUND; mbSave();
     return pick;
@@ -1788,8 +1802,10 @@
   // hook จาก pushCastCost/pushCatch — เก็บทุกโหมด (ข้อมูลคือข้อมูล ความแม่นเกจเท่ากันทุกโหมด bot)
   function mythicBaitOnCast(tier) {
     const st = mbLoad(); const s = (st.tiers[tier] ||= { c: 0, mn: 0, mv: 0 });
-    s.c++; if (st.cur === tier && st.left > 0) st.left--;
-    if (s.c % 20 === 0 || st.left === 0) mbSave();
+    let roundEnded = false;
+    s.c++; if (st.cur === tier && st.left > 0) { st.left--; roundEnded = st.left === 0; }
+    // v6.132: เซฟเฉพาะทุก 20 cast หรือ "จบรอบพอดี" — เดิมเงื่อนไข st.left===0 ค้าง = เขียน localStorage ทุก cast (~500 ครั้ง/ชม.)
+    if (s.c % 20 === 0 || roundEnded) mbSave();
   }
   function mythicBaitOnCatch(tier, rarity, price) {
     if (!MYTHIC_RAR.has(rarity)) return;
@@ -1820,9 +1836,13 @@
     const net = lifeNet();
     if (mythicNetPrev == null) { mythicNetPrev = net; mythicNetAt = now(); return; }   // รอบแรก = ตั้งจุดอ้างอิง
     const hrs = (now() - mythicNetAt) / 3600000;
+    // v6.132: หน้าต่างวัดยาวผิดปกติ (>2 เท่าของรอบเช็ค) = บอทเพิ่งกลับจากพัก/แท็บถูกซ่อน — ตั้งจุดอ้างอิงใหม่ ไม่ตัดสิน
+    //   (wall-clock คร่อมช่วงไม่ได้ตก: จ่ายค่ายาก่อนพักนิดเดียวก็ดูเหมือน "ติดลบ" ทั้งที่ตกจริงกำไร)
+    if (hrs > (clamp(cfg.mythicCheckMin, 5, 120) / 60) * 2) { mythicNetPrev = net; mythicNetAt = now(); return; }
     const rate = hrs > 0 ? Math.round((net - mythicNetPrev) / hrs) : 0;
     mythicNetPrev = net; mythicNetAt = now();
-    if (rate >= 0) {
+    // deadband −300/ชม.: ลบจิ๋วระดับเศษค่าเหยื่อ = noise ไม่ใช่ขาดทุนจริง (เดิม −1 ก็โดน strike)
+    if (rate >= -300) {
       if (mythicStrikes || mythicPotOff) say('🌈 กำไรสุทธิกลับเป็นบวก — ล่าต่อเต็มรูปแบบ');
       mythicStrikes = 0; mythicPotOff = false;
       return;
@@ -1838,10 +1858,16 @@
     }
   }
   // เลือกแมพเป้า: ผู้ใช้ล็อก (mythicMap) หรืออัตโนมัติจากสถิติ — ย้ายเฉพาะเมื่อดีกว่าเดิมชัดเจน (>25%) และรู้ id แล้ว
+  let lastMythicEvalAt = 0;
   function mythicMoveDue() {
     if (now() - lastMythicMoveAt < 30 * 60000) return null;   // ไม่ย้ายถี่กว่า 30 นาที (เสียเวลาเดิน = เสียโอกาสตก)
+    // 🐛 v6.132 perf: พอพ้น cooldown แล้วถ้าคืน null (อยู่แมพดีสุด/ไม่รู้ id) ไม่มีอะไรอัปเดต lastMythicMoveAt
+    //   → mythicMapScores (ไล่ recs ทุกขั้น + sort) โดนเรียกทุก idle tick (150ms) ตลอด → ประเมินแค่ทุก 60 วิ พอ
+    if (now() - lastMythicEvalAt < 60000) return null;
+    lastMythicEvalAt = now();
     let name = null, id = null;
-    if (cfg.mythicMap) { name = cfg.mythicMap; id = mapIdOfName(cfg.mythicMap) || cfg.mythicMap; }
+    // v6.132: ไม่รู้ id = "ไม่เดิน" จริงๆ — เดิม fallback เป็นชื่อไทย → bossTravelTo เดินสำรวจมั่ว 10 hops ทุก 30 นาที
+    if (cfg.mythicMap) { name = cfg.mythicMap; id = mapIdOfName(cfg.mythicMap); }
     else {
       const sc = mythicMapScores();
       if (!sc.length) return null;
@@ -2492,6 +2518,18 @@
       const buy = btnByText('ซื้อเลย!') || btnByText('เหรียญไม่พอ');
       if (!buy || buy.disabled || buy.textContent.includes('เหรียญไม่พอ')) {
         const cost = (want.unit * PACK_SIZE * packs).toLocaleString();
+        // 🌈 v6.132: โหมดล่าปลาเทพ (เหยื่อ auto) ซื้อขั้นที่กำลังสำรวจไม่ไหว → "ข้ามขั้นนี้" (พัก 1 ชม.) แล้วไปสำรวจขั้นถัดไป
+        //   — ไม่ปิด autoBuy ทั้งระบบ (เดิมทำให้ขั้นถูกที่ยังซื้อไหวพลอยซื้อไม่ได้ + วนสลับเหยื่อที่ไม่มีของ = stall)
+        if (mythicActive() && !(parseInt(cfg.mythicBait, 10) > 0)) {
+          const st = mbLoad();
+          if (st.cur === want.tier) {
+            const s = (st.tiers[want.tier] ||= { c: 0, mn: 0, mv: 0 });
+            s.skipUntil = now() + 60 * 60000;
+            st.left = 0; mbSave();
+            say(`🌈 เงินไม่พอสำรวจเหยื่อขั้น ${want.tier} (${cost} 🪙) — ข้ามขั้นนี้ไว้ก่อน ไปขั้นถัดไป (ลองใหม่ใน ~1 ชม.)`);
+            await closeShop(); return;
+          }
+        }
         disableForSession('autoBuy', `เหรียญไม่พอซื้อ ${want.name} ${packs} แพ็ค (${cost} 🪙) — พักระบบซื้อไว้ก่อน`);
         await closeShop(); return;
       }
@@ -2667,7 +2705,9 @@
     // 🌈 v6.129: แยกยา "โหมดล่าปลาเทพ" กับ "ยาหลัก" ขาดจากกัน —
     //   อยู่โหมดล่าปลาเทพ = ใช้ยาตามสวิตช์ของโหมดเท่านั้น (mythicWeight/mythicLuck) · ยาหลัก (potionWeight/Luck) ไม่เกี่ยว
     //   ไม่อยู่โหมด = ใช้ยาหลักตามเดิม (ตัวเรียก gate ด้วย isOn('buyPotion') อยู่แล้ว)
-    const myt = mythicActive() && !mythicPotOff;
+    // 🐛 v6.132: ตอน no-loss gate สั่ง "งดยา" ต้องไม่มียาเลย — เดิม myt=false แล้วตกไปสาขา "ยาหลัก" = ยารั่วกลับมาทั้งที่สั่งงด
+    if (mythicActive() && mythicPotOff) return;
+    const myt = mythicActive();
     //   ยาหลักต้องมี buyPotion เปิดด้วย (self-guard เผื่อถูกเรียกนอก tick) — โหมดล่าปลาเทพยึดสวิตช์โหมดล้วน
     const wWeight = myt ? isOn('mythicWeight') : (isOn('buyPotion') && isOn('potionWeight'));
     const wLuck   = myt ? isOn('mythicLuck')   : (isOn('buyPotion') && isOn('potionLuck'));
@@ -2996,7 +3036,8 @@
   // รอบทำงาน Advisor (เรียกจาก tick ทุก 5 นาที · เว้นตอนทดสอบ) — แนะนำ หรือ ลงมือ ตามโหมด
   function advisorTick(force) {
     // 🌈 โหมดล่าปลาเทพ: advisor พัก — เป้าคนละอย่าง (advisor เพิ่มกำไรเฉลี่ย/ชม. · โหมดล่า tail ปลาเทพ) ปล่อยให้สลับเหยื่อ = ตีกัน
-    if (testRunning || mythicActive()) return;
+    //   v6.132: ต้องล้าง verdict ด้วย — ไม่งั้นคำตัดสินยาเก่าค้างหลายชั่วโมงถูกใช้ gate ยาหลักหลังออกจากโหมด
+    if (testRunning || mythicActive()) { advisorPotionVerdict = null; return; }
     const adv = advisorDecide();
     lastAdvice = adv;
     if (isOn('advisorAuto')) {
@@ -4210,15 +4251,16 @@ ${esc(reason)}
 
         // 🧪 ต่ออายุยาบัฟเมื่อหมด (เช็คทุก 60 วิ · ซื้อเฉพาะตอนรายได้ถึงเกณฑ์คุ้ม/Advisor อนุมัติ)
         // 🌈 v6.129: แยกยาโหมดล่าปลาเทพ/ยาหลักขาดกัน — อยู่โหมด = ยึดสวิตช์โหมด (mythicWeight/Luck) เท่านั้น · ยาหลักต้อง isOn('buyPotion')
-        const mytP = mythicActive() && !mythicPotOff;
-        const potGate = mytP
-          ? (isOn('mythicWeight') || isOn('mythicLuck'))
+        //   v6.132: ตอน mythicPotOff (gate สั่งงดยา) = ไม่มียาเลย — เดิมตกไปสาขายาหลัก ยารั่วกลับมาทั้งที่สั่งงด
+        const mytOn = mythicActive();
+        const potGate = mytOn
+          ? (!mythicPotOff && (isOn('mythicWeight') || isOn('mythicLuck')))
           : (isOn('buyPotion') && (isOn('potionWeight') || isOn('potionLuck')));
         if (potGate && !testRunning && !busy && !pendingCast && !energyResting && now() > potionFailUntil && now() - lastPotionCheck > 60000) {
           lastPotionCheck = now();
           const b = readBuffs();
-          const needW = (mytP ? isOn('mythicWeight') : isOn('potionWeight')) && !b.weight;
-          const needL = (mytP ? isOn('mythicLuck')   : isOn('potionLuck'))   && !b.luck;
+          const needW = (mytOn ? isOn('mythicWeight') : isOn('potionWeight')) && !b.weight;
+          const needL = (mytOn ? isOn('mythicLuck')   : isOn('potionLuck'))   && !b.luck;
           if (needW || needL) {
             void buyPotions();
             return requestAnimationFrame(tick);
@@ -4564,7 +4606,7 @@ ${esc(reason)}
       curMap = scanMap();   // 🗺️ สแกนแมพก่อนเริ่มตก
       const modeLabel = cfg.fishMode === 'gameauto' ? ' (🎮 ให้เกมตกอัตโนมัติ)' : cfg.fishMode === 'off' ? ' (🚫 ไม่ตกปลา)' : '';
       say((curMap ? `🗺️ แมพปัจจุบัน: ${curMap} — เริ่มตกปลา` : '▶️ เริ่มตกปลา (ยังอ่านชื่อแมพไม่ได้)') + modeLabel);
-      if (cfg.tgStart) void tgSend(`▶️ <b>บอทเริ่มทำงาน</b>${curMap ? ` @ ${esc(curMap)}` : ''} — เหยื่อขั้น ${cfg.baitTier} (${BAIT_TIERS[cfg.baitTier - 1]?.name ?? '?'})`);
+      if (cfg.tgStart) { const bt0 = targetBait(); void tgSend(`▶️ <b>บอทเริ่มทำงาน</b>${curMap ? ` @ ${esc(curMap)}` : ''} — เหยื่อขั้น ${bt0} (${BAIT_TIERS[bt0 - 1]?.name ?? '?'})${mythicActive() ? ' · 🌈 โหมดล่าปลาเทพ' : ''}`); }
     }
     paused = false;
     pendingCast = 0;

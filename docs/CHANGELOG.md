@@ -3,6 +3,20 @@
 > **อ่านก่อนแก้บั๊กเสมอ** — กันแก้ซ้ำ/ถอยหลัง · เพิ่มรายการใหม่ไว้บนสุดทุกครั้งที่ bump เวอร์ชัน
 > รูปแบบ: เวอร์ชัน → สิ่งที่เปลี่ยน → เหตุผล/บั๊กต้นเหตุ
 
+## v6.132 — 🔍 Audit v6.122-131 (log สด VPS + ตรวจเอง + agent) — แก้ 9 จุด
+
+**Log สด VPS: 0 warn/error เกจแม่น 100%** — ปัญหาที่เจอเป็นเชิงป้องกัน/ตรรกะ ยังไม่ทันระเบิด:
+1. 🔴 **ยารั่วตอน "งดยา":** mythicPotOff ทำ `myt=false` → ตกไปสาขา "ยาหลัก" → ซื้อยาต่อทั้งที่ gate สั่งงด (ขัดเจตนา v6.129 ตรงๆ) → `mythicActive() && mythicPotOff = ไม่มียาเลย` ทั้ง buyPotions + tick gate
+2. 🔴 **advisorPotionVerdict ค้าง:** advisor พักตอน mythic แต่ไม่ล้าง verdict → คำตัดสินเก่าหลายชม.ถูกใช้ gate ยาหลักหลังออกโหมด → ล้างตอนพัก
+3. 🔴 **ย้ายแมพพังเงียบตอน bossHunt ปิด:** bossWalkTo/bossTravelTo loop ผูก `isOn('bossHunt')` → mythic ยืมเดินไม่ได้ → `|| mythicActive()`
+4. 🔴 **ล็อกแมพที่ไม่รู้ id เดินมั่ว:** fallback `|| cfg.mythicMap` ส่งชื่อไทยเข้า bossTravelTo → สำรวจ exit มั่ว 10 hops ทุก 30 นาที → ตัด fallback (ไม่รู้ id = ไม่เดิน รอเรียนรู้)
+5. 🔴 **perf:** mythicMoveDue พ้น cooldown แล้วคืน null ไม่อัปเดตเวลา → mythicMapScores (ไล่ recs ~3.2k + sort) ทุก 150ms → throttle ประเมินทุก 60 วิ
+6. 🟠 **stall เงินหมดตอนสำรวจขั้นแพง:** เหรียญไม่พอ → เดิม disableForSession('autoBuy') ทั้งระบบ + วนสลับเหยื่อไม่มีของ → โหมด auto: skip ขั้นนั้น 1 ชม. + จบรอบ ไปขั้นถัดไป (ไม่แตะ autoBuy) · mbPick กรอง skipUntil+เงินพอ 1 แพ็ค **ทุกสาขา** (สำรวจ/ตัวเด่น/สุ่ม — เดิมกรองแค่สำรวจ) + fallback ขั้น 1
+7. 🟠 **mbSeed ทับตัวนับสด:** seed ตอน mbPick แรกเขียนทับก้อนสด (cast สะสมหาย+skipUntil หาย) → merge แบบ max + คง skipUntil + seed ตั้งแต่ mbLoad แรก · (recs นับติดปลาไม่ใช่เหวี่ยง — อัตราติด ~99% เพี้ยน <1% รับได้)
+8. 🟠 **gate เพี้ยนตอนพัก:** wall-clock คร่อมช่วงไม่ได้ตก → กลับจากพักโดนตัดสินผิด → หน้าต่าง >2 เท่าของรอบเช็ค = rebase ไม่ตัดสิน + deadband −300/ชม. (เดิม −1 ก็ strike)
+9. 🟡 mbSave ทุก cast ตอน left ค้าง 0 → เซฟเฉพาะจบรอบจริง/ทุก 20 cast · TG "บอทเริ่ม" ใช้ targetBait + ป้าย 🌈
+**เทสต์:** ใหม่ 13/13 + regression เดิม 48/48 (mythic/mbait/potion/status) · node --check ✓
+
 ## v6.131 — 📡 แจ้งเตือน/สถานะสะท้อนโหมดล่าปลาเทพ/ล่าบอส (ดูระยะไกลครบ)
 
 ปิดช่องว่างการดูสถานะระยะไกล 24 ชม. (heartbeat/Telegram ไม่บอกว่ากำลังทำโหมดพิเศษ):
