@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.148
+// @version      6.149
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.148';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.149';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1435,6 +1435,14 @@
     }
   }
   const bossReleaseAll = () => bossHold(null);
+  // 🎯 v6.149: กดหลายทิศพร้อมกัน (เดินทแยง) — ใช้หลบ AoE (เข้าวงเขียว/หนีวงแดง) ต้องขยับเร็วแนวทแยง
+  function bossMoveDirs(dirs) {
+    for (const d of Object.keys(BOSS_DIRK)) {
+      const want = dirs.includes(d), on = heldKeys.has(d);
+      if (want && !on) { const [c, k] = BOSS_DIRK[d]; bossFireKey('keydown', c, k); heldKeys.add(d); }
+      else if (!want && on) { const [c, k] = BOSS_DIRK[d]; bossFireKey('keyup', c, k); heldKeys.delete(d); }
+    }
+  }
   // 🛡️ v6.107: ทดสอบว่า "คุมตัวละครได้จริง" ก่อนออกล่า — ตรวจสดพบว่าบางสภาพ คีย์ลงทะเบียน (wasd.isDown=true)
   //   แต่ตัวไม่ขยับ (เกม/โฟกัสไม่รับ input) → ถ้าปล่อยให้ล่าทั้งที่เดินไม่ได้ = ตัวละครค้าง/เสียเวลา/หลุดจังหวะบอส
   //   เดินซ้าย-ขวาอย่างละสั้นๆ (สมมาตร กันตกบ่อ/ออกนอกเขต) แล้ววัดว่าพิกัดขยับเกิน 3px ไหม
@@ -1580,17 +1588,44 @@
     say('👹 ถึงถ้ำบอสแล้ว — สู้ (เกจ กดแถบแดง) + หลบด้วยกระโดดตอนบอสหมุน');
     if (isOn('tgOn')) void tgSend('👹 <b>ถึงถ้ำบอส</b> — เริ่มตี (เกจ→กดแถบแดง) + กระโดดหลบตอนบอสหมุน');
     let killed = false, hits = 0, gaugePresses = 0, dodges = 0, lastEngage = 0, lastPress = 0;
-    let bossSeen = false, goneAt = 0, lastSpinChk = 0, spinNow = false, lastJump = 0;
+    let bossSeen = false, goneAt = 0, lastSpinChk = 0, spinNow = false, lastJump = 0, bossDodging = false, aoeDodges = 0, deaths = 0;
     while (enabled && isOn('bossHunt') && now() < until) {
       const rb = raidBossState();
       const present = !!(rb && rb.present);
       if (present) { bossSeen = true; goneAt = 0; }
       if (rb && rb.dead) { killed = true; break; }
+      // 💀 v6.149: ตายถูกส่งออกจากถ้ำ (บ่อน้ำหมู่บ้าน · เลือดหมดจากโดน AoE) → รอ respawn ~10 วิ แล้วกลับเข้าถ้ำสู้ต่อ (เดิมหลุดออก = จบเลย เสีย reward)
+      if (bossSeen && bossMapId() !== BOSS_MAP) {
+        bossReleaseAll(); bossDodging = false; deaths++;
+        say(`💀 ตาย/หลุดจากถ้ำ (ครั้งที่ ${deaths}) — รอเกิดใหม่แล้วกลับเข้าถ้ำสู้ต่อ`);
+        await sleep(10000);   // รอ respawn ที่บ่อหมู่บ้าน
+        if (!(await bossGameNavTo(BOSS_MAP, 60000))) { say('💀 กลับเข้าถ้ำไม่สำเร็จ — เลิกสู้'); break; }
+        continue;
+      }
       // 🏁 บอสเคยมาแล้วตอนนี้หายไป (ยืนยัน >1.5วิ กันอ่านพลาด) → จบทันที เก็บ reward กลับไปฟาร์ม (ไม่รอครบ maxMin เปล่าๆ)
       if (bossSeen && !present) {
         if (!goneAt) goneAt = now();
         else if (now() - goneAt > 1500) break;
       }
+      // 🎯 v6.149: หลบ AoE ด้วยการ "เดิน" — scene.raidDodge {mode:'reach'(เขียว→เข้าวง dist<r) | 'flee'(แดง→หนีออก dist>r), cx,cy,r}
+      //   นี่คือปัญหาหลักที่ผู้ใช้บอก: ไม่เข้าวงเขียว/ไม่หนีวงแดง = โดนตี→มึน→ตาย · เดิมบอทแค่กดกระโดด ไม่ขยับตัว
+      //   (deadline เป็น Phaser time เทียบ Date.now ไม่ได้ → เช็คแค่ raidDodge ยังอยู่ + ยังไม่ dodged)
+      const _sc = getPhaserScene(); const raid = _sc && _sc.raidDodge;
+      if (raid && _sc.player && !raid.dodged) {
+        const dx = raid.cx - _sc.player.x, dy = raid.cy - _sc.player.y, dist = Math.hypot(dx, dy);
+        const green = raid.mode === 'reach';                     // reach=เขียว(เข้า) · flee=แดง(หนี)
+        const safe = green ? dist < raid.r * 0.7 : dist > raid.r * 1.3;   // margin กันคาบเส้น
+        if (!safe) {
+          const gx = green ? dx : -dx, gy = green ? dy : -dy;     // เขียว=เข้าหาศูนย์ · แดง=ทิศตรงข้าม
+          const dirs = [];
+          if (gx > 10) dirs.push('right'); else if (gx < -10) dirs.push('left');
+          if (gy > 10) dirs.push('down'); else if (gy < -10) dirs.push('up');
+          bossMoveDirs(dirs);
+          if (!bossDodging) { bossDodging = true; aoeDodges++; logInfo(`🎯 ${green ? 'เข้าวงเขียว' : 'หนีวงแดง'} (ระยะ ${Math.round(dist)}/${Math.round(raid.r)})`); }
+          await sleep(80); continue;   // react ไว กว่าจังหวะตี
+        }
+        if (bossDodging) { bossReleaseAll(); bossDodging = false; }   // ถึงที่ปลอดภัยแล้ว → ปล่อยปุ่ม
+      } else if (bossDodging) { bossReleaseAll(); bossDodging = false; }
       const orb = bossHitOrb();
       // (1) 🦘 หลบ: บอสหมุน → กดกระโดด · v6.117: เช็คเตือน (TreeWalker แพง) ทุก 180ms + กระโดด 1 ครั้ง/สปิน (cooldown 1.2วิ)
       if (now() - lastSpinChk > 180) { lastSpinChk = now(); spinNow = bossSpinWarning(); }
@@ -1620,8 +1655,8 @@
       finally { busy = false; }
     }
     const outcome = killed ? '✅ บอสตาย!' : bossSeen ? '🏁 บอสหมดเวลา/หายไป — เก็บ reward ตามส่วนที่ช่วยตี' : '⌛ บอสไม่มาในเวลาที่รอ';
-    logInfo(`👹 จบสู้บอส: ${outcome} · เริ่มตี ${hits} · กดเกจ ${gaugePresses} · หลบ ${dodges} · HP ${bossPlayerHpPct() != null ? Math.round(bossPlayerHpPct()) + '%' : '?'}`);
-    if (isOn('tgOn')) void tgSend(`👹 <b>จบสู้บอส</b> ${esc(outcome)}\nตี ${hits} · กดเกจ ${gaugePresses} · หลบ ${dodges} ครั้ง · กำลังกลับไปฟาร์ม`);
+    logInfo(`👹 จบสู้บอส: ${outcome} · เริ่มตี ${hits} · กดเกจ ${gaugePresses} · กระโดด ${dodges} · หลบ AoE ${aoeDodges} · ตาย ${deaths} · HP ${bossPlayerHpPct() != null ? Math.round(bossPlayerHpPct()) + '%' : '?'}`);
+    if (isOn('tgOn')) void tgSend(`👹 <b>จบสู้บอส</b> ${esc(outcome)}\nตี ${hits} · กดเกจ ${gaugePresses} · กระโดด ${dodges} · หลบ AoE ${aoeDodges} · ตาย ${deaths} · กำลังกลับไปฟาร์ม`);
     say(`👹 ${outcome}`);
     bossReleaseAll();
     return killed;
