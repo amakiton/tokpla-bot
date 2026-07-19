@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.136
+// @version      6.137
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.136';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.137';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -153,8 +153,6 @@
     advisor: false,              // 🧠 ผู้ช่วยอัจฉริยะ: วิเคราะห์เหยื่อ+ยาทุก 5 นาที แล้ว "แนะนำ" (ไม่ลงมือ)
     advisorAuto: false,          // 🧠🤖 ให้ Advisor ลงมือเอง: สลับขั้นเหยื่อ + คุมจังหวะซื้อยา (ต้องเปิด advisor ด้วย)
     advisorNoTiers: '',          // 🚫 ห้าม Advisor เลือกขั้นเหยื่อเหล่านี้ (คั่นด้วย , เช่น "6,7,8") · ว่าง = เลือกได้ทุกขั้น · ห้ามครบทุกขั้น = ยกเลิกการห้าม (กันบอทค้าง)
-    buyFloat: false,             // 🛟 ซื้อทุ่นขั้นถัดไปอัตโนมัติ (โบนัสน้ำหนักถาวร +3%→+32% = ราคาปลาเพิ่มถาวร)
-    floatReserve: 30000,         // เก็บเหรียญสำรองขั้นต่ำก่อนซื้อทุ่น (กันเงินหมดจนซื้อเหยื่อ/กาแฟไม่ได้)
     autoMail: true,              // ✉️ เปิดจดหมายเก็บของขวัญจากผู้พัฒนาอัตโนมัติ (ฟรี ไม่เก็บ = ค้างเฉยๆ)
     mailEvery: 240,              // เช็คจดหมายทุกกี่นาที
     baitTier: 3,                 // เหยื่อระดับที่ใช้ (ตั้งเอง) — ค่ากลางถูกๆ ที่คุ้ม ไม่ใช่ขั้นแพงที่เปลืองเปล่า
@@ -2860,9 +2858,6 @@
     }
   }
 
-  // ===== 🛟 ซื้อทุ่นอัตโนมัติ — โบนัสน้ำหนัก "ถาวร" (+3%→+32%) = ราคาปลาแพงขึ้นถาวร (สูตรเกม: ราคา +50%×สัดส่วนน้ำหนัก) =====
-  // ทุ่นต้องซื้อไล่ขั้น (ต้องมีขั้นก่อนหน้า) · แท็บ 🛟 โผล่เฉพาะตอนเซิร์ฟเวอร์เปิด flag (เลือกแท็บด้วยชื่อ ไม่ใช่ลำดับ)
-  let floatFailUntil = 0, lastFloatCheck = 0;
   // อ่านเหรียญจาก HUD (tk-chip ที่เป็นตัวเลขล้วน = ชิพเหรียญ) — ไว้กันเงินหมดเกลี้ยงตอนซื้อของแพง
   function coinsNow() {
     for (const c of document.querySelectorAll('[class*="tk-chip"]')) {
@@ -2873,65 +2868,7 @@
     }
     return null;
   }
-  async function buyFloat() {
-    if (busy) return false;
-    busy = true;
-    let ok = false;
-    try {
-      const coins = coinsNow();   // อ่านก่อนเปิดร้าน — ในร้านมี badge ตัวเลข (จำนวนในตะกร้า/สต๊อก) เสี่ยงอ่านผิดชิพ
-      if (!await openShop()) return false;
-      const tab = btnByText('🛟 ทุ่น');
-      if (!tab) { floatFailUntil = now() + 6 * 3600000; await closeShop(); return false; }   // เซิร์ฟเวอร์ยังไม่เปิดระบบทุ่น — เช็คใหม่ใน 6 ชม.
-      fireClick(tab); await sleep(400);
-      // หาแถวทุ่นขั้นถัดไปที่ซื้อได้: มีปุ่มใส่ตะกร้ากดได้ + ไม่ล็อกเลเวล + ยังไม่มี
-      const row = [...document.querySelectorAll('div[class*="tk-inner"]')].find((r) => {
-        const t = r.textContent || '';
-        if (/มีแล้ว|ในตะกร้า/.test(t) || /🔒/.test(t)) return false;
-        return [...r.querySelectorAll('button')].some((b) => /ใส่ตะกร้า/.test(b.textContent) && !b.disabled);
-      });
-      if (!row) { floatFailUntil = now() + 3600000; await closeShop(); return false; }       // ครบทุกขั้นที่ปลดได้แล้ว/ยังล็อกเลเวล — เช็คใหม่ 1 ชม.
-      // เกมล่าสุดไม่มี 🪙 ใน text แล้ว — ราคาคือเลขก่อน "· ปลด" (เช่น "ขนาดปลา +6% 2,000 · ปลด Lv.8")
-      // คง 🪙 ไว้เป็นทางแรกเผื่อเกมเปลี่ยนกลับ · อย่าใช้ Math.max ทั้งแถว (เสี่ยงคว้าเลขเลเวล/โบนัส)
-      const rt = row.textContent || '';
-      const pm = /🪙\s*([\d,]{2,})/.exec(rt) || /([\d,]{3,})\s*·\s*ปลด/.exec(rt);
-      const price = pm ? +pm[1].replace(/,/g, '') : 0;
-      if (price <= 0) {                                                                     // อ่านราคาไม่ได้ = อย่าเสี่ยงซื้อ (reserve คุมไม่ได้)
-        floatFailUntil = now() + 1800000;
-        say('🛟 อ่านราคาทุ่นไม่ได้ — ข้ามรอบนี้'); await closeShop(); return false;
-      }
-      if (coins !== null && coins < price + cfg.floatReserve) {                             // เงินยังไม่พอแบบเหลือสำรอง
-        floatFailUntil = now() + 1800000;
-        say(`🛟 รอเก็บเงินซื้อทุ่น (${price.toLocaleString()} 🪙 + สำรอง ${cfg.floatReserve.toLocaleString()})`);
-        await closeShop(); return false;
-      }
-      const add = [...row.querySelectorAll('button')].find((b) => /ใส่ตะกร้า/.test(b.textContent) && !b.disabled);
-      fireClick(add); await sleep(300);
-      const buy = btnByText('ซื้อเลย!') || btnByText('เหรียญไม่พอ');
-      if (!buy || buy.disabled || /เหรียญไม่พอ/.test(buy.textContent)) { await closeShop(); return false; }
-      fireClick(buy);
-      const done = await waitFor(() => {
-        const t = document.body.innerText;
-        if (t.includes('✅ ซื้อสำเร็จ!')) return 'ok';
-        if (t.includes('❌')) return 'fail';
-        return null;
-      }, 8000);
-      if (done === 'ok') {
-        ok = true;
-        profit.life.floatCost = (profit.life.floatCost || 0) + price;
-        saveProfit(); refreshProfit();
-        say(`🛟 ซื้อทุ่นขั้นใหม่ (−${price.toLocaleString()} 🪙) — โบนัสน้ำหนักถาวรเพิ่มแล้ว!`);
-        if (cfg.tgTrade && isOn('tgOn')) void tgSend(`🛟 <b>อัพเกรดทุ่น</b> (−${price.toLocaleString()} 🪙) — ปลาหนักขึ้น/ขายแพงขึ้นถาวร 📈`);
-      }
-      await sleep(400); await closeShop();
-      return ok;
-    } catch (e) {
-      logErr('ซื้อทุ่นล้มเหลว', e);
-      await closeShop(); return false;
-    } finally {
-      if (!ok && now() > floatFailUntil) floatFailUntil = now() + 1800000;   // กันวนเปิดร้าน (ถ้ายังไม่ได้ตั้ง cooldown เฉพาะทาง)
-      busy = false; pendingCast = 0; lastCast = now();
-    }
-  }
+  // (v6.137 ตัดฟีเจอร์ "🛟 อัพเกรดทุ่นอัตโนมัติ" ออกตามผู้ใช้ — ไม่ซื้อทุ่นอีก · profit.life.floatCost เดิมยังนับในกำไรสุทธิ เพราะเป็นเงินที่จ่ายไปจริง)
 
   // ===== 🧠 Advisor: สมองเลือกเหยื่อ + จัดสรรยา (โหมดเดียว 2 ระดับ: แนะนำ / ลงมือเอง) =====
   // หลักคิด (จากข้อมูลจริง 1,300+ casts): ขั้นเหยื่อแทบไม่เปลี่ยนคุณภาพปลา · ปลาแพง (legendary/mythic)
@@ -4315,13 +4252,6 @@ ${esc(reason)}
           }
         }
 
-        // 🛟 ซื้อทุ่นขั้นถัดไป (เช็คทุก 60 นาที · โบนัสถาวร ยิ่งได้เร็วยิ่งคุ้ม)
-        if (isOn('buyFloat') && !testRunning && !busy && !pendingCast && !energyResting && now() > floatFailUntil && now() - lastFloatCheck > 3600000) {
-          lastFloatCheck = now();
-          void buyFloat();
-          return requestAnimationFrame(tick);
-        }
-
         // ✉️ เก็บจดหมายของขวัญ (ตามรอบที่ตั้ง)
         if (isOn('autoMail') && !busy && !pendingCast && !energyResting && now() - lastMailCheck > cfg.mailEvery * 60000) {
           lastMailCheck = now();
@@ -5227,12 +5157,7 @@ ${esc(reason)}
       labeled('ขั้นที่ใช้ยาได้', textInput('potionBaitTiers', 'เช่น 5,6,7 (ว่าง=ทุกขั้น)', false)),
     ));
 
-    panel.appendChild(row(
-      '🛟 อัพเกรดทุ่นอัตโนมัติ (โบนัสถาวร)',
-      'ทุ่นเพิ่มน้ำหนักปลาถาวร +3%→+32% (= ราคาขายแพงขึ้นถาวรสูงสุด +16%) · จ่ายครั้งเดียวได้ตลอด คุ้มกว่ายาระยะยาว · บอทซื้อขั้นถัดไปเมื่อเงินพอ + เหลือเงินสำรองตามที่ตั้ง · แท็บทุ่นต้องเปิดโดยเซิร์ฟเวอร์ก่อน (ถ้ายังไม่มีบอทจะรอเช็คเอง)',
-      labeled('เปิด', checkbox('buyFloat')),
-      labeled('เงินสำรองขั้นต่ำ', numInput('floatReserve', 0, 99999999, 84)),   // v6.136: ขยายเพดาน 999,999 → ~100M (คนมีเงินเยอะใช้ reserve บล็อกได้จริง)
-    ));
+    // (v6.137 ตัดแถว "🛟 อัพเกรดทุ่นอัตโนมัติ" ออกตามผู้ใช้ — ไม่ใช้ฟีเจอร์ซื้อทุ่นแล้ว)
 
     // ---------- 🔧 ระบบ & กันเด้ง ----------
     sectionHead('🔧 ระบบ & กันเด้ง', false);
