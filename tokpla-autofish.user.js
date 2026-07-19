@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.142
+// @version      6.143
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.142';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.143';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1645,7 +1645,18 @@
   //     (ยืนยันจาก log จริง healthcheck: ติด 30+ นาที ฟาร์มศูนย์) · ความจริง: บอทไม่เคย "ตั้งใจ" idle ในถ้ำ —
   //     ช่วงเดินไป/สู้บอสจริงถูกกันด้วย orchestrating + bossPhase!=='idle' อยู่แล้ว → idle+ในถ้ำ+ไม่มีบอส = ติดเสมอ (แม้เปิดล่าบอส)
   //     ถ้าบอสโผล่จริง (present) → !present กันไว้ → tick เรียก bossFightHere เข้าตีแทน · escape ยิงเฉพาะตอน "ไม่มีบอส"
-  const strandedInBossCave = () => bossMapId() === BOSS_MAP && bossPhase === 'idle' && !orchestrating && !busy && !(raidBossState() || {}).present;
+  //   🐛 v6.143: v6.140 ตัด !bossHunt ทิ้ง → "มารอบอสก่อนบอสโผล่" (เปิดบอทในถ้ำ / เดินมารอเอง) โดนหนีออกทันที!
+  //     แก้ให้ถูกทั้งสองเคส: หนีเฉพาะตอน "ติดจริง" = บอสไม่ได้กำลังจะมา (timer ไกล/อ่านไม่ได้ = return บ้านล้มเหลว บอสรอบหน้าห่างเป็นชั่วโมง)
+  //     ถ้าเปิดล่าบอส + บอสใกล้ (<= รอสูงสุด+ไปก่อน) → รอในถ้ำ (เดี๋ยว bossHuntDue/bossFightHere จัดการ) ไม่หนี
+  const strandedInBossCave = () => {
+    if (bossMapId() !== BOSS_MAP || bossPhase !== 'idle' || orchestrating || busy) return false;
+    if ((raidBossState() || {}).present) return false;   // มีบอส → ไม่หนี (tick เรียก bossFightHere ตีแทน)
+    if (isOn('bossHunt')) {                                // v6.143: รอบอสที่ใกล้จะมา ห้ามหนี
+      if (now() - bossTimerCacheAt > 5000) { bossTimerCacheAt = now(); bossTimerCache = bossTimerMin(); }
+      if (bossTimerCache != null && bossTimerCache <= clamp(cfg.bossMaxWaitMin, 1, 30) + clamp(cfg.bossLeadMin, 1, 60)) return false;
+    }
+    return true;                                           // ติดจริง (idle+ในถ้ำ+ไม่มีบอส+บอสไม่ใกล้) → หนีออกไปฟาร์ม
+  };
   async function escapeBossCave() {
     if (orchestrating || busy) return;
     orchestrating = true;
