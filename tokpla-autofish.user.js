@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.154
+// @version      6.155
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.154';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.155';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1930,12 +1930,15 @@
     orchestrating = true;
     const home = bossMapId();
     try {
-      const plan = [due.essence && 'แลกแก่น', due.storage && 'ฝากของ', isOn('npcOrbOn') && 'สุ่มหิน'].filter(Boolean).join(' + ');
-      say(`🏪 ไปทำธุระเมืองประมง: ${plan}`);
+      // 🔗 B (v6.155): มาเมืองทีเดียว = ทำ "ทุกบริการที่เปิด" เลย (ไม่ต้องรอ threshold แยกของแต่ละอัน) —
+      //   เช่น trip นี้ถูก trigger เพราะแก่นครบ → ฝาก legendary ที่มี + สุ่มหิน ไปเลยในคราวเดียว (แม้ legendary ยังไม่ครบ min)
+      //   npcDo* คืน 0 เองถ้าไม่มีอะไรทำ → เรียกได้ปลอดภัยเมื่อเปิด
+      const plan = [isOn('npcEssenceOn') && 'แลกแก่น', isOn('npcStorageOn') && 'ฝากของ', isOn('npcOrbOn') && 'สุ่มหิน'].filter(Boolean).join(' + ');
+      say(`🏪 ไปทำธุระเมืองประมง (ทีเดียวครบ): ${plan}`);
       if (!(await bossGameNavTo('fisher_town', 90000))) { say('🏪 ไปเมืองประมงไม่สำเร็จ'); return; }
       let es = 0, st = 0, orb = 0;
-      if (due.essence) { if (await npcWalkNear('kaen')) es = await npcDoEssence(); }
-      if (due.storage) { if (await npcWalkNear('khlang')) st = await npcDoStorage(); }
+      if (isOn('npcEssenceOn')) { if (await npcWalkNear('kaen')) es = await npcDoEssence(); }
+      if (isOn('npcStorageOn')) { if (await npcWalkNear('khlang')) st = await npcDoStorage(); }
       if (isOn('npcOrbOn')) { if (await npcWalkNear('orbsmith')) orb = await npcDoOrbsmith(); }
       say(`🏪 ธุระเสร็จ — แลกแก่น ${es} · ฝาก ${st} · สุ่มหิน ${orb} — กลับไปฟาร์ม`);
       if (isOn('tgOn')) void tgSend(`🏪 ธุระเมืองประมงเสร็จ: แลกแก่น ${es} · ฝาก ${st} · สุ่มหิน ${orb}`);
@@ -3690,7 +3693,15 @@
     // ไม่มีการทดสอบในหน่วยความจำ (เพิ่งรีเฟรช) → ลองอ่านความคืบหน้าค้างจาก localStorage
     if (!test || !test.totalRounds) {
       const tp = loadTestProgress();
-      if (!tp) return '🧪 ยังไม่เคยทดสอบ — กด "🔄 เริ่มใหม่ทั้งหมด" หรือ /testbait';
+      if (!tp) {
+        // v6.155: ไม่มีความคืบหน้าค้าง → โชว์ "ผลทดสอบล่าสุด" ถ้ามี (กันเข้าใจผิดว่า "ยังไม่เคยทดสอบ" ทั้งที่ทดสอบจบไปแล้ว/ข้อมูลเข้าสถิติแล้ว)
+        let lr = null; try { lr = JSON.parse(W.localStorage.getItem('tokpla_bot_testresult') || 'null'); } catch {}
+        if (lr && lr.best) {
+          const m = Math.round((Date.now() - (lr.ts || 0)) / 60000), ago = m < 60 ? `${m} นาทีที่แล้ว` : `${Math.round(m / 60)} ชม.ที่แล้ว`;
+          return `🧪 ผลทดสอบล่าสุด${lr.aborted ? ' (หยุดกลางคัน)' : ''}: 🏆 ${lr.best} — ${lr.pf >= 0 ? '+' : ''}${lr.pf} 🪙/ครั้ง · ${lr.N} ครั้ง/รอบ · ${ago}\n✅ ข้อมูลเข้าสถิติจริงแล้ว (บอทใช้ต่อได้) · กด "🔄 เริ่มใหม่ทั้งหมด" เพื่อทดสอบรอบใหม่`;
+        }
+        return '🧪 ยังไม่เคยทดสอบ — กด "🔄 เริ่มใหม่ทั้งหมด" หรือ /testbait';
+      }
       const dN = Object.keys(tp.done || {}).length, tot = tp.total || 0;
       const p = tot ? Math.round(dN / tot * 100) : 0;
       return `🧪 มีทดสอบค้าง (หยุดอยู่) — เสร็จ ${dN}${tot ? '/' + tot : ''} รอบ${tot ? ` · ${p}%` : ''} · ${tp.N || '?'} ครั้ง/รอบ\nกด "▶️ ทำต่อจากเดิม" หรือ /testcont เพื่อไปต่อ`;
@@ -3821,6 +3832,7 @@
     rows.sort((a, b) => b.pfCast - a.pfCast);
     const best = rows[0];
     const lbl = (r) => `${modeName(r.md)} ขั้น ${r.tier} ${r.phase === 'buff' ? '🐋🍀' : ''}`.trim();
+    try { W.localStorage.setItem('tokpla_bot_testresult', JSON.stringify({ best: lbl(best), pf: Math.round(best.pfCast), N: test.N, aborted: !!aborted, ts: Date.now() })); } catch {}   // v6.155: เก็บผลล่าสุดไว้โชว์ในสถานะ (กัน "ยังไม่เคยทดสอบ" หลังเทสต์จบ)
     let msg = `🧪 <b>ผลทดสอบเหยื่อ${aborted ? ' (หยุดกลางคัน)' : ''}</b> · ${test.N} ครั้ง/รอบ\n`;
     msg += `🏆 ดีสุด: <b>${lbl(best)}</b> — ${signed(best.pfCast)} 🪙/ครั้ง\n\nเรียงกำไร/ครั้ง (สุทธิ หักเหยื่อ+ยา):\n`;
     msg += rows.map((r, i) => `${i + 1}. ${lbl(r)} — ${signed(r.pfCast)}/ครั้ง · ขยะ ${r.junkPct.toFixed(0)}% · แรร์+ ${r.rarePct.toFixed(0)}% [${r.casts}]`).join('\n');
@@ -4244,7 +4256,7 @@
 
   function stopBot(reason) {
     enabled = false;
-    if (testRunning) testRunning = false;   // ปิดบอท = หยุดทดสอบด้วย
+    if (testRunning) { saveTestProgress(); testRunning = false; }   // v6.155: ปิดบอท = หยุดทดสอบ + เซฟความคืบหน้าก่อน (กันข้อมูลหาย → "ทำต่อจากเดิม" ได้)
     if (bossPhase !== 'idle') { bossReleaseAll(); bossPhase = 'idle'; clearBossState(); }   // 👹 ปิดบอท = ยกเลิกล่าบอส + ปล่อยปุ่มเดินค้าง
     persistEnabled();   // จำว่าหยุดแล้ว (ไม่ auto-resume หลังรีโหลด เพราะหยุดด้วยเหตุผล)
     pauseUntil = 0;
@@ -4897,7 +4909,7 @@ ${esc(reason)}
 
   function toggle() {
     enabled = !enabled;
-    if (!enabled && testRunning) testRunning = false;   // ปิดบอท = หยุดทดสอบ
+    if (!enabled && testRunning) { saveTestProgress(); testRunning = false; }   // v6.155: ปิดบอท = หยุดทดสอบ + เซฟก่อน (กันข้อมูลหาย)
     if (!enabled && bossPhase !== 'idle') { bossReleaseAll(); bossPhase = 'idle'; clearBossState(); }   // 👹 ปิดบอท = ยกเลิกล่าบอส
     if (enabled) {
       casts = 0; lastCheck = 0; earned = 0; sessionOff.clear();
@@ -6370,8 +6382,8 @@ ${esc(reason)}
   setInterval(gameEventWatch, 3000);     // เฝ้าเหตุการณ์เกม (เลเวลอัพ/สภาพอากาศ) -> แจ้ง TG
   setInterval(() => { if (enabled) persistEnabled(); }, 30000);   // heartbeat: ต่ออายุ "ยังรันอยู่" ทุก 30 วิ (ให้ freshness check ผ่านหลังรีเฟรช)
   // Flush profit + สถานะเปิด ก่อนปิด/รีโหลด (กัน catches ที่ยังไม่ throttle-save หาย + จำสถานะรันล่าสุด)
-  W.addEventListener('beforeunload', () => { try { saveCfg(); saveProfit(); saveModeStats(); persistEnabled(); saveLog(true); } catch {} });
-  W.addEventListener('pagehide', () => { try { saveCfg(); saveProfit(); saveModeStats(); persistEnabled(); saveLog(true); } catch {} });
+  W.addEventListener('beforeunload', () => { try { saveCfg(); saveProfit(); saveModeStats(); persistEnabled(); saveLog(true); saveTestProgress(); } catch {} });   // v6.155: เซฟ test progress ตอนรีเฟรช/ปิด (กันเทสต์หาย)
+  W.addEventListener('pagehide', () => { try { saveCfg(); saveProfit(); saveModeStats(); persistEnabled(); saveLog(true); saveTestProgress(); } catch {} });
   // ดักจับ error/promise reject ที่หลุด → ลง log ring (ไว้ดูย้อนหลังเวลาบอทพังเงียบๆ)
   W.addEventListener('error', (e) => { try { logErr('JS error', e?.error?.stack || e?.message || e); } catch {} });
   W.addEventListener('unhandledrejection', (e) => { try { logErr('Promise reject', e?.reason?.stack || e?.reason); } catch {} });
