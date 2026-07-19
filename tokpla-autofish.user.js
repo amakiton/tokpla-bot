@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.146
+// @version      6.147
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.146';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.147';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4019,11 +4019,16 @@
   // จำสถานะ "เปิดอยู่" + เวลาล่าสุด ลง localStorage — ให้บอทกลับมารันเองหลังเกมรีเฟรช/รีโหลด
   // freshness: ถ้าหน้าถูกปิดไว้นานเกิน (เปิดเกมเองวันหลัง) จะไม่สตาร์ทเอง กันบอทเผลอตกโดยไม่ตั้งใจ
   const ENABLED_KEY = 'tokpla_bot_enabled', ENABLED_AT_KEY = 'tokpla_bot_enabled_at';
-  const RESUME_FRESH_MS = 5 * 60000;   // เพิ่งเปิดอยู่ภายใน 5 นาที = ถือว่ารีเฟรชกลางคัน → รันต่อ
+  const RESUME_FRESH_MS = 12 * 3600000;   // v6.147: 12 ชม. (เดิม 5 นาที สั้นไป — RDP หลุด/browser ค้างนานกว่านั้นแล้วเปิดใหม่ = ไม่ resume) · เป็น fallback ของธง tokpla_bot_resume ที่คุมโดย persistEnabled
   function persistEnabled() {
     try {
       W.localStorage.setItem(ENABLED_KEY, enabled ? '1' : '0');
-      if (enabled) W.localStorage.setItem(ENABLED_AT_KEY, String(Date.now()));   // heartbeat เวลาล่าสุดที่ยังรันอยู่
+      if (enabled) {
+        W.localStorage.setItem(ENABLED_AT_KEY, String(Date.now()));   // heartbeat เวลาล่าสุดที่ยังรันอยู่
+        W.localStorage.setItem('tokpla_bot_resume', '1');             // 🔄 v6.147: ธง "ตั้งใจให้เปิด" — คงไว้ตลอดที่เปิด → reload/เปิดใหม่แบบไหนก็ auto-resume (แม้ browser ค้าง/ปิดนานเช่น RDP หลุด, crash, กด F5 เอง) · ไม่พึ่ง freshness 5 นาทีที่พังถ้าค้างนาน
+      } else {
+        W.localStorage.removeItem('tokpla_bot_resume');              // ปิดเอง (stopBot/กด B) เท่านั้น = ล้างธง → ไม่ auto-resume (เจตนาหยุด)
+      }
     } catch {}
   }
 
@@ -6068,7 +6073,7 @@ ${esc(reason)}
       }
     } catch {}
     if (!resume) return;
-    try { W.localStorage.removeItem('tokpla_bot_resume'); } catch {}   // เคลียร์ flag ครั้งเดียว (คีย์ enabled คงไว้ให้รีเฟรชครั้งถัดไปรันต่อได้อีก)
+    // 🔄 v6.147: ไม่ล้างธงที่นี่แล้ว — persistEnabled คุมธงตามสถานะเปิด/ปิด (ล้างเฉพาะตอนปิดเอง) · ถ้า resume นี้ไม่สำเร็จ (เกมไม่พร้อม) = รอบหน้าลองใหม่
     let tries = 0;
     const iv = setInterval(() => {
       tries++;
