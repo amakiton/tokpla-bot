@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.164
+// @version      6.165
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.164';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.165';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1445,6 +1445,18 @@
     try { const cv = document.querySelector('canvas'); if (cv) cv.dispatchEvent(bossKeyEv(type, c, k)); } catch {}
     try { W.dispatchEvent(bossKeyEv(type, c, k)); } catch {}
   };
+  // ⎋ v6.165: `Esc` = "ปิดหน้าต่างทั้งหมด" (ยืนยันจากตารางคีย์ลัดในเกม) — ปุ่มเดียวล้างทุก modal ที่บังจอ
+  //   แก้ปัญหา "หน้าต่างค้าง" ทั้งคลาสที่เคยไล่แก้ทีละอัน: popup "ตกต่อ", จดหมาย, ร้านค้า, กระเป๋า, สมุดปลา,
+  //   และ story dialog "ฤๅษีเงา" ที่ยึด input ระหว่างเดินทาง (อันตรายที่เคยทำ auto-travel พัง)
+  //   ยิงช่องทางเดียวกับ bossFireKey (document + canvas + window) เพราะเกมฟังที่ document
+  const gameEscape = () => {
+    for (const type of ['keydown', 'keyup']) {
+      const mk = () => new KeyboardEvent(type, { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true });
+      try { document.dispatchEvent(mk()); } catch {}
+      try { const cv = document.querySelector('canvas'); if (cv) cv.dispatchEvent(mk()); } catch {}
+      try { W.dispatchEvent(mk()); } catch {}
+    }
+  };
   function bossHold(dir) {
     for (const d of Object.keys(BOSS_DIRK)) {
       const want = d === dir, on = heldKeys.has(d);
@@ -1511,6 +1523,7 @@
   const BOSS_NAV_TARGET = { boss_cave: { x: 841, y: 445 }, sea_dock: { x: 350, y: 490 }, village: { x: 752, y: 490 }, river_bank: { x: 1467, y: 700 }, fisher_town: { x: 687, y: 770 }, ice_village: { x: 700, y: 500 }, lotus_marsh: { x: 700, y: 500 } };
   const gameWalker = () => { try { const sc = getPhaserScene(); return sc && sc.autoWalker && typeof sc.autoWalker.navigate === 'function' ? sc.autoWalker : null; } catch { return null; } };
   async function bossGameNavTo(targetMap, maxMs = 90000) {
+    gameEscape();   // ⎋ v6.165: story dialog (เช่น "ฤๅษีเงา") ยึด input ระหว่างเดินทาง = ตัวไม่เดิน — ล้างก่อนเสมอ
     const aw = gameWalker(); if (!aw) return false;
     const t = BOSS_NAV_TARGET[targetMap] || { x: 700, y: 500 };
     const t0 = now(); let lastNav = 0, lastP = null, stillFor = 0;
@@ -1602,6 +1615,7 @@
       try { say(`👹 สลับเหยื่อจุดอ่อนขั้น ${cfg.bossBaitTier} (x1.5 ดาเมจ)`); await cycleTo('เลือกเหยื่อ', cfg.bossBaitTier, () => currentBait()?.tier); } catch {}
       finally { busy = false; }
     }
+    gameEscape();   // ⎋ v6.165: ล้าง dialog/หน้าต่างค้างก่อนเริ่มตี (popup ตกปลา/ร้าน/story ฤๅษีเงา บังปุ่มตี+ยึด input)
     if (fz) await bossWalkTo(fz.x, fz.y + 140, { thresh: 40, maxMs: 12000 });   // ยืนขอบบ่อ (ในรัศมี cast · แต่ตี=คลิก orb ไม่ต้องเดินก็ตีได้)
     say('👹 ถึงถ้ำบอสแล้ว — สู้ (เกจ กดแถบแดง) + หลบด้วยกระโดดตอนบอสหมุน');
     if (isOn('tgOn')) void tgSend('👹 <b>ถึงถ้ำบอส</b> — เริ่มตี (เกจ→กดแถบแดง) + กระโดดหลบตอนบอสหมุน');
@@ -1705,9 +1719,13 @@
       if (now() - lastSpinChk > 180) { lastSpinChk = now(); spinNow = bossSpinWarning(); }
       if (spinNow && now() - lastJump > 1200) {
         lastJump = now();
+        // 🦘 v6.165: Space = "กระโดด" คีย์ทางการของเกม (ตอนสู้บอสไม่ได้ตกปลา → Space จึงเป็นกระโดด ไม่ชนกับเกจ)
+        //   ยิงคีย์ตรงเสถียรกว่าไล่หาปุ่มใน DOM · คงปุ่ม/tryJump ไว้เป็นสำรองซ้อน 2 ชั้น
+        bossFireKey('keydown', 'Space', 32); bossFireKey('keyup', 'Space', 32); dodges++;
+        logInfo('🦘 บอสหมุน — กระโดดหลบ (Space)');
         const jump = qBtn('กระโดด');
-        if (jump && !jump.disabled) { fireClick(jump); dodges++; logInfo('🦘 บอสหมุน — กดกระโดดหลบ'); }
-        else { try { getPhaserScene()?.player?.tryJump?.(); dodges++; } catch {} }   // สำรอง: เรียก tryJump ตรง
+        if (jump && !jump.disabled) fireClick(jump);
+        else { try { getPhaserScene()?.player?.tryJump?.(); } catch {} }
         await sleep(300); continue;
       }
       // (2) ⚙️ เกจโผล่ (กำลังตี) → กดตอนเข็มเข้าแถบแดง [a0,a1] (เกจบอส=conic เหมือนตกปลา · readGaugeWheel มี fallback)
@@ -1840,7 +1858,7 @@
       if (mailOpen) {
         const x = [...document.querySelectorAll('button')].find((b) => !isBotUI(b) && b.offsetParent && (/^(✕|×|✖|❌)$/.test(b.textContent.trim()) || /^(ปิด|close)/i.test(b.getAttribute('aria-label') || '')));
         if (x) fireClick(x);
-        for (const t of ['keydown', 'keyup']) document.dispatchEvent(new KeyboardEvent(t, { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+        gameEscape();   // v6.165: ใช้ "ปิดหน้าต่างทั้งหมด" ทางการแทนการยิง Escape เองแบบเดิม
       }
       if (claimed) {
         say(`📬 รับรางวัลบอสจากจดหมาย ${claimed} ใบ`);
@@ -1929,6 +1947,7 @@
   const npcEssTake = (rk, essMin, stoMin) => rk >= essMin && (!isOn('npcStorageOn') || !(stoMin > essMin) || rk < stoMin);
   let lastNpcErrandAt = 0, lastNpcCheckAt = 0;
   // เปิดกระเป๋าอ่าน → นับปลา "ปลดล็อก + ระดับ >= ขั้นต่ำ" ของแต่ละบริการ → ปิด (แพง เลยเรียกแบบ throttle)
+  let lastBagPct = null;   // v6.165: %เต็มกระเป๋าล่าสุด (ให้ npcErrandCheck ยอมแทรกตอนเทสต์เหยื่อได้ถ้าใกล้เต็ม)
   async function npcCountBag() {
     const res = { storage: 0, essence: 0, bagPct: 0 };
     try {
@@ -1937,7 +1956,7 @@
       fireClick(bagBtn);
       if (!(await waitFor(() => readBagCount(), 3000))) { await closeMenu(); return res; }
       await sleep(250);
-      const bc = readBagCount(); if (bc && bc.slots > 0) res.bagPct = bc.count / bc.slots * 100;   // 🛡️ C: ความเต็มกระเป๋า
+      const bc = readBagCount(); if (bc && bc.slots > 0) { res.bagPct = bc.count / bc.slots * 100; lastBagPct = res.bagPct; }   // 🛡️ C: ความเต็มกระเป๋า (v6.165: จำไว้ให้ npcErrandCheck ตัดสินว่า "วิกฤต" ไหม)
       const stoMin = rarityRank(cfg.npcStorageRarity), essMin = rarityRank(cfg.npcEssenceRarity);
       for (const c of readBag()) {
         if (c.rarity == null) continue;                       // อ่านสีไม่ออก = ข้าม (กันฝาก/แลกผิดตัว)
@@ -2045,6 +2064,7 @@
       // 🔗 B (v6.155): มาเมืองทีเดียว = ทำ "ทุกบริการที่เปิด" เลย (ไม่ต้องรอ threshold แยกของแต่ละอัน) —
       //   เช่น trip นี้ถูก trigger เพราะแก่นครบ → ฝาก legendary ที่มี + สุ่มหิน ไปเลยในคราวเดียว (แม้ legendary ยังไม่ครบ min)
       //   npcDo* คืน 0 เองถ้าไม่มีอะไรทำ → เรียกได้ปลอดภัยเมื่อเปิด
+      gameEscape();   // ⎋ v6.165: ล้างหน้าต่างค้างก่อนออกเดินทาง (dialog บังอยู่ = คลิก NPC/เดินไม่ได้)
       const plan = [isOn('npcEssenceOn') && 'แลกแก่น', isOn('npcStorageOn') && 'ฝากของ', isOn('npcOrbOn') && 'สุ่มหิน'].filter(Boolean).join(' + ');
       say(`🏪 ไปทำธุระเมืองประมง (ทีเดียวครบ): ${plan}`);
       if (!(await bossGameNavTo('fisher_town', 90000))) { say('🏪 ไปเมืองประมงไม่สำเร็จ'); return; }
@@ -2062,7 +2082,11 @@
   // เช็คถึงเกณฑ์ไปเมืองประมงไหม (เรียกจาก idle branch · throttle หนักเพราะเปิดกระเป๋านับ = แพง/หยุดตกชั่วคราว)
   //   B: รวมทริป (ธุระที่ถึงเกณฑ์ทำครบทีเดียว) · C: ฝากเมื่อกระเป๋าเต็มถึง % (กันขายปลาแพง) · A: สุ่มหินพ่วงไปตอนถึงเมือง
   async function npcErrandCheck() {
-    if (orchestrating || busy || testRunning || bossPhase !== 'idle' || mythicActive()) return;
+    // 🧪 v6.165: เดิม testRunning บล็อกทริปเมือง "ตลอด" → เทสต์ยาว/ค้าง = rare+ ไม่มีทางระบาย → กระเป๋าเต็ม → บอทหยุด (เจอจริง)
+    //   ตอนนี้: ถ้ากระเป๋าใกล้เต็ม (≥90%) ให้ไประบายได้แม้กำลังเทสต์ — กระเป๋าเต็ม = เทสต์เดินต่อไม่ได้อยู่ดี
+    const bagCrit = bagFullTries > 0 || (lastBagPct != null && lastBagPct >= 90);
+    if (orchestrating || busy || bossPhase !== 'idle' || mythicActive()) return;
+    if (testRunning && !bagCrit) return;
     if (!isOn('npcStorageOn') && !isOn('npcEssenceOn') && !isOn('npcOrbOn')) return;
     if (now() - lastNpcErrandAt < 3 * 60000) return;          // เพิ่งไปมา = พัก 3 นาที
     if (now() - lastNpcCheckAt < 120000) return;              // นับกระเป๋าอย่างมากทุก 2 นาที
@@ -2792,9 +2816,22 @@
   }
 
   // กดปุ่มสลับวนจนกว่าจะได้ค่าที่ต้องการ (เกมสลับได้ทีละขั้น ไม่มีเมนูให้เลือกตรงๆ)
+  // 🔤 v6.165: คีย์ลัดเกม (ตารางในเกม) เป็น "ทางสำรอง" เมื่อปุ่มใน DOM ไม่มี/กดไม่ได้
+  //   V = สลับเหยื่อ (ตอนใกล้น้ำ) · G = สลับเบ็ด — ไม่ต้องพึ่งเมนูกาง/ปุ่มโผล่ = กันพังตอนแผงเมนูถูกย่อ (บั๊ก v6.104)
+  const CYCLE_HOTKEY = { 'เลือกเหยื่อ': ['KeyV', 86], 'เลือกเบ็ด': ['KeyG', 71] };
   async function cycleTo(label, want, read, maxTries = 9) {
     const b = document.querySelector(`button[aria-label="${label}"]`);
-    if (!b || b.disabled) return false;
+    const hk = CYCLE_HOTKEY[label];
+    if (!b || b.disabled) {
+      if (!hk) return false;
+      for (let i = 0; i < maxTries; i++) {
+        if (read() === want) return true;
+        bossFireKey('keydown', hk[0], hk[1]); bossFireKey('keyup', hk[0], hk[1]);
+        await sleep(170);
+      }
+      if (read() === want) { logInfo(`🔤 สลับ "${label}" ด้วยคีย์ลัด (ปุ่มใน DOM ใช้ไม่ได้)`); return true; }
+      return false;
+    }
     for (let i = 0; i < maxTries; i++) {
       if (read() === want) return true;
       fireClick(b);
@@ -4739,7 +4776,16 @@ ${esc(reason)}
             if (!isOn('sell')) {
               stopBot('กระเป๋าเต็ม 🎒 — เปิดระบบขายอัตโนมัติ หรือขายเอง');
             } else if (++bagFullTries > 2) {
-              stopBot('กระเป๋าเต็มแต่ขายไม่ออก — ปลาในกระเป๋าถูกล็อกไว้หมด 🔒');
+              // 🏬 v6.165: ก่อนยอมแพ้ ลองระบายเข้า "คลังลุงคลัง/ยายแก่น" ก่อน — ปลาที่ล็อกไว้ขายไม่ได้ก็จริง แต่ฝาก/แลกได้
+              //   เคสจริงที่ทำบอทตาย: เทสต์เหยื่อรันค้าง → testRunning บล็อก npcErrandCheck ตลอด → rare+ ไม่มีทางออก → เต็ม → หยุด
+              //   (ยิ่งถ้าตั้ง "ล็อก rare+ ไม่ขาย" + ปิดยายแก่น + ฝากเฉพาะ legendary = rare/epic ไม่มีทางระบายเลย)
+              if ((isOn('npcStorageOn') || isOn('npcEssenceOn')) && !orchestrating && !busy) {
+                bagFullTries = 0; lastNpcErrandAt = 0; lastNpcCheckAt = 0;   // ปลดคูลดาวน์ให้ไปเมืองได้ทันที
+                say('🎒 กระเป๋าเต็ม (ปลาล็อกอยู่) — ไประบายเข้าคลัง/แลกแก่นที่เมืองประมงก่อน');
+                void runTownErrands({ storage: true, essence: true });
+              } else {
+                stopBot('กระเป๋าเต็มแต่ขายไม่ออก — ปลาในกระเป๋าถูกล็อกไว้หมด 🔒 (เปิดฝากลุงคลัง/แลกยายแก่น เพื่อให้บอทระบายเองได้)');
+              }
             } else {
               lastCheck = casts;      // ถือว่าเช็ครอบนี้แล้ว
               void runSell(true);
@@ -6414,7 +6460,10 @@ ${esc(reason)}
     // (safeGuard) เกมไม่พร้อม/โหลดค้าง/หน้าไม่ใช่สนามตก นานเกิน 60 วิ → รีโหลด (เร็วกว่ารอ stuck)
     if (enabled && !busy && !orchestrating && !detectGameReady()) {
       if (!notReadySince) notReadySince = now();
-      else if (now() - notReadySince > 60000) { notReadySince = 0; doReload('เกมไม่พร้อม/โหลดค้าง'); }
+      else if (now() - notReadySince > 15000 && now() - notReadySince < 17000) {
+        gameEscape();   // ⎋ v6.165: ลอง "ปิดหน้าต่างทั้งหมด" ก่อน — ส่วนใหญ่ "ไม่พร้อม" คือมี modal บังสนามตก (ถูกกว่ารีโหลด 60 วิ)
+        logInfo('⎋ เกมไม่พร้อม 15 วิ — กด Esc ปิดหน้าต่างที่บังก่อนตัดสินใจรีโหลด');
+      } else if (now() - notReadySince > 60000) { notReadySince = 0; doReload('เกมไม่พร้อม/โหลดค้าง'); }
       return;
     }
     notReadySince = 0;
