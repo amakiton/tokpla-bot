@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.175
+// @version      6.176
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.175';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.176';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1660,7 +1660,12 @@
       finally { busy = false; }
     }
     gameEscape();   // ⎋ v6.165: ล้าง dialog/หน้าต่างค้างก่อนเริ่มตี (popup ตกปลา/ร้าน/story ฤๅษีเงา บังปุ่มตี+ยึด input)
-    if (fz) await bossWalkTo(fz.x, fz.y + 140, { thresh: 40, maxMs: 12000 });   // ยืนขอบบ่อ (ในรัศมี cast · แต่ตี=คลิก orb ไม่ต้องเดินก็ตีได้)
+    // ⚡ v6.176: **ข้ามการเดินไปขอบบ่อถ้าบอสโผล่แล้ว** — การตี = คลิกปุ่ม orb ไม่ต้องยืนใกล้บ่อเลย (คอมเมนต์เดิมก็ระบุไว้)
+    //   เดิมเดินก่อนเสมอ (นานได้ถึง 12 วิ) → บอสโผล่แล้วบอท "ดูเหมือนไม่ทำอะไร" 14 วิ (ผู้ใช้เห็นแล้วต้องกดตีเอง)
+    //   ยังเดินอยู่ในกรณีมารอ "ก่อน" บอสโผล่ (ว่างอยู่แล้ว ไม่เสียโอกาสตี)
+    const bossAlready = !!(raidBossState() || {}).present;
+    if (fz && !bossAlready) await bossWalkTo(fz.x, fz.y + 140, { thresh: 40, maxMs: 12000 });   // ยืนขอบบ่อ (ในรัศมี cast)
+    else if (bossAlready) logInfo('⚡ บอสโผล่แล้ว — ข้ามการเดินไปขอบบ่อ เข้าตีทันที');
     say('👹 ถึงถ้ำบอสแล้ว — สู้ (เกจ กดแถบแดง) + หลบด้วยกระโดดตอนบอสหมุน');
     if (isOn('tgOn')) void tgSend('👹 <b>ถึงถ้ำบอส</b> — เริ่มตี (เกจ→กดแถบแดง) + กระโดดหลบตอนบอสหมุน');
     let killed = false, hits = 0, gaugePresses = 0, dodges = 0, lastEngage = 0, lastPress = 0;
@@ -1943,7 +1948,13 @@
     return claimed;
   }
 
-  let lastBossHuntAt = 0, lastBossEscapeAt = 0, bossEscapeFails = 0, bossLastMapId = '', lastBossHereChk = 0;
+  // 🔴 v6.176 บั๊กร้ายแรงที่ทำให้ "บอสมาแต่บอทไม่ไปล่า" (เจอจากไทม์ไลน์จริง 16:22 รีโหลด → 16:30 พลาดบอส):
+  //   `now()` = performance.now() ซึ่ง **รีเซ็ตเป็น ~0 ทุกครั้งที่รีโหลดหน้า** แต่ตัวจับเวลาพวกนี้เริ่มที่ 0 เช่นกัน
+  //   → เงื่อนไขกันซ้ำแบบ `now() - lastXxxAt < N` จึงเป็นจริงทันทีหลังรีโหลด = **บล็อกฟีเจอร์ไปทั้งช่วง N**
+  //   กรณีบอส: กันล่าซ้ำ 10 นาที → รีโหลดแล้วบอทล่าบอสไม่ได้เลย 10 นาทีแรก (รีโหลดใกล้เวลาบอส = พลาดทั้งรอบ)
+  //   แก้: เริ่มที่ค่าติดลบมากๆ = "ไม่เคยทำมาก่อน" จริงๆ (ใช้กับทุกตัวจับเวลาที่เป็น cooldown)
+  const NEVER = -1e9;
+  let lastBossHuntAt = NEVER, lastBossEscapeAt = NEVER, bossEscapeFails = 0, bossLastMapId = '', lastBossHereChk = 0;
   // 👹 v6.112: "ติดอยู่ในถ้ำบอส" โดยไม่ได้กำลังล่า/ไม่มีบอส — ถ้ำบอสตกปกติไม่ได้ → บอทตกไม่ออก → recoveryWatch รีโหลดวนเปล่า
   //   (เกิดเมื่อ bossHunt เดินไปแล้วกลับบ้านไม่สำเร็จ เพราะ WASD ไม่เสถียร) · แก้: เดินออกไปแมพบ้านเอง · เดินไม่ได้ = แจ้ง+หยุดลองสแปม
   //   v6.138: หนีออกเฉพาะตอน "ปิดล่าบอส" — ถ้าเปิดล่าบอสแล้วอยู่ในถ้ำ = ผู้ใช้/บอทตั้งใจมารอตีบอส ห้ามเดินหนีออก
@@ -2020,7 +2031,7 @@
   // 🧠 v6.153: ยายแก่นแลกเฉพาะช่วง [essenceMin, storageMin) — "ตัวสูงสุดเก็บเข้าคลัง, ตัวกลางทำแก่น" · กันแลก+ฝากทับกัน
   //   ทำงานเมื่อ storage เปิด + ตั้งระดับสูงกว่า essence เท่านั้น (ไม่งั้นไม่ cap = แลกตามช่วงเดิม)
   const npcEssTake = (rk, essMin, stoMin) => rk >= essMin && (!isOn('npcStorageOn') || !(stoMin > essMin) || rk < stoMin);
-  let lastNpcErrandAt = 0, lastNpcCheckAt = 0;
+  let lastNpcErrandAt = NEVER, lastNpcCheckAt = NEVER;   // v6.176: เหตุผลเดียวกัน — เดิมรีโหลดแล้วทริปเมืองถูกบล็อก 3 นาที + นับกระเป๋าถูกบล็อก 2 นาที
   // เปิดกระเป๋าอ่าน → นับปลา "ปลดล็อก + ระดับ >= ขั้นต่ำ" ของแต่ละบริการ → ปิด (แพง เลยเรียกแบบ throttle)
   let lastBagPct = null;   // v6.165: %เต็มกระเป๋าล่าสุด (ให้ npcErrandCheck ยอมแทรกตอนเทสต์เหยื่อได้ถ้าใกล้เต็ม)
   async function npcCountBag() {
