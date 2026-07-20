@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.174
+// @version      6.175
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.174';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.175';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1683,7 +1683,13 @@
     // 🧭 v6.162: recenter — ยืน "กึ่งกลางวง AoE" ให้การหลบครั้งถัดไปวิ่งสั้นสุด (ข้อมูลไฟต์จริง: วงโผล่ x∈{671,946,1011} y≈744
     //   ยืนสุดปลายเคยต้องวิ่ง 399px) · seed จุดกลางจากข้อมูลจริง 1 จุด + เก็บวงใหม่ทุกครั้ง = ปรับตัวเองถ้า pattern เปลี่ยน
     const aoeSamples = [[841, 744]]; let lastRecenter = 0, recenters = 0;
-    while (enabled && isOn('bossHunt') && now() < until) {
+    // 🛡️ v6.175: เดิมเงื่อนไขลูปมี isOn('bossHunt') → **ปิดโหมดล่าบอสกลางไฟต์ = ทิ้งบอสทันที**
+    //   เจอสด 16:30:14: เข้าตีตอน 16:30:00 แล้วโดนตัดจบใน 14 วิ ("กดเกจ 0") ทั้งที่บอสยืนอยู่ตรงหน้า
+    //   ซ้ำร้าย พอเปิดโหมดใหม่ ขา "เข้าถ้ำ" ชนกับขา "กลับบ้าน" → แมพเด้ง ถ้ำ↔บ่อตกปลา 6 รอบ โดนตีฟรีจน HP เหลือ 16%
+    //   ใหม่: ถ้า "เห็นบอสแล้ว" ให้ตีต่อจนจบไฟต์ (บอสตาย/หาย/หมดเวลา) แล้วค่อยเคารพการปิดโหมด
+    //         ปิดโหมดตอนยัง "ไม่เห็นบอส" (ยังรออยู่) = ออกได้ทันทีตามเจตนาผู้ใช้
+    while (enabled && now() < until) {
+      if (!isOn('bossHunt') && !bossSeen) break;
       const rb = raidBossState();
       const present = !!(rb && rb.present);
       if (present) { bossSeen = true; goneAt = 0; }
@@ -2233,6 +2239,9 @@
   let bossTimerCache = null, bossTimerCacheAt = 0;
   function bossHuntDue() {
     if (!isOn('bossHunt') || orchestrating || busy || bossPhase !== 'idle') return false;
+    // 🛡️ v6.175: กัน "ออกล่ารอบใหม่ทับขากลับบ้านที่ยังเดินไม่ถึง" — ต้นเหตุแมพเด้ง ถ้ำ↔บ่อตกปลา 6 รอบ (HP ร่วงเหลือ 16%)
+    //   เพิ่งจบไฟต์/เพิ่งเดินกลับ ให้พัก 45 วิ ก่อนพิจารณาล่าใหม่ (บอสรอบถัดไปห่างเป็นชั่วโมงอยู่แล้ว ไม่เสียโอกาส)
+    if (now() - lastBossHuntAt < 45000) return false;
     if (now() - lastBossHuntAt < 10 * 60000) return false;   // กันล่าซ้ำถี่ (บอสห่างเป็นชั่วโมง)
     if (now() - bossTimerCacheAt > 5000) { bossTimerCacheAt = now(); bossTimerCache = bossTimerMin(); }
     const min = bossTimerCache;
