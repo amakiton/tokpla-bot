@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.182
+// @version      6.183
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.182';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.183';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3978,9 +3978,24 @@
     return !buffActive();
   }
   // สลับไปเหยื่อขั้นนี้จาก "ที่มีในกระเป๋า" ก่อน (ไม่ซื้อ) — ใช้ cycleTo ตรงๆ (ไม่ผ่าน ensureGear ที่มี side-effect เปลี่ยน cfg.baitTier)
+  // 🎣 v6.183 (แก้ต้นตอของบั๊กเงินหาย v6.182): เกมสลับเหยื่อได้ "เฉพาะตอนอยู่ใกล้น้ำ"
+  //   ถ้าบอทยืนไกลบ่อ → สลับล้มเหลวเงียบๆ → ระบบทดสอบเข้าใจว่า "ไม่มีเหยื่อขั้นนี้" → ซื้อซ้ำ (และรอบทดสอบถูกข้าม)
+  //   ก่อนสลับจึงต้องยืนยันว่า "ตกปลาได้" (ปุ่มตกปลากดได้ = อยู่ในระยะบ่อ) · ถ้าไม่ได้ ให้เดินไปโซนตกปลาก่อน
+  async function ensureNearWater(maxMs = 15000) {
+    const ok = () => { const b = qBtn('ตกปลา (F)'); return !!b && !b.disabled; };
+    if (ok()) return true;
+    const fz = bossFishingZone();
+    if (fz) {
+      logInfo('🎣 ยืนไกลบ่อ — เดินเข้าโซนตกปลาก่อนสลับเหยื่อ');
+      try { getPhaserScene().autoWalker.navigate({ x: fz.x, y: fz.y + 120, mapId: bossMapId() }); } catch {}
+      return !!await waitFor(ok, maxMs, 400);
+    }
+    return ok();
+  }
   async function equipTestBait(tier) {
     if (currentBait()?.tier === tier) return currentBait();
     await waitFor(() => !busy && !orchestrating, 15000);
+    if (!(await ensureNearWater())) logWarn('🎣 เดินเข้าใกล้บ่อไม่สำเร็จ — การสลับเหยื่ออาจล้มเหลว (จะไม่ซื้อซ้ำ: มีเกราะสต๊อกกันไว้)');
     busy = true;
     try { await cycleTo('เลือกเหยื่อ', tier, () => currentBait()?.tier); }
     finally { busy = false; lastCast = now(); }
