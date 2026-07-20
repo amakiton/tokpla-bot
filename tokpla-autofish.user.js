@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.186
+// @version      6.187
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.186';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.187';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1662,7 +1662,8 @@
       try {
         say('👹 สลับไปเบ็ดสำหรับตีบอส');
         // v6.185: ล้มเหลว = คืนชิ้นเดิมให้แล้ว (ดู switchRodTo) · บอกชัดว่ากำลังตีด้วยเบ็ดอะไร ผู้ใช้จะได้ตัดสินใจทัน
-        if (!(await switchRodTo(cfg.bossRodId))) say('⚠️ ใช้เบ็ดชิ้นเดิมตีบอสแทน (เบ็ดบอสที่ตั้งไว้หาไม่เจอ — ตั้งใหม่ในแผงบอท)');
+        // v6.187: ส่ง cfgKey ไปด้วย → ถ้าไล่ครบคลังแล้วไม่มีจริง switchRodTo จะล้างค่าให้เอง (ไม่กดเก้อทุกไฟต์)
+        if (!(await switchRodTo(cfg.bossRodId, 'bossRodId'))) say('⚠️ ใช้เบ็ดชิ้นเดิมตีบอสแทน (เบ็ดบอสที่ตั้งไว้หาไม่เจอ)');
       } catch {}
       finally { busy = false; }
     } else if (!cfg.bossRodId) {
@@ -1833,7 +1834,8 @@
     const backRod = cfg.farmRodId || prevRodId;
     if (backRod && currentRodId() !== backRod) {
       busy = true;
-      try { say('🎣 สลับกลับเบ็ดสำหรับฟาร์ม'); await switchRodTo(backRod); } catch {}
+      // ล้างค่าอัตโนมัติเฉพาะ "เบ็ดฟาร์มที่ตั้งไว้" — prevRodId เป็นค่าชั่วคราวของไฟต์นี้ ไม่ใช่ค่าที่ผู้ใช้ตั้ง
+      try { say('🎣 สลับกลับเบ็ดสำหรับฟาร์ม'); await switchRodTo(backRod, backRod === cfg.farmRodId ? 'farmRodId' : ''); } catch {}
       finally { busy = false; }
     }
     const outcome = killed ? '✅ บอสตาย!' : bossSeen ? '🏁 บอสหมดเวลา/หายไป — เก็บ reward ตามส่วนที่ช่วยตี' : '⌛ บอสไม่มาในเวลาที่รอ';
@@ -3019,28 +3021,46 @@
   //   เคสจริง 19:27: เบ็ดบอสที่บันทึกไว้หายจากคลัง (รหัสชิ้นเปลี่ยนตอนตีหิน/อัปเกรด) → วน 15 ครั้งไม่เจอ
   //   → ตีบอสด้วยเบ็ดผิดชิ้นทั้งไฟต์ จนผู้ใช้ต้องเข้าไปเลือกเองกลางถ้ำ
   //   ใหม่: จำชิ้นเดิมไว้ก่อนวน · หาไม่เจอ = **วนกลับไปชิ้นเดิมให้ครบ** แล้วเตือน TG ให้ตั้งใหม่
-  async function switchRodTo(id, maxTries = 15) {
+  // 🔁 v6.187: G เป็น "วงกลม" — พอวนกลับมาชิ้นเดิม = เห็นทั้งคลังแล้ว ตอบได้เด็ดขาดว่าไม่มี
+  //   (พิสูจน์สด: คลัง tier 8 มี 2 ชิ้น · ลำดับกด = 353bc→353bc→7ecb→353bc = วนครบใน 3 กด)
+  //   เดิมกดตายตัว 15 ครั้ง = ช้ากว่าจำเป็น 5 เท่า และยัง "เดา" ว่าไม่มี · ตอนนี้ *รู้* ว่าไม่มี
+  //   → ล้างค่าที่ตายแล้วทิ้งเอง (cfgKey) ไม่ต้องเสียเวลากดซ้ำทุกไฟต์ตลอดไป
+  //   ⚠️ ข้อจำกัดที่ต้องรู้: G สลับได้เฉพาะเบ็ด "tier เดียวกัน" — เบ็ดคนละ tier หาไม่เจอด้วยวิธีนี้
+  async function switchRodTo(id, cfgKey = '') {
     if (!id) return false;
     const before = currentRodId();
     if (before === id) return true;
-    for (let i = 0; i < maxTries; i++) {
+    const MAX = 24;                        // กันหลุดถ้าอ่าน rod id ไม่นิ่ง (คลังจริงเล็กกว่านี้มาก)
+    const seen = new Set(before ? [before] : []);
+    let full = false;                      // วนครบวง = เห็นทั้งคลังแล้ว
+    for (let i = 0; i < MAX; i++) {
       gameHotkey('KeyG', 71);
       await sleep(320);
-      if (currentRodId() === id) { logInfo(`🎣 สลับเบ็ดสำเร็จ (กด G ${i + 1} ครั้ง)`); return true; }
+      const r = currentRodId();
+      if (r === id) { logInfo(`🎣 สลับเบ็ดสำเร็จ (กด G ${i + 1} ครั้ง)`); return true; }
+      if (r && r === before && i > 0) { full = true; break; }   // i>0: กดแรกบางทีไม่ขยับ (โฟกัส/จังหวะเกม)
+      if (r) seen.add(r);
     }
-    // กู้คืนชิ้นเดิม — ห้ามปล่อยให้ค้างที่เบ็ดที่ไม่ได้ตั้งใจ
-    let restored = false;
-    if (before) {
-      for (let i = 0; i < maxTries; i++) {
-        if (currentRodId() === before) { restored = true; break; }
+    // กู้คืนชิ้นเดิม — ห้ามปล่อยให้ค้างที่เบ็ดที่ไม่ได้ตั้งใจ (บทเรียน v6.185)
+    let restored = currentRodId() === before;
+    if (!restored && before) {
+      for (let i = 0; i < MAX && !restored; i++) {
         gameHotkey('KeyG', 71);
         await sleep(320);
+        restored = currentRodId() === before;
       }
-      if (currentRodId() === before) restored = true;
     }
-    const msg = `🎣 หาเบ็ดชิ้นที่ตั้งไว้ไม่เจอ (วน ${maxTries} ครั้ง) — ${restored ? 'คืนเบ็ดชิ้นเดิมแล้ว' : '⚠️ คืนชิ้นเดิมไม่สำเร็จ'} · รหัสชิ้นเปลี่ยนได้เมื่ออัปเกรด/ตีหิน → ใส่เบ็ดที่ต้องการแล้วกด "จำ" ใหม่ในแผงบอท`;
+    const rods = [...seen].map((x) => x.slice(0, 8)).join(', ') || '(อ่านไม่ได้)';
+    let msg;
+    if (full && cfgKey) {
+      // รู้แน่ชัดว่าไม่มีในคลัง → ล้างทิ้ง ไม่ต้องกด G เก้อทุกไฟต์
+      cfg[cfgKey] = ''; saveCfg(); syncPanel?.();
+      msg = `🎣 เบ็ดที่จำไว้ (${id.slice(0, 8)}) ไม่มีในคลังแล้ว — ไล่ครบทั้งคลัง ${seen.size} ชิ้น: ${rods} · ล้างค่าให้แล้ว บอทจะใช้เบ็ดที่ใส่อยู่แทน (รหัสชิ้นเปลี่ยนเมื่ออัปเกรด/ตีหิน · อยากตั้งใหม่ = ใส่เบ็ดแล้วกด "จำ" ในแผงบอท) · หมายเหตุ: G สลับได้เฉพาะเบ็ด tier เดียวกัน`;
+    } else {
+      msg = `🎣 หาเบ็ดที่จำไว้ (${id.slice(0, 8)}) ไม่เจอ — เห็น ${seen.size} ชิ้น: ${rods} · ${restored ? 'คืนเบ็ดชิ้นเดิมแล้ว' : '⚠️ คืนชิ้นเดิมไม่สำเร็จ'}`;
+    }
     logWarn(msg);
-    if (isOn('tgOn') && isOn('tgWarn')) void tgSend(`⚠️ <b>สลับเบ็ดไม่สำเร็จ</b>\n${esc(msg)}`);
+    if (isOn('tgOn') && isOn('tgWarn')) void tgSend(`⚠️ <b>สลับเบ็ด</b>\n${esc(msg)}`);
     return false;
   }
 
