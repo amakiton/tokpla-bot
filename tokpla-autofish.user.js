@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.168
+// @version      6.169
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.168';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.169';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1384,6 +1384,7 @@
   //       (วัดสด: 2:20 → 1:30 ใน 51 วิ = ลด 1 หน่วย/วินาที · ไม่ใช่ H:MM)
   //   v6.103 รู้จักแต่รูปแบบแรก → พอเหลือ < 1 ชม. (ซึ่งเป็นช่วงที่ bossLeadMin ต้องใช้เสมอ!) คืน null
   //   → bossHuntDue() เป็นเท็จตลอด = ระบบล่าบอสไม่เคยทำงานเลย
+  let bossNowLabelSeen = false;   // v6.169: กัน log ซ้ำทุก 5 วิ ตอนป้าย "ถึงรอบบอสแล้ว" ค้างอยู่
   function bossTimerMin() {
     try {
       const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
@@ -1394,7 +1395,12 @@
         // 🐯 v6.164: เกมอัปเดต UI — พอถึงเวลาบอส ป้ายเปลี่ยนเป็น "ถึงรอบบอสแล้ว!" (ไม่มีคำว่า "บอสถัดไป")
         //   บั๊กร้ายแรง: gate /บอสถัดไป/ ด้านล่างข้ามป้ายนี้ → คืน null → bossHuntDue() เป็นเท็จตลอด = "บอสมาแล้วแต่บอทไม่ไปล่า"
         //   (เจอสด: บอทเปิดอยู่ตอนป้ายขึ้น "ถึงรอบบอสแล้ว!" แต่ไม่ออกเดินทางเลย) · คืน 0 = ถึงเวลาแล้ว
-        if (t.length < 60 && /ถึงรอบบอส|บอสมาแล้ว/.test(t)) return 0;
+        if (t.length < 60 && /ถึงรอบบอส|บอสมาแล้ว/.test(t)) {
+          // v6.169: log ครั้งเดียวต่อรอบ — ยืนยันว่า fix v6.164 ทำงานจริง (ก่อนหน้านี้ป้ายนี้ถูกข้าม = ไม่ล่าบอส)
+          if (!bossNowLabelSeen) { bossNowLabelSeen = true; logInfo(`🐯 เจอป้าย "${t.trim()}" → ถือว่าถึงเวลาบอสแล้ว (บอทจะออกล่า)`); }
+          return 0;
+        }
+        bossNowLabelSeen = false;
         if (!/บอสถัดไป/.test(t)) continue;
         // รูปแบบ ≥ 1 ชม.
         const rel = /อีก\s*(?:(\d+)\s*ชม\.?)?\s*(?:(\d+)\s*นาที)?/.exec(t);
@@ -1638,7 +1644,7 @@
     };
     // 🧭 v6.162: recenter — ยืน "กึ่งกลางวง AoE" ให้การหลบครั้งถัดไปวิ่งสั้นสุด (ข้อมูลไฟต์จริง: วงโผล่ x∈{671,946,1011} y≈744
     //   ยืนสุดปลายเคยต้องวิ่ง 399px) · seed จุดกลางจากข้อมูลจริง 1 จุด + เก็บวงใหม่ทุกครั้ง = ปรับตัวเองถ้า pattern เปลี่ยน
-    const aoeSamples = [[841, 744]]; let lastRecenter = 0;
+    const aoeSamples = [[841, 744]]; let lastRecenter = 0, recenters = 0;
     while (enabled && isOn('bossHunt') && now() < until) {
       const rb = raidBossState();
       const present = !!(rb && rb.present);
@@ -1712,7 +1718,13 @@
       //   ให้การหลบครั้งถัดไปวิ่ง ≤~75px (แทน 245-399px จากสุดปลาย) = แทบไม่เสียจังหวะตี · ตีระหว่างเดินได้ (v6.161 คนละ channel)
       if (!raid && present && now() - lastRecenter > 4000 && _sc && _sc.player) {
         const mx = aoeSamples.reduce((s, a) => s + a[0], 0) / aoeSamples.length, my = aoeSamples.reduce((s, a) => s + a[1], 0) / aoeSamples.length;
-        if (Math.hypot(mx - _sc.player.x, my - _sc.player.y) > 60) { lastRecenter = now(); try { _sc.autoWalker.navigate({ x: Math.round(mx), y: Math.round(my), mapId: BOSS_MAP }); } catch {} }
+        const dHome = Math.hypot(mx - _sc.player.x, my - _sc.player.y);
+        if (dHome > 60) {
+          lastRecenter = now(); recenters++;
+          try { _sc.autoWalker.navigate({ x: Math.round(mx), y: Math.round(my), mapId: BOSS_MAP }); } catch {}
+          // v6.169: log ครั้งแรกของไฟต์ — ยืนยัน recenter ทำงาน + เห็นจุดกลางที่คำนวณได้จริง (เดิมเงียบสนิท วัดผลไม่ได้)
+          if (recenters === 1) logInfo(`🧭 recenter → กลางสนาม @${Math.round(mx)},${Math.round(my)} (จาก ${aoeSamples.length} วง) · ตัวห่าง ${Math.round(dHome)}px`);
+        }
       }
       const orb = bossHitOrb();
       // (1) 🦘 หลบ: บอสหมุน → กดกระโดด · v6.117: เช็คเตือน (TreeWalker แพง) ทุก 180ms + กระโดด 1 ครั้ง/สปิน (cooldown 1.2วิ)
@@ -1747,8 +1759,12 @@
       finally { busy = false; }
     }
     const outcome = killed ? '✅ บอสตาย!' : bossSeen ? '🏁 บอสหมดเวลา/หายไป — เก็บ reward ตามส่วนที่ช่วยตี' : '⌛ บอสไม่มาในเวลาที่รอ';
-    logInfo(`👹 จบสู้บอส: ${outcome} · เริ่มตี ${hits} · กดเกจ ${gaugePresses} · กระโดด ${dodges} · หลบ AoE ${aoeDodges} · ตาย ${deaths} · HP ${bossPlayerHpPct() != null ? Math.round(bossPlayerHpPct()) + '%' : '?'}`);
-    if (isOn('tgOn')) void tgSend(`👹 <b>จบสู้บอส</b> ${esc(outcome)}\nตี ${hits} · กดเกจ ${gaugePresses} · กระโดด ${dodges} · หลบ AoE ${aoeDodges} · ตาย ${deaths} · กำลังกลับไปฟาร์ม`);
+    // v6.169: เพิ่มตัวเลขวัดผลของใหม่ — recenter (v6.162) · ความเร็วเข็มที่วัดได้ (เกจอัจฉริยะ v6.162) · จุดกลางวง AoE ที่เรียนรู้
+    //   เดิมสรุปไม่มีตัวเลขพวกนี้เลย = อัปเกรดแล้ววัดไม่ได้ว่าดีขึ้นจริงไหม
+    const aoeMid = aoeSamples.length > 1 ? ` · กลางวง ${Math.round(aoeSamples.reduce((s, a) => s + a[0], 0) / aoeSamples.length)},${Math.round(aoeSamples.reduce((s, a) => s + a[1], 0) / aoeSamples.length)}` : '';
+    const stat = `เริ่มตี ${hits} · กดเกจ ${gaugePresses} · กระโดด ${dodges} · หลบ AoE ${aoeDodges} · recenter ${recenters} · เข็ม ${Math.round(Math.abs(gVel))}°/s · ตาย ${deaths} · HP ${bossPlayerHpPct() != null ? Math.round(bossPlayerHpPct()) + '%' : '?'}`;
+    logInfo(`👹 จบสู้บอส: ${outcome} · ${stat}${aoeMid}`);
+    if (isOn('tgOn')) void tgSend(`👹 <b>จบสู้บอส</b> ${esc(outcome)}\n${esc(stat)}\nกำลังกลับไปฟาร์ม`);
     say(`👹 ${outcome}`);
     bossReleaseAll();
     return killed;
@@ -4807,6 +4823,8 @@ ${esc(reason)}
               if ((isOn('npcStorageOn') || isOn('npcEssenceOn')) && !orchestrating && !busy) {
                 bagFullTries = 0; lastNpcErrandAt = 0; lastNpcCheckAt = 0;   // ปลดคูลดาวน์ให้ไปเมืองได้ทันที
                 say('🎒 กระเป๋าเต็ม (ปลาล็อกอยู่) — ไประบายเข้าคลัง/แลกแก่นที่เมืองประมงก่อน');
+                // v6.169: เหตุการณ์ระดับ "เกือบหยุดบอท" ต้องแจ้ง TG (เดิมเงียบ — ผู้ใช้ไม่รู้ว่าเกือบตาย)
+                if (isOn('tgOn') && isOn('tgWarn')) void tgSend('⚠️ <b>กระเป๋าเต็ม + ปลาถูกล็อกขายไม่ได้</b> — บอทกำลังไประบายเข้าคลังลุงคลัง/ยายแก่นเอง · ถ้าเกิดบ่อย ให้เช็คว่า "ระดับที่ฝาก/แลก" ครอบคลุมระดับที่ล็อกไม่ขายหรือยัง');
                 void runTownErrands({ storage: true, essence: true });
               } else {
                 stopBot('กระเป๋าเต็มแต่ขายไม่ออก — ปลาในกระเป๋าถูกล็อกไว้หมด 🔒 (เปิดฝากลุงคลัง/แลกยายแก่น เพื่อให้บอทระบายเองได้)');
