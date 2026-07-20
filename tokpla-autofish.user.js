@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.163
+// @version      6.164
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.163';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.164';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1389,7 +1389,12 @@
       const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
       let n;
       while ((n = tw.nextNode())) {
+        if (n.parentElement && n.parentElement.closest('[data-tkbot]')) continue;   // กฎเหล็ก #7: ข้าม UI บอทเอง (log/แผงบอทมีคำว่า "บอส" เพียบ = false positive)
         const t = n.textContent || '';
+        // 🐯 v6.164: เกมอัปเดต UI — พอถึงเวลาบอส ป้ายเปลี่ยนเป็น "ถึงรอบบอสแล้ว!" (ไม่มีคำว่า "บอสถัดไป")
+        //   บั๊กร้ายแรง: gate /บอสถัดไป/ ด้านล่างข้ามป้ายนี้ → คืน null → bossHuntDue() เป็นเท็จตลอด = "บอสมาแล้วแต่บอทไม่ไปล่า"
+        //   (เจอสด: บอทเปิดอยู่ตอนป้ายขึ้น "ถึงรอบบอสแล้ว!" แต่ไม่ออกเดินทางเลย) · คืน 0 = ถึงเวลาแล้ว
+        if (t.length < 60 && /ถึงรอบบอส|บอสมาแล้ว/.test(t)) return 0;
         if (!/บอสถัดไป/.test(t)) continue;
         // รูปแบบ ≥ 1 ชม.
         const rel = /อีก\s*(?:(\d+)\s*ชม\.?)?\s*(?:(\d+)\s*นาที)?/.exec(t);
@@ -1876,7 +1881,7 @@
         bossEscapeFails++;
         lastBossEscapeAt = now() + (bossEscapeFails >= 2 ? 300000 : 0);   // ล้มเหลว 2 ครั้ง → เว้น 5 นาที กันสแปม
         if (bossEscapeFails === 2) {
-          say('⚠️ ติดในถ้ำบอส เดินออกเองไม่ได้ (แท็บไม่โฟกัส/เกมไม่รับปุ่ม?) — เปิดแท็บเกมไว้หน้าสุด แล้วเดินออกเอง หรือกด B ปิด/เปิดบอท');
+          say('⚠️ ติดในถ้ำบอส เดินออกเองไม่ได้ (แท็บไม่โฟกัส/เกมไม่รับปุ่ม?) — เปิดแท็บเกมไว้หน้าสุด แล้วเดินออกเอง หรือกด Alt+B ปิด/เปิดบอท');
           if (isOn('tgOn') && isOn('tgWarn')) void tgSend('⚠️ <b>บอทติดในถ้ำบอส</b> — เดินออกไม่ได้ (ต้องเปิดแท็บเกมไว้หน้าสุด) · เดินออกเอง หรือ /off แล้ว /on');
         }
         return;
@@ -3826,7 +3831,7 @@
     if (testRunning) { say('🧪 กำลังทดสอบอยู่แล้ว'); return; }
     if (!enabled) { say('🧪 เปิดบอทให้อัตโนมัติเพื่อเริ่มทดสอบ'); toggle(); }   // ยังไม่เปิด → เปิดให้เลย
     paused = false; pauseUntil = 0;                                            // เผื่อพักอยู่ — ปลุกให้ตกได้
-    if (!enabled) { say('เปิดบอทไม่สำเร็จ — กด B เองแล้วลองใหม่'); return; }
+    if (!enabled) { say('เปิดบอทไม่สำเร็จ — กด Alt+B เองแล้วลองใหม่'); return; }
     const prev = resume ? loadTestProgress() : null;
     if (prev && Date.now() - (prev.ts || 0) > 24 * 3600000) say('⚠️ ความคืบหน้าเดิมเก่ามาก (>24 ชม.) — แนะนำ "เริ่มใหม่ทั้งหมด" ถ้าสภาพเกมเปลี่ยน (เลเวล/แมพ/อุปกรณ์)');
     if (!resume) clearTestProgress();
@@ -3915,7 +3920,7 @@
   // จบทดสอบครบแล้วทำอะไรต่อ (ตาม cfg.testDoneAction)
   function applyTestDoneAction() {
     const act = cfg.testDoneAction || 'stop';
-    if (act === 'stop') { stopBot('🧪 ทดสอบเหยื่อครบทุกรอบแล้ว — หยุดบอทตามที่ตั้งไว้ (กด B เปิดใหม่เพื่อฟาร์มต่อ)'); return; }
+    if (act === 'stop') { stopBot('🧪 ทดสอบเหยื่อครบทุกรอบแล้ว — หยุดบอทตามที่ตั้งไว้ (Alt+B เปิดใหม่เพื่อฟาร์มต่อ)'); return; }
     // ตกต่อ: ตั้งโหมดตกตามที่เลือก แล้วปล่อยให้ tick ทำงานปกติ
     cfg.fishMode = act; saveCfg(); syncPanel?.(); updateBadge?.();
     if (act !== 'gameauto' && gameAutoRunning()) stopGameAuto();   // เลิกใช้ auto เกมถ้าไม่ได้เลือกโหมดนั้น
@@ -4946,7 +4951,7 @@ ${esc(reason)}
   // ================= UI =================
 
   function badgeText() {
-    if (!enabled) return '🤖 บอท: ปิด (กด B)';
+    if (!enabled) return '🤖 บอท: ปิด (Alt+B)';
     if (paused) return `⏸ พักชั่วคราว — ตกไปแล้ว ${casts} (กด ⏸ หรือ /resume)`;
     if (pauseUntil > now()) {
       const sec = Math.ceil((pauseUntil - now()) / 1000);
@@ -6498,10 +6503,15 @@ ${esc(reason)}
   W.addEventListener('unhandledrejection', (e) => { try { logErr('Promise reject', e?.reason?.stack || e?.reason); } catch {} });
   autoResumeAfterReload();
 
+  // ⌨️ v6.164: เกมอัปเดต UI แล้ว "ยึด" ปุ่มลัดเปล่าไปหมด — B=กระเป๋า · P=ร้านค้า · C=ตัวละคร · Q=เควส · R=อันดับ · F=ตกปลา
+  //   เดิมบอทใช้ B/P เปล่า → กด 1 ที "เปิด/ปิดบอท + กระเป๋าเด้ง" พร้อมกัน (เกมฟังที่ document, บอทที่ window — คนกดจริงโดนทั้งคู่)
+  //   แก้: บอทเปลี่ยนเป็น Alt+B / Alt+P และ "คืนปุ่มเปล่าให้เกม" (ไม่มี Alt = ไม่ทำอะไร) · กันชนถาวรแม้เกมเพิ่มปุ่มลัดอีก
   W.addEventListener('keydown', (e) => {
-    if (e.repeat || (e.code !== 'KeyB' && e.code !== 'KeyP')) return;
+    if (e.repeat || !e.altKey || e.ctrlKey || e.metaKey) return;   // ต้องกด Alt ร่วมเท่านั้น
+    if (e.code !== 'KeyB' && e.code !== 'KeyP') return;
     const t = document.activeElement;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    e.preventDefault();   // กันเบราว์เซอร์/เกมเอา Alt+B ไปใช้ต่อ
     if (e.code === 'KeyB') toggle(); else togglePause();
   });
 
