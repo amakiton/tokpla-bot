@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.184
+// @version      6.185
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.184';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.185';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1658,8 +1658,14 @@
     const prevRodId = currentRodId();
     if (cfg.bossRodId && prevRodId && prevRodId !== cfg.bossRodId) {
       busy = true;
-      try { say('👹 สลับไปเบ็ดสำหรับตีบอส'); await switchRodTo(cfg.bossRodId); } catch {}
+      try {
+        say('👹 สลับไปเบ็ดสำหรับตีบอส');
+        // v6.185: ล้มเหลว = คืนชิ้นเดิมให้แล้ว (ดู switchRodTo) · บอกชัดว่ากำลังตีด้วยเบ็ดอะไร ผู้ใช้จะได้ตัดสินใจทัน
+        if (!(await switchRodTo(cfg.bossRodId))) say('⚠️ ใช้เบ็ดชิ้นเดิมตีบอสแทน (เบ็ดบอสที่ตั้งไว้หาไม่เจอ — ตั้งใหม่ในแผงบอท)');
+      } catch {}
       finally { busy = false; }
+    } else if (!cfg.bossRodId) {
+      logInfo('👹 ไม่ได้ตั้งเบ็ดบอส — ใช้เบ็ดที่ใส่อยู่ตีบอส');
     }
     let prevBaitTier = null;
     if (cfg.bossBaitTier > 0 && currentBait() && currentBait().tier !== cfg.bossBaitTier) {
@@ -3008,15 +3014,32 @@
   //   วิธีสลับ: กดคีย์ลัด G (สลับเบ็ด — จากตารางคีย์ลัดในเกม) วนไปเรื่อยๆ แล้วอ่าน UUID จนตรงเป้า
   //   → ไม่ต้องพึ่งโครง DOM ของหน้าจออุปกรณ์เลย (เปิด UI ตอนบอทกำลังเหวี่ยงไม่ได้อยู่แล้ว)
   const currentRodId = () => { try { return W.localStorage.getItem('tokpla_rod_instance') || ''; } catch { return ''; } };
+  // 🛡️ v6.185 (ผู้ใช้เจอสด): เดิมถ้าวนหาไม่เจอ จะ **ทิ้งเบ็ดไว้ที่ชิ้นสุ่มๆ ที่วนไปเจอ** = แย่กว่าไม่สลับเลย
+  //   เคสจริง 19:27: เบ็ดบอสที่บันทึกไว้หายจากคลัง (รหัสชิ้นเปลี่ยนตอนตีหิน/อัปเกรด) → วน 15 ครั้งไม่เจอ
+  //   → ตีบอสด้วยเบ็ดผิดชิ้นทั้งไฟต์ จนผู้ใช้ต้องเข้าไปเลือกเองกลางถ้ำ
+  //   ใหม่: จำชิ้นเดิมไว้ก่อนวน · หาไม่เจอ = **วนกลับไปชิ้นเดิมให้ครบ** แล้วเตือน TG ให้ตั้งใหม่
   async function switchRodTo(id, maxTries = 15) {
     if (!id) return false;
-    if (currentRodId() === id) return true;
+    const before = currentRodId();
+    if (before === id) return true;
     for (let i = 0; i < maxTries; i++) {
       gameHotkey('KeyG', 71);
       await sleep(320);
       if (currentRodId() === id) { logInfo(`🎣 สลับเบ็ดสำเร็จ (กด G ${i + 1} ครั้ง)`); return true; }
     }
-    logWarn(`🎣 สลับเบ็ดไม่สำเร็จ — วนครบ ${maxTries} ครั้งแล้วยังไม่เจอชิ้นที่ตั้งไว้ (เบ็ดอาจถูกขาย/เปลี่ยน — ตั้งใหม่ได้ในแผงบอท)`);
+    // กู้คืนชิ้นเดิม — ห้ามปล่อยให้ค้างที่เบ็ดที่ไม่ได้ตั้งใจ
+    let restored = false;
+    if (before) {
+      for (let i = 0; i < maxTries; i++) {
+        if (currentRodId() === before) { restored = true; break; }
+        gameHotkey('KeyG', 71);
+        await sleep(320);
+      }
+      if (currentRodId() === before) restored = true;
+    }
+    const msg = `🎣 หาเบ็ดชิ้นที่ตั้งไว้ไม่เจอ (วน ${maxTries} ครั้ง) — ${restored ? 'คืนเบ็ดชิ้นเดิมแล้ว' : '⚠️ คืนชิ้นเดิมไม่สำเร็จ'} · รหัสชิ้นเปลี่ยนได้เมื่ออัปเกรด/ตีหิน → ใส่เบ็ดที่ต้องการแล้วกด "จำ" ใหม่ในแผงบอท`;
+    logWarn(msg);
+    if (isOn('tgOn') && isOn('tgWarn')) void tgSend(`⚠️ <b>สลับเบ็ดไม่สำเร็จ</b>\n${esc(msg)}`);
     return false;
   }
 
