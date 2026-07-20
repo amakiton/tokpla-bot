@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.176
+// @version      6.177
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.176';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.177';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1882,7 +1882,7 @@
         if (!await bossCanControl()) {
           say('⚠️ ยกเลิกล่าบอส — เดินตัวละครไม่ได้ตอนนี้ (แท็บไม่โฟกัส/เกมไม่รับปุ่ม?) ฟาร์มต่อที่เดิม');
           if (isOn('tgOn') && isOn('tgWarn')) void tgSend('⚠️ <b>ยกเลิกล่าบอส</b> — บอทเดินตัวละครไม่ได้ (ต้องเปิดแท็บเกมไว้หน้าสุด) · ฟาร์มต่อปกติ');
-          bossReleaseAll(); bossPhase = 'idle'; clearBossState(); lastBossHuntAt = now(); orchestrating = false; return;
+          bossReleaseAll(); bossPhase = 'idle'; clearBossState(); stampBossHunt(); orchestrating = false; return;
         }
       }
       if (!resumeHome) {
@@ -1905,7 +1905,7 @@
       say(back ? `👹 กลับถึง ${bossHome} — ฟาร์มต่อ` : `👹 กลับบ้านไม่สำเร็จ (อยู่ ${bossMapId()}) — ฟาร์มที่นี่ไปก่อน`);
       if (isOn('tgOn')) void tgSend(back ? `🎣 กลับมาฟาร์มต่อที่ ${bossHome}` : `⚠️ กลับแมพเดิมไม่สำเร็จ — อยู่ ${bossMapId()}`);
     } catch (e) { logErr('ล่าบอสล้มเหลว', e); }
-    finally { bossReleaseAll(); bossPhase = 'idle'; clearBossState(); lastBossHuntAt = now(); orchestrating = false; lastCast = now(); pendingCast = 0; resumeTestAfterBoss(); }
+    finally { bossReleaseAll(); bossPhase = 'idle'; clearBossState(); orchestrating = false; lastCast = now(); pendingCast = 0; stampBossHunt(); resumeTestAfterBoss(); }
   }
 
   // 📬 v6.158: รับรางวัลบอสจากจดหมายอัตโนมัติ — บอสตายจะเด้ง dialog "รางวัลส่งเข้าจดหมายแล้ว" (ปุ่ม "📬 เปิดจดหมาย")
@@ -1955,6 +1955,14 @@
   //   แก้: เริ่มที่ค่าติดลบมากๆ = "ไม่เคยทำมาก่อน" จริงๆ (ใช้กับทุกตัวจับเวลาที่เป็น cooldown)
   const NEVER = -1e9;
   let lastBossHuntAt = NEVER, lastBossEscapeAt = NEVER, bossEscapeFails = 0, bossLastMapId = '', lastBossHereChk = 0;
+  // 🕐 v6.177: persist cooldown ล่าบอสด้วย "เวลาจริง" (Date.now) — v6.176 แก้ฝั่ง "รีโหลดแล้วโดนบล็อก" แต่เหลือฝั่งกลับกัน:
+  //   รีโหลดหลังเพิ่งล่าเสร็จ → cooldown หาย → ถ้าป้าย "ถึงรอบบอส" ยังค้าง (รอบบอสยังเปิด) บอทจะวิ่งไปหาบอสที่ตายแล้วซ้ำ
+  //   แปลง epoch → ฐาน performance.now(): lastAt = now() - (เวลาจริงที่ผ่านไป) → เงื่อนไข now()-lastAt ทำงานถูกข้ามรีโหลด
+  try {
+    const t = +W.localStorage.getItem('tokpla_boss_lasthunt') || 0;
+    if (t && Date.now() - t < 10 * 60000) lastBossHuntAt = now() - (Date.now() - t);
+  } catch {}
+  const stampBossHunt = () => { lastBossHuntAt = now(); try { W.localStorage.setItem('tokpla_boss_lasthunt', String(Date.now())); } catch {} };
   // 👹 v6.112: "ติดอยู่ในถ้ำบอส" โดยไม่ได้กำลังล่า/ไม่มีบอส — ถ้ำบอสตกปกติไม่ได้ → บอทตกไม่ออก → recoveryWatch รีโหลดวนเปล่า
   //   (เกิดเมื่อ bossHunt เดินไปแล้วกลับบ้านไม่สำเร็จ เพราะ WASD ไม่เสถียร) · แก้: เดินออกไปแมพบ้านเอง · เดินไม่ได้ = แจ้ง+หยุดลองสแปม
   //   v6.138: หนีออกเฉพาะตอน "ปิดล่าบอส" — ถ้าเปิดล่าบอสแล้วอยู่ในถ้ำ = ผู้ใช้/บอทตั้งใจมารอตีบอส ห้ามเดินหนีออก
@@ -2020,7 +2028,7 @@
         say(back ? `👹 กลับถึง ${bossHome} — ฟาร์มต่อ` : `👹 กลับบ้านไม่สำเร็จ (อยู่ ${bossMapId()}) — ฟาร์มที่นี่ก่อน`);
       }
     } catch (e) { logErr('สู้บอส(ในถ้ำ)ล้มเหลว', e); }
-    finally { bossReleaseAll(); bossPhase = 'idle'; clearBossState(); lastBossHuntAt = now(); orchestrating = false; lastCast = now(); pendingCast = 0; resumeTestAfterBoss(); }
+    finally { bossReleaseAll(); bossPhase = 'idle'; clearBossState(); orchestrating = false; lastCast = now(); pendingCast = 0; stampBossHunt(); resumeTestAfterBoss(); }
   }
 
   // ===== 🏪 ระบบ NPC เมืองชาวประมง (v6.150) — ลุงคลัง(ฝากของ) + ยายแก่น(แลกแก่นปลา) =====
