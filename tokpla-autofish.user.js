@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.194
+// @version      6.195
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.194';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.195';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -93,6 +93,7 @@
     bossMaxWaitMin: 8,           // อยู่ในถ้ำบอสสูงสุดกี่นาที (รอบอส+สู้) — ครบแล้วกลับบ้านแม้บอสไม่ตาย/ไม่มา
     bossHomeMap: '',             // แมพที่จะกลับไปฟาร์มต่อ (ว่าง = แมพที่อยู่ตอนเริ่มล่า)
     bossBaitTier: 2,             // 👹 เหยื่อ "จุดอ่อนบอส" ระหว่างตี (วิดีโอ: มัดอ้วนขั้น2/กุ้งฝอยขั้น4 = ดาเมจ x1.5) · 0 = ไม่สลับ
+    bossStatKeep: 20,            // 📊 v6.195: เก็บสถิติล่าบอสกี่ "ครั้งล่าสุด" (ring buffer · 0 = ปิดการเก็บ)
     rodSwitchOn: true,          // ⛔ v6.189: ปิดไว้ — พิสูจน์แล้วว่า G สลับได้แค่ "tier" ไม่ใช่ "ชิ้นเบ็ด" (CHANGELOG v6.188)
                                  //   เปิดมีประโยชน์กรณีเดียว: เบ็ดบอส/เบ็ดฟาร์มของคุณอยู่คนละ tier กันจริงๆ
     bossRodId: '',               // 🎣 v6.174: UUID "ชิ้นเบ็ด" ที่ใช้ตอนตีบอส (เช่นชิ้นที่ติดหินดาเมจบอส) · ว่าง = ไม่สลับ
@@ -927,6 +928,10 @@
     switch (c) {
       case 'help': case 'start': reply(TG_HELP); break;
       case 'status': reply(enabled ? heartbeatMsg() : '⏹ บอทปิดอยู่ · /on เพื่อเปิด'); break;
+      case 'bossstats': case 'bossstat': {   // 📊 v6.195: สถิติล่าบอส N ครั้งล่าสุด · "clear" = ล้าง
+        if ((args[0] || '').toLowerCase() === 'clear') { try { W.localStorage.removeItem(BOSS_STATS_KEY); } catch {} reply('📊 ล้างสถิติล่าบอสแล้ว'); break; }
+        reply(bossStatsSummary()); break;
+      }
       case 'on': if (!enabled) toggle(); reply('▶️ เปิดบอทแล้ว'); break;
       case 'off': case 'stop':
         if (!enabled) { reply('บอทปิดอยู่แล้ว'); break; }
@@ -1388,6 +1393,53 @@
   function bossPlayerHpPct() {
     try { const s = getPhaserScene(); if (!s || !s.playerHpMax) return null; return s.playerHp / s.playerHpMax * 100; } catch { return null; }
   }
+  // ⚔️ อ่าน "ดาเมจ/ส่วนร่วม" ของเราจาก HUD ตอนสู้บอส — รูปแบบ "⚔️ ของเรา 7,991 (5.5%)" (คืน null ถ้าไม่เจอ)
+  function readBossContribution() {
+    try {
+      const m = (document.body.innerText || '').match(/ของเรา\s*([\d,]+)\s*\(([\d.]+)\s*%\)/);
+      if (!m) return { dmg: null, pct: null };
+      return { dmg: parseInt(m[1].replace(/,/g, ''), 10), pct: parseFloat(m[2]) };
+    } catch { return { dmg: null, pct: null }; }
+  }
+
+  // 📊 v6.195: สถิติล่าบอส — ring buffer เก็บ "N ครั้งล่าสุด" (ตั้งได้ที่ cfg.bossStatKeep)
+  const BOSS_STATS_KEY = 'tokpla_boss_stats';
+  const loadBossStats = () => { try { const a = JSON.parse(W.localStorage.getItem(BOSS_STATS_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch { return []; } };
+  function recordBossFight(rec) {
+    const keep = clamp(cfg.bossStatKeep || 0, 0, 200);
+    if (!keep) return;                                   // 0 = ปิดการเก็บ
+    try {
+      const arr = loadBossStats();
+      arr.push(rec);
+      while (arr.length > keep) arr.shift();             // ตัดให้เหลือ N ครั้งล่าสุด
+      W.localStorage.setItem(BOSS_STATS_KEY, JSON.stringify(arr));
+    } catch (e) { logErr('บันทึกสถิติบอสล้มเหลว', e); }
+  }
+  // สรุปสถิติเป็นข้อความ (ใช้ทั้งแผง/Telegram) — เฉลี่ยเฉพาะไฟต์ที่มีข้อมูลนั้นจริง
+  function bossStatsSummary() {
+    const arr = loadBossStats();
+    if (!arr.length) return '📊 ยังไม่มีสถิติล่าบอส (จะเริ่มเก็บหลังจบไฟต์แรก)';
+    const n = arr.length;
+    const kills = arr.filter((r) => r.outcome === 'kill').length;
+    const deaths = arr.reduce((s, r) => s + (r.deaths || 0), 0);
+    const avg = (sel) => { const v = arr.map(sel).filter((x) => x != null && !isNaN(x)); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
+    const fmt = (x, d = 0) => x == null ? '–' : x.toLocaleString(undefined, { maximumFractionDigits: d });
+    const aDmg = avg((r) => r.dmg), aPct = avg((r) => r.pct), aGauge = avg((r) => r.gauge);
+    const aHpMin = avg((r) => r.hpMin), aAoe = avg((r) => r.aoeDodges), aDur = avg((r) => r.durMs);
+    const lines = [
+      `📊 <b>สถิติล่าบอส</b> (${n} ครั้งล่าสุด · เก็บสูงสุด ${cfg.bossStatKeep})`,
+      `🏆 ฆ่าสำเร็จ ${kills}/${n} (${Math.round(kills / n * 100)}%) · 💀 ตายรวม ${deaths}`,
+      `⚔️ ดาเมจเฉลี่ย ${fmt(aDmg)}${aPct != null ? ` (${aPct.toFixed(1)}%)` : ''} · 🎯 กดเกจเฉลี่ย ${fmt(aGauge)}`,
+      `❤️ HP ต่ำสุดเฉลี่ย ${aHpMin != null ? Math.round(aHpMin) + '%' : '–'} · 🌀 หลบ AoE เฉลี่ย ${fmt(aAoe, 1)} · ⏱️ ${aDur != null ? Math.round(aDur / 1000) + ' วิ/ไฟต์' : '–'}`,
+    ];
+    // 5 ไฟต์ล่าสุด (ใหม่สุดบน)
+    const recent = arr.slice(-5).reverse().map((r) => {
+      const t = r.ts ? new Date(r.ts).toLocaleString('th-TH', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '?';
+      const icon = r.outcome === 'kill' ? '✅' : r.outcome === 'timeout' ? '🏁' : '⌛';
+      return `${icon} ${t} · ดาเมจ ${fmt(r.dmg)}${r.pct != null ? `(${r.pct}%)` : ''} · เกจ ${r.gauge ?? '–'} · หลบ ${r.aoeDodges ?? '–'} · ตาย ${r.deaths ?? 0} · HP↓${r.hpMin != null ? Math.round(r.hpMin) + '%' : '–'}`;
+    });
+    return lines.join('\n') + '\n— ล่าสุด —\n' + recent.join('\n');
+  }
 
   // อ่านนาทีจนบอสเกิดครั้งถัดไป จากป้าย HUD (ทุกแมพ) — null = อ่านไม่ได้
   //   ⚠️ v6.106 บั๊กร้ายแรง: เกมใช้ "2 รูปแบบ" ตามเวลาที่เหลือ (ยืนยันสด)
@@ -1726,6 +1778,7 @@
     // 📊 v6.191: วัด HP จริงตลอดไฟต์ (start→ต่ำสุด→จบ) + นับ "ค้างหลบ" (ปากทางกินทิศหลบหมด)
     //   ผู้ใช้ยืนยัน: เกมไม่ฟื้นเลือด → ทางรอดเดียวคือหลบไม่ให้โดน · ต้องรู้ว่าเสียเลือดตรงไหนก่อนปรับ
     let hpStart = null, hpMin = 101, lastHpChk = 0, aoeStalls = 0;
+    let fightT0 = 0, lastContrib = { dmg: null, pct: null };   // 📊 v6.195: จับเวลาไฟต์ (ตั้งตอนเห็นบอสครั้งแรก) + อ่านดาเมจล่าสุด
     // 🛡️ v6.175: เดิมเงื่อนไขลูปมี isOn('bossHunt') → **ปิดโหมดล่าบอสกลางไฟต์ = ทิ้งบอสทันที**
     //   เจอสด 16:30:14: เข้าตีตอน 16:30:00 แล้วโดนตัดจบใน 14 วิ ("กดเกจ 0") ทั้งที่บอสยืนอยู่ตรงหน้า
     //   ซ้ำร้าย พอเปิดโหมดใหม่ ขา "เข้าถ้ำ" ชนกับขา "กลับบ้าน" → แมพเด้ง ถ้ำ↔บ่อตกปลา 6 รอบ โดนตีฟรีจน HP เหลือ 16%
@@ -1735,11 +1788,13 @@
       if (!isOn('bossHunt') && !bossSeen) break;
       const rb = raidBossState();
       const present = !!(rb && rb.present);
-      if (present) { bossSeen = true; goneAt = 0; }
+      if (present) { bossSeen = true; goneAt = 0; if (!fightT0) fightT0 = now(); }
       // 📊 วัด HP แบบ throttle (getPhaserScene แพง) — เก็บ start ครั้งแรกที่อ่านได้ + ต่ำสุดตลอดไฟต์
       if (present && now() - lastHpChk > 400) {
         lastHpChk = now(); const _h = bossPlayerHpPct();
         if (_h != null) { if (hpStart == null) hpStart = _h; if (_h < hpMin) hpMin = _h; }
+        // อ่านดาเมจ/ส่วนร่วมล่าสุดไว้ (HUD หายหลังบอสตาย — ต้องเก็บระหว่างยังเห็น)
+        const _c = readBossContribution(); if (_c.dmg != null) lastContrib = _c;
       }
       if (rb && rb.dead) { killed = true; break; }
       // 💀 v6.149: ตายถูกส่งออกจากถ้ำ (บ่อน้ำหมู่บ้าน · เลือดหมดจากโดน AoE) → รอ respawn ~10 วิ แล้วกลับเข้าถ้ำสู้ต่อ (เดิมหลุดออก = จบเลย เสีย reward)
@@ -1879,8 +1934,23 @@
     // 📊 v6.191: HP โปรไฟล์ (start→จบ + ต่ำสุด) แทนตัวเลข HP เดี่ยว — วัดว่าหลบดีขึ้นไหมโดยดู "ต่ำสุด" ไม่ใช่แค่ตอนจบ
     const hpEnd = bossPlayerHpPct();
     const hpTxt = `HP ${hpStart != null ? Math.round(hpStart) + '%' : '?'}→${hpEnd != null ? Math.round(hpEnd) + '%' : '?'}${hpMin <= 100 ? ` (ต่ำสุด ${Math.round(hpMin)}%)` : ''}`;
-    const stat = `เริ่มตี ${hits} · กดเกจ ${gaugePresses} · กระโดด ${dodges} · หลบ AoE ${aoeDodges}${aoeStalls ? `(ค้างปากทาง ${aoeStalls})` : ''} · recenter ${recenters} · เข็ม ${Math.round(Math.abs(gVel))}°/s · ตาย ${deaths} · ${hpTxt}`;
+    // 📊 v6.195: อ่านดาเมจครั้งสุดท้ายเผื่อ HUD ยังอยู่ (ยังไม่ตาย/หมดเวลา) — คืน dmg ที่ดีที่สุดที่จับได้
+    { const _c = readBossContribution(); if (_c.dmg != null && (lastContrib.dmg == null || _c.dmg >= lastContrib.dmg)) lastContrib = _c; }
+    const dmgTxt = lastContrib.dmg != null ? ` · ดาเมจ ${lastContrib.dmg.toLocaleString()}${lastContrib.pct != null ? ` (${lastContrib.pct}%)` : ''}` : '';
+    const stat = `เริ่มตี ${hits} · กดเกจ ${gaugePresses} · กระโดด ${dodges} · หลบ AoE ${aoeDodges}${aoeStalls ? `(ค้างปากทาง ${aoeStalls})` : ''} · recenter ${recenters} · เข็ม ${Math.round(Math.abs(gVel))}°/s · ตาย ${deaths} · ${hpTxt}${dmgTxt}`;
     logInfo(`👹 จบสู้บอส: ${outcome} · ${stat}${aoeMid}`);
+    // 📊 v6.195: เก็บสถิติไฟต์นี้เข้า ring buffer (N ครั้งล่าสุด · ตั้งที่ bossStatKeep)
+    recordBossFight({
+      ts: Date.now(),
+      outcome: killed ? 'kill' : bossSeen ? 'timeout' : 'noshow',
+      dmg: lastContrib.dmg, pct: lastContrib.pct,
+      gauge: gaugePresses, hits, aoeDodges, aoeStalls, recenters, deaths,
+      hpStart: hpStart != null ? Math.round(hpStart) : null,
+      hpMin: hpMin <= 100 ? Math.round(hpMin) : null,
+      hpEnd: hpEnd != null ? Math.round(hpEnd) : null,
+      gVel: Math.round(Math.abs(gVel)), map: bossMapId() || BOSS_MAP,
+      durMs: fightT0 ? Math.round(now() - fightT0) : 0,
+    });
     if (isOn('tgOn')) void tgSend(`👹 <b>จบสู้บอส</b> ${esc(outcome)}\n${esc(stat)}\nกำลังกลับไปฟาร์ม`);
     say(`👹 ${outcome}`);
     bossReleaseAll();
@@ -6152,6 +6222,25 @@ ${esc(reason)}
       labeled('เหยื่อจุดอ่อน (ขั้น)', numInput('bossBaitTier', 0, 8, 44)),
       labeled('แมพบ้าน', smallTextInput('bossHomeMap', 'ว่าง=อัตโนมัติ', 96)),
     ));
+
+    // 📊 v6.195: สถิติล่าบอส — เก็บ N ครั้งล่าสุด + ปุ่มดูสรุป
+    {
+      const statBtn = document.createElement('button');
+      statBtn.setAttribute('data-tkbot', '1');
+      statBtn.textContent = '📊 ดูสถิติล่าบอส';
+      statBtn.style.cssText = 'padding:5px 10px;border-radius:7px;border:1px solid #4a5568;background:#2d3748;color:#e2e8f0;font-size:11px;cursor:pointer;margin:2px 3px 6px 0;';
+      statBtn.addEventListener('click', () => {
+        const t = bossStatsSummary().replace(/<\/?b>/g, '');
+        say(t); console.log('[Tokpla Bot] สถิติล่าบอส\n' + t); alert(t);
+      });
+      panel.appendChild(row(
+        '📊 สถิติล่าบอส (เก็บ N ครั้งล่าสุด)',
+        'บันทึกทุกไฟต์อัตโนมัติ: ผล (ฆ่า/หมดเวลา/ไม่มา) · ดาเมจ+% · กดเกจ · หลบ AoE · ตาย · HP ต่ำสุด · เวลา/ไฟต์ · '
+        + 'เก็บแบบ "วนทับ" เฉพาะ N ครั้งล่าสุดที่ตั้งไว้ (0 = ปิดการเก็บ) · กดปุ่มดูสรุป+เฉลี่ย · หรือสั่ง /bossstats ทาง Telegram · ล้างได้ด้วย /bossstats clear',
+        labeled('เก็บกี่ครั้ง', numInput('bossStatKeep', 0, 200, 52)),
+      ));
+      panel.appendChild(statBtn);
+    }
 
     // 🎣 v6.174: สลับ "ชิ้นเบ็ด" ตอนตีบอส vs ฟาร์ม — เบ็ดชนิดเดียวกันหลายชิ้นที่อัปเกรดต่างกัน แยกด้วย instance UUID
     //   ให้ผู้ใช้ "ใส่เบ็ดที่ต้องการแล้วกดจำ" แทนการพิมพ์ UUID เอง (UUID ยาว จำ/พิมพ์เองไม่ไหว)
