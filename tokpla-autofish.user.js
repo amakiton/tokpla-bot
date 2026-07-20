@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.161
+// @version      6.162
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.161';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.162';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1602,6 +1602,24 @@
     if (isOn('tgOn')) void tgSend('👹 <b>ถึงถ้ำบอส</b> — เริ่มตี (เกจ→กดแถบแดง) + กระโดดหลบตอนบอสหมุน');
     let killed = false, hits = 0, gaugePresses = 0, dodges = 0, lastEngage = 0, lastPress = 0;
     let bossSeen = false, goneAt = 0, lastSpinChk = 0, spinNow = false, lastJump = 0, bossDodging = false, aoeDodges = 0, deaths = 0;
+    // ⚙️ v6.162: เกจอัจฉริยะ — วัดความเร็วเข็ม (deg/s, EMA) แล้วกด "ล่วงหน้า" ชดเชย latency ~120ms
+    //   เดิมกดเฉพาะเข็มอยู่ในแถบ ±2° เป๊ะ → เข็มเร็ว+latency = กดตอนเข็มเลยแถบไปแล้ว/พลาดหน้าต่างทั้งรอบ
+    let gPrevAng = null, gPrevAt = 0, gVel = 0;
+    const gaugeReady = (g) => {
+      let na = g.ang; if (g.a0 < 0 && na > 180) na -= 360;
+      const t = now();
+      if (gPrevAng != null && t > gPrevAt && t - gPrevAt < 500) {
+        let d = na - gPrevAng; if (d > 180) d -= 360; else if (d < -180) d += 360;
+        const v = d / ((t - gPrevAt) / 1000);
+        if (Math.abs(v) < 720) gVel = gVel ? gVel * 0.6 + v * 0.4 : v;   // กัน spike ตอนเกจรีเซ็ตรอบใหม่
+      }
+      gPrevAng = na; gPrevAt = t;
+      const inb = (x) => x >= g.a0 - 2 && x <= g.a1 + 2;
+      return inb(na) || inb(na + gVel * 0.12);   // ตอนนี้ หรือ ที่คาดว่าเข็มจะอยู่ตอนคลิกถึงเกม
+    };
+    // 🧭 v6.162: recenter — ยืน "กึ่งกลางวง AoE" ให้การหลบครั้งถัดไปวิ่งสั้นสุด (ข้อมูลไฟต์จริง: วงโผล่ x∈{671,946,1011} y≈744
+    //   ยืนสุดปลายเคยต้องวิ่ง 399px) · seed จุดกลางจากข้อมูลจริง 1 จุด + เก็บวงใหม่ทุกครั้ง = ปรับตัวเองถ้า pattern เปลี่ยน
+    const aoeSamples = [[841, 744]]; let lastRecenter = 0;
     while (enabled && isOn('bossHunt') && now() < until) {
       const rb = raidBossState();
       const present = !!(rb && rb.present);
@@ -1652,6 +1670,8 @@
           bossMoveDirs(dirs);
           if (!bossDodging) {
             bossDodging = true; aoeDodges++;
+            aoeSamples.push([raid.cx, raid.cy]);                      // 🧭 เก็บตำแหน่งวงจริง — จุดกลาง recenter ปรับตามข้อมูลสด
+            try { _sc.autoWalker.cancel(); } catch {}                 // กัน autoWalker (recenter) เดินแย้งกับ WASD หลบ
             // v6.156: log ตำแหน่งวง (ออกแบบ recenter) · v6.159: + จับ "ตอนหลบตีบอสได้ไหม" — orb เปิด/มีเกจ = ตีระหว่างหลบได้ (ไม่ต้อง facetank) · HP = ประเมิน budget โดน AoE
             const _o = bossHitOrb(), _gz = readGaugeWheel(), _hp = bossPlayerHpPct();
             logInfo(`🎯 ${green ? 'เข้าวงเขียว' : 'หนีวงแดง'} วง@${Math.round(raid.cx)},${Math.round(raid.cy)} r${Math.round(raid.r)} · ตัว@${Math.round(_sc.player.x)},${Math.round(_sc.player.y)} ระยะ${Math.round(dist)} · orb=${_o ? (_o.disabled ? 'ปิด' : 'เปิด') : 'ไม่มี'} เกจ=${_gz && _gz.ang != null ? 'มี' : 'ไม่มี'} HP=${_hp != null ? Math.round(_hp) + '%' : '?'}`);
@@ -1661,15 +1681,20 @@
           //   เดินหลบ (WASD ค้าง) กับกดเกจ (คลิกปุ่ม) เป็นคนละ input channel → ทำพร้อมกันได้ ไม่ยกเลิกการหลบ
           //   ⚠️ ดีกว่า "facetank ยอมเลือดลด" ที่ผู้ใช้ถาม: ได้ดาเมจเพิ่มโดยไม่โดนตีเพิ่มเลย
           const gd = readGaugeWheel();
-          if (gd && gd.ang != null) {
-            let nad = gd.ang; if (gd.a0 < 0 && nad > 180) nad -= 360;
+          if (gd && gd.ang != null && gaugeReady(gd)) {
             const orbd = bossHitOrb();
-            if (nad >= gd.a0 - 2 && nad <= gd.a1 + 2 && orbd && !orbd.disabled && now() - lastPress > 60) { lastPress = now(); fireClick(orbd); gaugePresses++; }
+            if (orbd && !orbd.disabled && now() - lastPress > 60) { lastPress = now(); fireClick(orbd); gaugePresses++; }
           }
           await sleep(80); continue;   // react ไว กว่าจังหวะตี
         }
         if (bossDodging) { bossReleaseAll(); bossDodging = false; }   // ถึงที่ปลอดภัยแล้ว → ปล่อยปุ่ม
       } else if (bossDodging) { bossReleaseAll(); bossDodging = false; }
+      // 🧭 v6.162: recenter — ไม่มีวง AoE ค้าง + ห่างจุดกลาง >60px → เดิน (game A*) ไปยืนกลางสนาม
+      //   ให้การหลบครั้งถัดไปวิ่ง ≤~75px (แทน 245-399px จากสุดปลาย) = แทบไม่เสียจังหวะตี · ตีระหว่างเดินได้ (v6.161 คนละ channel)
+      if (!raid && present && now() - lastRecenter > 4000 && _sc && _sc.player) {
+        const mx = aoeSamples.reduce((s, a) => s + a[0], 0) / aoeSamples.length, my = aoeSamples.reduce((s, a) => s + a[1], 0) / aoeSamples.length;
+        if (Math.hypot(mx - _sc.player.x, my - _sc.player.y) > 60) { lastRecenter = now(); try { _sc.autoWalker.navigate({ x: Math.round(mx), y: Math.round(my), mapId: BOSS_MAP }); } catch {} }
+      }
       const orb = bossHitOrb();
       // (1) 🦘 หลบ: บอสหมุน → กดกระโดด · v6.117: เช็คเตือน (TreeWalker แพง) ทุก 180ms + กระโดด 1 ครั้ง/สปิน (cooldown 1.2วิ)
       if (now() - lastSpinChk > 180) { lastSpinChk = now(); spinNow = bossSpinWarning(); }
@@ -1683,8 +1708,8 @@
       // (2) ⚙️ เกจโผล่ (กำลังตี) → กดตอนเข็มเข้าแถบแดง [a0,a1] (เกจบอส=conic เหมือนตกปลา · readGaugeWheel มี fallback)
       const g = readGaugeWheel();
       if (g && g.ang != null) {
-        let na = g.ang; if (g.a0 < 0 && na > 180) na -= 360;   // แดงพันรอบยอด: เข็มฝั่ง 340-360 → ทำเป็นลบ ให้เทียบ [a0(-),a1] ได้
-        const inRed = na >= g.a0 - 2 && na <= g.a1 + 2;         // เผื่อ latency นิดหน่อย
+        // ⚙️ v6.162: ใช้ gaugeReady — เทียบทั้ง "ตำแหน่งเข็มตอนนี้" และ "ตำแหน่งที่คาด (ความเร็วเข็ม × latency 120ms)"
+        const inRed = gaugeReady(g);
         if (inRed && orb && !orb.disabled && now() - lastPress > 60) { lastPress = now(); fireClick(orb); gaugePresses++; }
         await sleep(30);   // ถี่พอจับเข็ม
       } else if (orb && !orb.disabled && now() - lastEngage > 220) {
