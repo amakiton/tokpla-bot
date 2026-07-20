@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.172
+// @version      6.173
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.172';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.173';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1401,21 +1401,19 @@
   }
   let bossNowLabelSeen = false;   // v6.169: กัน log ซ้ำทุก 5 วิ ตอนป้าย "ถึงรอบบอสแล้ว" ค้างอยู่
   function bossTimerMin() {
+    let sawNowLabel = false;   // v6.173: เจอป้าย "ถึงรอบบอสแล้ว" ไหม — ตัดสินใจทีหลัง (ตัวนับถอยหลังต้องชนะก่อน)
     try {
       const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
       let n;
       while ((n = tw.nextNode())) {
         if (n.parentElement && n.parentElement.closest('[data-tkbot]')) continue;   // กฎเหล็ก #7: ข้าม UI บอทเอง (log/แผงบอทมีคำว่า "บอส" เพียบ = false positive)
         const t = n.textContent || '';
-        // 🐯 v6.164: เกมอัปเดต UI — พอถึงเวลาบอส ป้ายเปลี่ยนเป็น "ถึงรอบบอสแล้ว!" (ไม่มีคำว่า "บอสถัดไป")
-        //   บั๊กร้ายแรง: gate /บอสถัดไป/ ด้านล่างข้ามป้ายนี้ → คืน null → bossHuntDue() เป็นเท็จตลอด = "บอสมาแล้วแต่บอทไม่ไปล่า"
-        //   (เจอสด: บอทเปิดอยู่ตอนป้ายขึ้น "ถึงรอบบอสแล้ว!" แต่ไม่ออกเดินทางเลย) · คืน 0 = ถึงเวลาแล้ว
-        if (t.length < 60 && /ถึงรอบบอส|บอสมาแล้ว/.test(t)) {
-          // v6.169: log ครั้งเดียวต่อรอบ — ยืนยันว่า fix v6.164 ทำงานจริง (ก่อนหน้านี้ป้ายนี้ถูกข้าม = ไม่ล่าบอส)
-          if (!bossNowLabelSeen) { bossNowLabelSeen = true; logInfo(`🐯 เจอป้าย "${t.trim()}" → ถือว่าถึงเวลาบอสแล้ว (บอทจะออกล่า)`); }
-          return 0;
-        }
-        bossNowLabelSeen = false;
+        // 🐯 v6.164: ป้าย "ถึงรอบบอสแล้ว!" (ไม่มีคำว่า "บอสถัดไป") = ถึงเวลาบอสแล้ว
+        // 🐛 v6.173 แก้ regression ของ v6.164: ป้ายนี้ **ค้างบนหน้าเพจแม้บอสตายไปแล้ว**
+        //   (เจอสด: โชว์พร้อมกันกับ "บอสถัดไป 16:30 (อีก 2 ชม. 38 นาที)") · v6.164 `return 0` ทันทีที่เจอ
+        //   → bossHuntDue() จริงตลอด → บอทวนออกล่าไม่จบ ติดค้างในถ้ำ ตกปลาไม่ได้ (เทสต์เหยื่อก็เริ่มไม่ได้)
+        //   ลำดับความสำคัญที่ถูก: **ตัวนับถอยหลังที่ระบุเวลาชัดเจนชนะเสมอ** · ป้าย "ถึงรอบ" ใช้ได้ต่อเมื่อ "ไม่มีตัวนับใดๆ บนจอ"
+        if (t.length < 60 && /ถึงรอบบอส|บอสมาแล้ว/.test(t)) { sawNowLabel = true; continue; }
         if (!/บอสถัดไป/.test(t)) continue;
         // รูปแบบ ≥ 1 ชม.
         const rel = /อีก\s*(?:(\d+)\s*ชม\.?)?\s*(?:(\d+)\s*นาที)?/.exec(t);
@@ -1426,7 +1424,15 @@
         if (/โผล่แล้ว|กำลังโผล่|มาแล้ว/.test(t)) return 0;
       }
     } catch {}
-    return bossTimerChipMin();   // 🐯 v6.170: ไม่เจอป้ายแบบข้อความ → ลองอ่าน "chip โหมดย่อ" (MM:SS) ก่อนยอมแพ้
+    const chip = bossTimerChipMin();   // 🐯 v6.170: ไม่เจอป้ายแบบข้อความ → ลองอ่าน "chip โหมดย่อ" (MM:SS)
+    if (chip != null) return chip;
+    // เหลือทางเดียวจริงๆ ค่อยเชื่อป้าย "ถึงรอบบอสแล้ว" (v6.173: ไม่ให้ชนะตัวนับอีกต่อไป)
+    if (sawNowLabel) {
+      if (!bossNowLabelSeen) { bossNowLabelSeen = true; logInfo('🐯 ป้าย "ถึงรอบบอสแล้ว" + ไม่มีตัวนับถอยหลังบนจอ → ถือว่าถึงเวลาบอส'); }
+      return 0;
+    }
+    bossNowLabelSeen = false;
+    return null;
   }
 
   // ---- เรียนรู้กราฟแมพ (persist) : map -> { targetMap: {x,y} } ----
