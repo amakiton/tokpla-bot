@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.180
+// @version      6.181
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.180';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.181';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1626,7 +1626,12 @@
   function bossSpinWarning() {
     try {
       const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); let n;
-      while ((n = tw.nextNode())) { const t = n.textContent || ''; if (/บอสหมุน|กดกระโดด|กระโดดหลบ/.test(t) && t.length < 40) return true; }
+      while ((n = tw.nextNode())) {
+        // 🛡️ v6.181 (กฎเหล็ก #7): ข้าม UI บอทเอง — คำอธิบายในแผง "ระบบตีบอส" มีคำว่า "กระโดดหลบตอนบอสหมุน" อยู่
+        //   ถ้าไม่กัน = bossSpinWarning() คืน true ตลอดทั้งไฟต์ → บอทกระโดดรัวทุก 1.2 วิ แทนที่จะตีเกจ (เสีย DPS เงียบๆ)
+        if (n.parentElement && n.parentElement.closest('[data-tkbot]')) continue;
+        const t = n.textContent || ''; if (/บอสหมุน|กดกระโดด|กระโดดหลบ/.test(t) && t.length < 40) return true;
+      }
     } catch {}
     return false;
   }
@@ -2090,6 +2095,15 @@
   };
   const npcVisible = (el) => { try { const r = el.getBoundingClientRect(); return el.offsetParent !== null && r.width > 10 && r.height > 10; } catch { return false; } };
   const NPC_RARWORD = { 'ไม่ธรรมดา': 'uncommon', 'หายาก': 'rare', 'สุดยอด': 'epic', 'ตำนาน': 'legendary', 'เทพนิยาย': 'mythic' };
+  // 🛡️ v6.181 — กฎเหล็ก #7 ซ้ำรอย v6.105: เช็ค "หน้าต่าง NPC เปิดแล้ว" ด้วยการหาข้อความทั้ง document
+  //   ไปแมตช์ **คำอธิบายในแผงบอทเอง** (แผงตั้งค่า NPC มีคำว่า "คลังลุงคลัง"/"ยายแก่น" อยู่) → waitFor ผ่านทันทีเสมอ
+  //   ทั้งที่หน้าต่างจริงยังไม่เปิด → บอทไปอ่านการ์ด = ไม่เจอ → "ฝาก 0" + popup ค้าง (อาการที่ผู้ใช้เจอ)
+  //   ต้องนับเฉพาะ element ที่ "มองเห็นจริง + ไม่ใช่ UI บอท" เท่านั้น
+  const gameTextVisible = (re) => [...document.querySelectorAll('h1,h2,h3,h4,div,span,p')].some((e) => {
+    if (isBotUI(e) || e.offsetParent === null) return false;
+    if (e.children.length > 3) return false;                       // เอาเฉพาะ node ใกล้ใบ กันจับ container ยักษ์
+    return re.test(e.textContent || '');
+  });
   const npcDismissCatchPopup = () => { const c = [...document.querySelectorAll('button')].find((b) => /^ตกต่อ/.test((b.textContent || '').trim())); if (c) fireClick(c); };   // ปิด popup ผลตกปลาที่ค้างบัง
   // 🧪 ยายแก่น (v6.151 ยืนยันสด): คลิกแถวปลา (เลือก) → กด "สกัดเลย!" → ได้แก่น · ทีละตัวจนไม่มีปลาเข้าเกณฑ์ (rare+/ตาม config)
   async function npcDoEssence() {
@@ -2100,7 +2114,7 @@
       const talk = [...document.querySelectorAll('button')].find((b) => /คุยกับยายแก่น/.test(b.textContent || ''));
       if (!talk) { say('🧪 หาปุ่มคุยยายแก่นไม่เจอ'); return 0; }
       fireClick(talk);
-      if (!(await waitFor(() => [...document.querySelectorAll('*')].some((e) => /โต๊ะปรุงของยายแก่น/.test(e.textContent || '')), 6000))) {
+      if (!(await waitFor(() => gameTextVisible(/โต๊ะปรุงของยายแก่น/), 6000))) {   // v6.181: เฉพาะ element ที่เห็นจริง + ไม่ใช่ UI บอท
         say('🧪 เปิดโต๊ะยายแก่นไม่สำเร็จ (รอ 6 วิ)'); return 0;
       }
       const essMin = rarityRank(cfg.npcEssenceRarity), stoMin = rarityRank(cfg.npcStorageRarity);
@@ -2133,7 +2147,7 @@
       const talk = [...document.querySelectorAll('button')].find((b) => /ฝากของ/.test(b.textContent || b.getAttribute('aria-label') || ''));
       if (!talk) { say('🏬 หาปุ่มฝากของไม่เจอ'); return 0; }
       fireClick(talk);
-      if (!(await waitFor(() => [...document.querySelectorAll('*')].some((e) => /คลังลุงคลัง/.test(e.textContent || '')), 6000))) {
+      if (!(await waitFor(() => gameTextVisible(/คลังลุงคลัง/), 6000))) {   // v6.181: เดิมแมตช์คำอธิบายในแผงบอทเอง = ผ่านทันทีเสมอ (กฎเหล็ก #7)
         say('🏬 เปิดคลังลุงคลังไม่สำเร็จ (รอ 6 วิ)'); return 0;
       }
       const ft = [...document.querySelectorAll('button')].find((b) => /🐟\s*ปลา/.test(b.textContent || '') && npcVisible(b)); if (ft) { fireClick(ft); }
@@ -3024,6 +3038,7 @@
       const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
       let n;
       while ((n = tw.nextNode())) {
+        if (n.parentElement && n.parentElement.closest('[data-tkbot]')) continue;   // v6.181: กฎเหล็ก #7 — กันอ่านเลเวลจากข้อความในแผงบอทเอง
         const m = /นักตกปลา\s*Lv\.?\s*(\d+)/.exec(n.textContent || '');
         if (m) return (lastKnownLevel = +m[1]);
       }
