@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.181
+// @version      6.182
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.181';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.182';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3094,8 +3094,21 @@
     }
   }
 
+  // 🛑 v6.182: เบรกเกอร์กัน "ซื้อรัว" — ครอบทุกการซื้อเหยื่อไม่ว่าระบบไหนสั่ง (เทสต์/Advisor/ปกติ)
+  //   เคสจริง: ซื้อ 9 แพ็คใน ~60 วินาที ≈ 256,000 🪙 · ไม่มีสถานการณ์ปกติใดที่ต้องซื้อถี่ขนาดนี้
+  //   เก็บเวลาซื้อ (epoch — รอดข้ามรีโหลด) แล้วบล็อกถ้าเกินโควตาในหน้าต่างเวลา
+  const BUY_WINDOW_MS = 10 * 60000, BUY_MAX_IN_WINDOW = 3;
+  const buyLog = () => { try { return JSON.parse(W.localStorage.getItem('tokpla_buy_log') || '[]'); } catch { return []; } };
+  const buyLogPush = () => { try { const a = buyLog().filter((t) => Date.now() - t < BUY_WINDOW_MS); a.push(Date.now()); W.localStorage.setItem('tokpla_buy_log', JSON.stringify(a.slice(-20))); } catch {} };
+  const buyBlocked = () => buyLog().filter((t) => Date.now() - t < BUY_WINDOW_MS).length >= BUY_MAX_IN_WINDOW;
+
   async function runBuyBait(force) {
     if (busy) return;
+    if (buyBlocked()) {
+      const msg = `⛔ กันซื้อรัว: ซื้อเหยื่อครบ ${BUY_MAX_IN_WINDOW} แพ็คใน 10 นาทีแล้ว — พักการซื้อ (กันบั๊กดูดเงิน)`;
+      if (now() - (runBuyBait._sayAt || 0) > 60000) { runBuyBait._sayAt = now(); say(msg); if (isOn('tgOn') && isOn('tgWarn')) void tgSend(`⛔ <b>เบรกเกอร์กันซื้อรัวทำงาน</b>\nซื้อเหยื่อครบ ${BUY_MAX_IN_WINDOW} แพ็คใน 10 นาที — หยุดซื้อชั่วคราว\nถ้าไม่ได้ตั้งใจ ให้ตรวจว่าบอทสลับเหยื่อไม่ได้ (ต้องยืนใกล้น้ำ)`); }
+      return;
+    }
     busy = true;
     try {
       if (!await openShop()) { say('เปิดร้านไม่สำเร็จ'); return; }
@@ -3135,6 +3148,15 @@
         await closeShop(); return;
       }
       if (row.full) { say(`สต๊อก ${want.name} เต็มแล้ว (${row.stock})`); await closeShop(); return; }
+      // 🛑 v6.182 (บั๊กเงินหาย ~256,000 · ผู้ใช้รายงาน): เดิมเช็คสต๊อกเฉพาะตอน `!force`
+      //   → ระบบทดสอบเรียก sellThenBuy(true) = force → **ข้ามการเช็คสต๊อกทั้งหมด** → มีเหยื่อ 906 ชิ้นก็ยังซื้อซ้ำ
+      //   → วนซื้อ 4 แพ็ค/ขั้น (เหยื่อขั้น 8 = 45,000 × 4 = 180,000 ใน 30 วินาที)
+      //   กฎใหม่ (เด็ดขาด): **"มีของครบ 1 แพ็คแล้ว ห้ามซื้อ ไม่ว่ากรณีใด"** — force แปลว่า "ข้ามคูลดาวน์/เกณฑ์"
+      //   ไม่ใช่ "ข้ามการตรวจว่ามีของอยู่แล้ว" · เป็นเพดานที่ระบบอื่นสั่งข้ามไม่ได้เลย
+      if (row.stock >= PACK_SIZE) {
+        say(`⛔ ไม่ซื้อ — มี ${want.name} อยู่แล้ว ${row.stock} ชิ้น (≥1 แพ็ค)`);
+        await closeShop(); return;
+      }
       if (!force && row.stock > cfg.buyBelow) {
         say(`ยังไม่ต้องซื้อ — มี ${want.name} อยู่ ${row.stock} ชิ้น`);
         await closeShop(); return;
@@ -3176,11 +3198,15 @@
         if (t.includes('❌')) return 'fail';
         return null;
       }, 8000);
+      if (done === 'ok') buyLogPush();   // 🛑 v6.182: นับเข้าเบรกเกอร์กันซื้อรัว (เฉพาะที่ซื้อสำเร็จจริง)
       say(done === 'ok'
-        ? `✅ ซื้อ ${want.name} ${packs} แพ็ค (${packs * PACK_SIZE} ชิ้น)`
+        ? `✅ ซื้อ ${want.name} ${packs} แพ็ค (${packs * PACK_SIZE} ชิ้น · ${(want.unit * PACK_SIZE * packs).toLocaleString()} 🪙)`
         : `ซื้อไม่สำเร็จ (${want.name})`);
-      if (cfg.tgTrade && done === 'ok') {
-        void tgSend(`🪱 ซื้อ ${esc(want.name)} ${packs} แพ็ค (${packs * PACK_SIZE} ชิ้น · ${(want.unit * PACK_SIZE * packs).toLocaleString()} 🪙)`);
+      // 🛑 v6.182: การซื้อ = เสียเงินจริง → แจ้ง TG "เสมอ" ไม่ขึ้นกับ tgTrade (เดิมปิดอยู่ ผู้ใช้เลยไม่รู้ตอนบอทดูดเงิน 256,000)
+      //   แนบยอดสะสมในหน้าต่าง 10 นาที = เห็นทันทีถ้าเริ่มผิดปกติ
+      if (done === 'ok' && isOn('tgOn')) {
+        const n = buyLog().filter((t) => Date.now() - t < BUY_WINDOW_MS).length;
+        void tgSend(`🪱 ซื้อ ${esc(want.name)} ${packs} แพ็ค (${packs * PACK_SIZE} ชิ้น · <b>${(want.unit * PACK_SIZE * packs).toLocaleString()} 🪙</b>)${n > 1 ? `\n⚠️ ซื้อไปแล้ว ${n} ครั้งใน 10 นาที` : ''}`);
       }
       await sleep(500);
       await closeShop();
@@ -3961,19 +3987,38 @@
     return currentBait();
   }
   // เตรียมเหยื่อขั้นที่จะทดสอบ: มีในกระเป๋า→ใส่เลย(ไม่ซื้อ) · หมดเกลี้ยง/ไม่มีขั้นนี้→ค่อยซื้อ 1 แพ็ค
+  // 🛑 v6.182 (บั๊กเงินหาย): เดิมวน "สลับ→ซื้อ" ได้ **4 รอบ** และตัดสินจาก "สลับสำเร็จไหม" ไม่ใช่ "มีเหยื่อไหม"
+  //   → ถ้าสลับไม่ได้ (เกมสลับเหยื่อได้เฉพาะ "ตอนใกล้น้ำ" — ตอนนั้นบอทยืนไกลบ่อ) จะซื้อซ้ำ 4 แพ็ค/ขั้น
+  //   ใหม่: ① ถามสต๊อกจริงจากร้านก่อนเสมอ ② มีของ = ไม่ซื้อเด็ดขาด ③ ซื้อได้ **ไม่เกิน 1 ครั้ง/ขั้น**
   async function ensureTestBait(tier) {
     cfg.baitTier = tier; saveCfg(); syncPanel();
-    for (let i = 0; i < 4 && testRunning; i++) {
-      const b = await equipTestBait(tier);                    // ① ลองใช้ของในกระเป๋าก่อน
-      if (b && b.tier === tier && b.stock > 0) return true;   // มีของ → พอ ไม่ซื้อ (กันเหยื่อเก่ากองไม่ได้ใช้)
-      // ② ไม่มีขั้นนี้ / หมดเกลี้ยง → ค่อยซื้อ (รอคิวว่างก่อน กัน sellThenBuy เด้งเงียบเพราะ busy)
+    const b0 = await equipTestBait(tier);
+    if (b0 && b0.tier === tier && b0.stock > 0) return true;      // ใส่ได้+มีของ → จบ ไม่ซื้อ
+    // สลับไม่สำเร็จ ≠ ไม่มีของ — ต้องเช็คสต๊อกจริงก่อนตัดสินใจซื้อ
+    const stock = await baitStockOf(tier);
+    if (stock === null) logWarn(`🧪 อ่านสต๊อกเหยื่อขั้น ${tier} ไม่ได้ — จะไม่ซื้อ (กันซื้อซ้ำ)`);
+    if (stock !== null && stock > 0) {
+      say(`🧪 มีเหยื่อขั้น ${tier} อยู่แล้ว ${stock} ชิ้น — ไม่ซื้อ (สลับไม่สำเร็จ อาจต้องยืนใกล้น้ำ)`);
+    } else if (stock === 0) {
       await waitFor(() => !busy && !orchestrating, 20000);
-      await sellThenBuy(true);     // ซื้อ targetBait()=tier ที่กำลังทดสอบ
+      await sellThenBuy(true);   // ซื้อได้ครั้งเดียวเท่านั้น (เบรกเกอร์ v6.182 คุมอีกชั้น)
       needBuy = false;
       await sleep(500);
     }
     await equipTestBait(tier);   // สลับครั้งสุดท้ายเผื่อเพิ่งซื้อมา
     return currentBait()?.tier === tier && (currentBait()?.stock || 0) > 0;
+  }
+  // อ่าน "สต๊อกจริง" ของเหยื่อขั้นที่ระบุจากแถวในร้าน — null = อ่านไม่ได้ (ถือว่า "มี" ไว้ก่อน กันซื้อซ้ำ)
+  async function baitStockOf(tier) {
+    if (busy || orchestrating) return null;
+    busy = true;
+    try {
+      if (!await openShop()) return null;
+      await shopTab('🪱 เหยื่อ');
+      const row = shopRows().find((r) => r.tier === tier);
+      return row && row.stock !== null ? row.stock : null;
+    } catch { return null; }
+    finally { await closeShop(); busy = false; }
   }
   // อ่าน "เพดานเหยื่อจริง" จากร้าน (ขั้นสูงสุดที่ปลดล็อกแล้ว) — กันทดสอบขั้นที่ยังล็อกอยู่ + แจ้งช่วงให้ตรง
   async function detectBaitCeil() {
