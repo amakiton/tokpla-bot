@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.191
+// @version      6.192
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.191';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.192';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4942,6 +4942,17 @@ ${esc(reason)}
       const state = gameState();
       if (state !== 'bite') biteAt = 0;      // ออกจากจังหวะปลาฮุบ = ล้างตัวจับเวลารีแอค
       if (state !== 'idle') castArmed = false;   // กำลังตกอยู่ = ยังไม่ถึงจังหวะตั้งเวลาเหวี่ยง
+      // ⏸ v6.192 (ผู้ใช้เจอสด): "พักชั่วคราว" ต้อง = มือ off ทั้งหมด
+      //   เดิม paused เช็คแค่ในสาขา idle (บล็อกการ "เหวี่ยงใหม่") → แต่ถ้ามีปลาติดอยู่/เกมเริ่มมินิเกม
+      //   state machine (ฮุบ/เกจ/ชักเย่อ/สู้) ที่อยู่เหนือสาขา idle "ไม่มี guard paused" เลยเล่นมินิเกมต่อ
+      //   = casts ไม่ขึ้น (ไม่นับเหวี่ยง) แต่บอทยังกดเกจ/ชักเย่อ → ผู้ใช้เห็น "ตกไม่หยุด" ทั้งที่พักแล้ว
+      //   แก้: พัก = ปล่อยปุ่มที่ค้าง + หยุด auto เกม (ถ้าเผลอเปิด) + ไม่แตะมินิเกมใดๆ
+      if (paused) {
+        if (orbHeld) orbUp(null);
+        if (gameAutoRunning()) stopGameAuto();
+        updateBadge();
+        return requestAnimationFrame(tick);
+      }
 
       // เกมขยับแล้ว = การกดตกปลาครั้งล่าสุดติด
       if (pendingCast && state !== 'idle') {
