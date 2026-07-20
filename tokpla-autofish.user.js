@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.160
+// @version      6.161
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.160';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.161';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1655,6 +1655,16 @@
             // v6.156: log ตำแหน่งวง (ออกแบบ recenter) · v6.159: + จับ "ตอนหลบตีบอสได้ไหม" — orb เปิด/มีเกจ = ตีระหว่างหลบได้ (ไม่ต้อง facetank) · HP = ประเมิน budget โดน AoE
             const _o = bossHitOrb(), _gz = readGaugeWheel(), _hp = bossPlayerHpPct();
             logInfo(`🎯 ${green ? 'เข้าวงเขียว' : 'หนีวงแดง'} วง@${Math.round(raid.cx)},${Math.round(raid.cy)} r${Math.round(raid.r)} · ตัว@${Math.round(_sc.player.x)},${Math.round(_sc.player.y)} ระยะ${Math.round(dist)} · orb=${_o ? (_o.disabled ? 'ปิด' : 'เปิด') : 'ไม่มี'} เกจ=${_gz && _gz.ang != null ? 'มี' : 'ไม่มี'} HP=${_hp != null ? Math.round(_hp) + '%' : '?'}`);
+          }
+          // ⚔️ v6.161: "ตีระหว่างหลบ" — diagnostic v6.159 ยืนยันสด 7/7 ครั้ง: ตอน AoE ทุกครั้ง `orb=เปิด เกจ=มี`
+          //   = บอสโจมตีได้ระหว่าง AoE · เดิม continue ข้ามการตี = ทิ้ง DPS ฟรี (~7 ช่วง/ไฟต์)
+          //   เดินหลบ (WASD ค้าง) กับกดเกจ (คลิกปุ่ม) เป็นคนละ input channel → ทำพร้อมกันได้ ไม่ยกเลิกการหลบ
+          //   ⚠️ ดีกว่า "facetank ยอมเลือดลด" ที่ผู้ใช้ถาม: ได้ดาเมจเพิ่มโดยไม่โดนตีเพิ่มเลย
+          const gd = readGaugeWheel();
+          if (gd && gd.ang != null) {
+            let nad = gd.ang; if (gd.a0 < 0 && nad > 180) nad -= 360;
+            const orbd = bossHitOrb();
+            if (nad >= gd.a0 - 2 && nad <= gd.a1 + 2 && orbd && !orbd.disabled && now() - lastPress > 60) { lastPress = now(); fireClick(orbd); gaugePresses++; }
           }
           await sleep(80); continue;   // react ไว กว่าจังหวะตี
         }
