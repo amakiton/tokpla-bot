@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.193
+// @version      6.194
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.193';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.194';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -156,6 +156,9 @@
     autoQuest: false,            // เก็บเควสรายวันอัตโนมัติ (รางวัลพลังงาน ⚡)
     questEvery: 30,              // เช็คเควสทุกกี่นาที
     questMaxEnergy: 100,         // รับเควสเฉพาะตอนพลังงาน < กี่ % (กันพลังล้นเสียเปล่า)
+    // 🎒 v6.194: "ใช้ของฟรีในกระเป๋าก่อนเสมอ" — แยกจากการซื้อ (เสียเงิน) · เดิมโค้ดใช้ของฝังใน buyCoffee/buyPotions
+    //   → ปิดการซื้อ = ไม่แตะของฟรีในกระเป๋าเลย (กาแฟ/ยา จากจดหมาย/รางวัลค้างทิ้ง) · เปิดไว้ = ใช้ของฟรีแม้ปิดการซื้อ
+    useBagConsumables: true,     // ใช้กาแฟ/ยา ที่มีในกระเป๋าก่อน แม้ปิดการซื้ออัตโนมัติ (ของฟรี ไม่เสียเงิน)
     buyCoffee: false,            // ซื้อ ☕ กาแฟเติมพลังในร้าน (หลังเก็บเควสหมด) เพื่อตกต่อเนื่อง 24 ชม.
     coffeeAtEnergy: 35,          // ซื้อกาแฟเมื่อพลัง ≤ กี่ % (เก็บเควสก่อน ถ้าไม่พอค่อยซื้อ) · กาแฟ +50 พลัง 1,500 🪙
     buyPotion: false,            // ซื้อยาบัฟอัตโนมัติเมื่อบัฟหมด (เฉพาะตอนรายได้/ชม.ถึงเกณฑ์ = คุ้ม)
@@ -3479,6 +3482,8 @@
           logWarn(`ใช้ "กาแฟ" จากกระเป๋าแล้วพลังไม่ขึ้น (${e0}%→${e1}%) — อาจเป็นไอเทมชื่อคล้าย/ใช้ไม่ติด · พักลองกระเป๋า 30 นาที ไปซื้อ/เก็บเควสแทน`);
         }
       }
+      // 🎒 v6.194: ไม่มีในกระเป๋า + ปิดการซื้อ = จบ (ใช้แค่ของฟรี ไม่เปิดร้านซื้อ) · พัก 10 นาทีกันเปิดกระเป๋าหาซ้ำถี่
+      if (!isOn('buyCoffee')) { coffeeFailUntil = Math.max(coffeeFailUntil, now() + 600000); return false; }
       // ไม่มีในกระเป๋า → ซื้อจากร้าน
       if (!await openShop()) { say('เปิดร้านซื้อกาแฟไม่สำเร็จ'); return false; }
       await shopTab('🧪 ยา');   // consumable (ยา/กาแฟ) ย้ายมาแท็บนี้ (เดิม 👕 ชุด)
@@ -3587,9 +3592,10 @@
     // 🐛 v6.132: ตอน no-loss gate สั่ง "งดยา" ต้องไม่มียาเลย — เดิม myt=false แล้วตกไปสาขา "ยาหลัก" = ยารั่วกลับมาทั้งที่สั่งงด
     if (mythicActive() && mythicPotOff) return;
     const myt = mythicActive();
-    //   ยาหลักต้องมี buyPotion เปิดด้วย (self-guard เผื่อถูกเรียกนอก tick) — โหมดล่าปลาเทพยึดสวิตช์โหมดล้วน
-    const wWeight = myt ? isOn('mythicWeight') : (isOn('buyPotion') && isOn('potionWeight'));
-    const wLuck   = myt ? isOn('mythicLuck')   : (isOn('buyPotion') && isOn('potionLuck'));
+    // 🎒 v6.194: "อยากได้บัฟ" แยกจาก "จะซื้อ" — เดิมผูกกับ isOn('buyPotion') → ปิดซื้อ = ไม่แตะยาฟรีในกระเป๋าเลย
+    //   ตอนนี้ want = บัฟที่เปิดสวิตช์ไว้ (potionWeight/Luck) · การซื้อ (เสียเงิน) ไป gate ทีหลัง (หลังใช้ของฟรี)
+    const wWeight = myt ? isOn('mythicWeight') : isOn('potionWeight');
+    const wLuck   = myt ? isOn('mythicLuck')   : isOn('potionLuck');
     const buffs = readBuffs();
     let want = [];
     if (wWeight && !buffs.weight) want.push({ re: /ยาปลาตัวใหญ่/, name: '🐋 ยาปลาตัวใหญ่', price: 2000, kind: 'weight' });
@@ -3609,43 +3615,47 @@
       if (now() - lastPotionEnergySayAt > 600000) { lastPotionEnergySayAt = now(); say(`🧪 งดใช้ยา — พลัง ${Math.round(ePot)}% < เกณฑ์ ${cfg.potionMinEnergy}% (กันเปิดยาแล้วไม่มีพลังตก)`); }
       return;
     }
-    const cph = recentCph();
-    // 💰 v6.102 บั๊กจริง: เดิม "advisorPotionVerdict ⇒ ข้าม potionMinCph ทั้งหมด" → ผู้ใช้ตั้ง 55,000
-    //   แต่ Advisor ใช้เกณฑ์ตัวเอง (wNeed ~26,667) → ซื้อยาที่รายได้ครึ่งเดียวของที่ตั้ง = "ยังไม่ถึงที่ตั้งก็ใช้ยา"
-    //   แก้: potionMinCph = "พื้นแข็ง" ของผู้ใช้ ใช้เสมอทุกโหมด · Advisor ทำให้ "เข้มขึ้น" ได้ (กรอง want ต่อ) แต่ผ่อนให้ต่ำกว่าไม่ได้
-    if (!myt && cfg.potionMinCph > 0 && (cph == null || cph < cfg.potionMinCph)) {
-      if (now() - lastPotionCphSayAt > 600000) {
-        lastPotionCphSayAt = now();
-        say(`🧪 งดใช้ยา — รายได้ ${cph == null ? 'ข้อมูลไม่พอ' : Math.round(cph).toLocaleString() + '/ชม.'} < เกณฑ์ที่ตั้ง ${cfg.potionMinCph.toLocaleString()}/ชม. (ไม่นับปลาฟลุ๊ค)`);
-      }
-      return;
-    }
-    // โหมด Advisor Auto (advisorPotionVerdict = {weight,luck}): อนุมัติราย "ตัวยา" แยกกัน — กรอง want เหลือเฉพาะที่ advisor ว่าคุ้ม
-    if (!myt && advisorPotionVerdict) {   // โหมดล่าปลาเทพไม่ใช้คำตัดสิน advisor (advisor พักอยู่ — verdict อาจเป็นของเก่าค้าง)
-      want = want.filter((w) => advisorPotionVerdict[w.kind]);
-      if (!want.length) return;
-    }
-    // 🧪 v6.102: "ต้องครบทั้งคู่" (ตัวเลือก) — เปิดยาไม่ครบ = สถิติรอบยาใช้ไม่ได้ (recBuffStat นับ buff เฉพาะ bw&&bl)
-    //   ต้องซื้อได้ครบทุกตัวที่ยังขาด ไม่งั้นไม่ซื้อเลย (กันเสียเงินยาตัวเดียวแล้ว record ตกร่อง)
-    if (isOn('potionRequireBoth') && isOn('potionWeight') && isOn('potionLuck')) {
-      const missing = (buffs.weight ? 0 : 1) + (buffs.luck ? 0 : 1);
-      if (want.length < missing) {
-        if (now() - lastPotionCphSayAt > 600000) { lastPotionCphSayAt = now(); say('🧪 งดใช้ยา — "ต้องครบทั้งคู่" เปิดอยู่ แต่เปิดได้ไม่ครบ 🐋+🍀'); }
-        return;
-      }
-    }
     busy = true;
     let ok = false;
     try {
-      // 🧪 v6.121: ใช้ยาค้างในกระเป๋าก่อนเสมอ (จากจดหมาย/ซื้อแล้วกดใช้พลาด) — แบบเดียวกับกาแฟ v6.93
-      //   บั๊กเดิม: มียาในกระเป๋าแต่เปิดร้านซื้อขวดใหม่ทุก 3 นาที = เปลืองเงิน+กินลิมิต 5 ขวด/วัน
-      const still = [];
-      for (const w of want) {
-        if (await useConsumable(w.re)) { ok = true; say(`🧪 ใช้ ${w.name} จากกระเป๋า (ฟรี · ไม่เสียเงิน)`); }
-        else still.push(w);
+      // 🎒 v6.194: ใช้ยาที่มีในกระเป๋าก่อนเสมอ (ฟรี · จากจดหมาย/รางวัล/ซื้อแล้วกดใช้พลาด) — แม้ปิดการซื้อ
+      //   เดิม (v6.121) ใช้กระเป๋าก่อนเหมือนกัน แต่ทั้งฟังก์ชันถูก gate ด้วย isOn('buyPotion') → ปิดซื้อ = ไม่แตะของฟรี
+      //   ของฟรี "ไม่ติด gate เงิน" (cph/advisor) — มันฟรีอยู่แล้ว · ติดแค่ gate "คุ้มใช้ไหม" (พลัง/ขั้นเหยื่อ ด้านบน)
+      if (isOn('useBagConsumables') || myt || isOn('buyPotion')) {
+        const still = [];
+        for (const w of want) {
+          if (await useConsumable(w.re)) { ok = true; say(`🧪 ใช้ ${w.name} จากกระเป๋า (ฟรี · ไม่เสียเงิน)`); }
+          else still.push(w);
+        }
+        want = still;
       }
-      want = still;
-      if (!want.length) return;
+      if (!want.length) return;                                 // ครบจากกระเป๋าแล้ว (ฟรี)
+      // 🛒 ยังขาดบัฟ + จะซื้อ (เสียเงิน) → ต้องเปิด "ซื้อยา" · ปิด = ใช้แค่ของฟรี แล้วพักเช็ค 10 นาที (กันเปิดกระเป๋าถี่)
+      if (!myt && !isOn('buyPotion')) { potionFailUntil = Math.max(potionFailUntil, now() + 600000); return; }
+      // ---- gate เฉพาะ "การซื้อ" (ของฟรีข้างบนผ่านมาแล้ว ไม่โดน gate พวกนี้) ----
+      const cph = recentCph();
+      // 💰 v6.102: potionMinCph = "พื้นแข็ง" ของผู้ใช้ (ไม่นับปลาฟลุ๊ค) · Advisor เข้มขึ้นได้ ผ่อนต่ำกว่าไม่ได้
+      if (!myt && cfg.potionMinCph > 0 && (cph == null || cph < cfg.potionMinCph)) {
+        if (now() - lastPotionCphSayAt > 600000) {
+          lastPotionCphSayAt = now();
+          say(`🧪 ไม่ซื้อยาเพิ่ม — รายได้ ${cph == null ? 'ข้อมูลไม่พอ' : Math.round(cph).toLocaleString() + '/ชม.'} < เกณฑ์ ${cfg.potionMinCph.toLocaleString()}/ชม. (ของฟรีในกระเป๋าใช้ไปแล้วถ้ามี)`);
+        }
+        return;
+      }
+      // Advisor Auto: อนุมัติราย "ตัวยา" แยกกัน — กรอง want เหลือเฉพาะที่ advisor ว่าคุ้มซื้อ
+      if (!myt && advisorPotionVerdict) {
+        want = want.filter((w) => advisorPotionVerdict[w.kind]);
+        if (!want.length) return;
+      }
+      // 🧪 v6.102: "ต้องครบทั้งคู่" — re-read buffs เผื่อกระเป๋าเพิ่งเปิดบัฟไปตัวนึง (buffs ตัวบนอ่านก่อนใช้กระเป๋า)
+      if (isOn('potionRequireBoth') && isOn('potionWeight') && isOn('potionLuck')) {
+        const nb = readBuffs();
+        const missing = (nb.weight ? 0 : 1) + (nb.luck ? 0 : 1);
+        if (want.length < missing) {
+          if (now() - lastPotionCphSayAt > 600000) { lastPotionCphSayAt = now(); say('🧪 ไม่ซื้อยา — "ต้องครบทั้งคู่" เปิดอยู่ แต่ซื้อได้ไม่ครบ 🐋+🍀'); }
+          return;
+        }
+      }
       if (!await openShop()) { say('เปิดร้านซื้อยาไม่สำเร็จ'); return; }
       await shopTab('🧪 ยา'); await sleep(350);   // ยาย้ายมาแท็บของตัวเอง (เดิม 👕 ชุด)
       const addedItems = [];                                   // เก็บ "ตัวที่ใส่ตะกร้าได้จริง" (ไว้รายงานชื่อ/ราคาให้ตรง)
@@ -5242,7 +5252,8 @@ ${esc(reason)}
 
         // ☕ ซื้อกาแฟเติมพลังก่อนถึงจุดพัก (เพื่อตกต่อเนื่อง 24 ชม.) — เก็บเควสก่อน ไม่พอค่อยซื้อ
         // ทำก่อน energyManage: พอเติมแล้วพลังเด้งเกินจุดพัก → ไม่ต้องนั่งพักเลย
-        if (isOn('buyCoffee') && !busy && !pendingCast && !energyResting && now() > coffeeFailUntil) {
+        // 🎒 v6.194: เปิดเมื่อ "ซื้อกาแฟ" หรือ "ใช้ของในกระเป๋า" อย่างใดอย่างหนึ่ง — ให้ใช้กาแฟฟรีได้แม้ปิดการซื้อ
+        if ((isOn('buyCoffee') || isOn('useBagConsumables')) && !busy && !pendingCast && !energyResting && now() > coffeeFailUntil) {
           const ec = energyPct();
           if (ec !== null && ec <= cfg.coffeeAtEnergy) {
             void sustainEnergy();
@@ -5254,9 +5265,10 @@ ${esc(reason)}
         // 🌈 v6.129: แยกยาโหมดล่าปลาเทพ/ยาหลักขาดกัน — อยู่โหมด = ยึดสวิตช์โหมด (mythicWeight/Luck) เท่านั้น · ยาหลักต้อง isOn('buyPotion')
         //   v6.132: ตอน mythicPotOff (gate สั่งงดยา) = ไม่มียาเลย — เดิมตกไปสาขายาหลัก ยารั่วกลับมาทั้งที่สั่งงด
         const mytOn = mythicActive();
+        // 🎒 v6.194: เปิดทางเมื่อ "ซื้อยา" หรือ "ใช้ของในกระเป๋า" — ให้ใช้ยาฟรีในกระเป๋าได้แม้ปิดการซื้อ
         const potGate = mytOn
           ? (!mythicPotOff && (isOn('mythicWeight') || isOn('mythicLuck')))
-          : (isOn('buyPotion') && (isOn('potionWeight') || isOn('potionLuck')));
+          : ((isOn('buyPotion') || isOn('useBagConsumables')) && (isOn('potionWeight') || isOn('potionLuck')));
         if (potGate && !testRunning && !busy && !pendingCast && !energyResting && now() > potionFailUntil && now() - lastPotionCheck > 60000) {
           lastPotionCheck = now();
           const b = readBuffs();
@@ -6248,6 +6260,14 @@ ${esc(reason)}
       labeled('เปิด', checkbox('autoQuest')),
       labeled('เช็คทุก (นาที)', numInput('questEvery', 1, 240, 56)),
       labeled('รับเมื่อพลัง <%', numInput('questMaxEnergy', 1, 100, 52)),
+    ));
+
+    panel.appendChild(row(
+      '🎒 ใช้ของฟรีในกระเป๋าก่อน (กาแฟ/ยา)',
+      'เปิดไว้ = บอทจะ "ใช้กาแฟ/ยาที่มีในกระเป๋าก่อนเสมอ" (จากจดหมาย/รางวัล ฟรี ไม่เสียเงิน) แม้จะปิดการซื้ออัตโนมัติไว้ · '
+      + 'เดิมโค้ด "ใช้ของฟรี" ถูกล่ามกับสวิตช์ "ซื้อ" → ปิดซื้อ = ของฟรีในกระเป๋าค้างทิ้ง (v6.194 แยกออกจากกัน) · '
+      + 'การซื้อ (เสียเงิน) ยังคุมด้วยสวิตช์ "ซื้อกาแฟ"/"ซื้อยา" ด้านล่างตามเดิม · เงื่อนไข "คุ้มใช้ไหม" (พลัง/ขั้นเหยื่อ) ยังบังคับกับของฟรีด้วย แต่เกณฑ์เรื่องเงิน (รายได้/ชม.) ไม่บังคับ (ของฟรีไม่มีต้นทุน)',
+      labeled('เปิด', checkbox('useBagConsumables')),
     ));
 
     panel.appendChild(row(
