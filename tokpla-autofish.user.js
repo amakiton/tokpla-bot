@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.192
+// @version      6.193
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.192';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.193';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -172,6 +172,11 @@
     mailEvery: 240,              // เช็คจดหมายทุกกี่นาที
     baitTier: 3,                 // เหยื่อระดับที่ใช้ (ตั้งเอง) — ค่ากลางถูกๆ ที่คุ้ม ไม่ใช่ขั้นแพงที่เปลืองเปล่า
     buyBelow: 20,                // เหลือน้อยกว่านี้ค่อยซื้อ
+    // 🪱 v6.193: "ไล่ใช้สต๊อกเหยื่อที่กองอยู่ให้หมดก่อนซื้อใหม่" — เหยื่อที่ซื้อแล้ว = ต้นทุนจม ใช้ฟรี
+    //   เลือกไล่ "ขั้นที่รายได้/ครั้งสูงสุด (ตัดฟลุ๊ค) ในบรรดาที่มีกองใหญ่" ก่อน · ไล่เฉพาะขั้นที่ "ไม่แย่กว่า" ขั้นที่ Advisor จะเลือก
+    //   → ไม่ไล่ขั้นรายได้ต่ำ (เช่น 7/8) เพราะเอามาตกได้น้อยกว่าฟาร์มขั้น 1 ด้วยซ้ำ (ขายคืน 50% คุ้มกว่า)
+    useBaitStock: false,         // ปิดไว้ (opt-in) — เปิด = ไล่ใช้สต๊อกเหยื่อขั้นคุ้มก่อน แล้วค่อยกลับไปให้ Advisor เลือก
+    baitStockMin: 200,           // นับเป็น "กองใหญ่ที่ควรไล่" เมื่อมี ≥ เท่านี้
     buyPacks: 1,                 // ซื้อกี่แพ็ค (แพ็คละ 100 ชิ้น)
     forceBait: false,            // บังคับสลับไปใช้เหยื่อระดับที่ตั้งไว้
     forceRod: false,             // บังคับสลับไปใช้เบ็ดขั้นที่ตั้งไว้
@@ -746,10 +751,12 @@
       const m = parseInt(cfg.mythicBait, 10) || 0;
       return Math.min(m > 0 ? clamp(m, 1, 8) : mythicAutoTier(), baitCeil || 8);
     }
+    // 🪱 v6.193: โหมดไล่สต๊อก — ใช้ขั้นที่กำลังไล่ก่อน (override Advisor/cfg · ไม่แตะตอนทดสอบ กฎเหล็ก #4)
+    if (isOn('useBaitStock') && drainTier && !testRunning) return Math.min(drainTier, baitCeil || 8);
     return Math.min(cfg.baitTier || 1, baitCeil || 8);
   };
-  // ต้องบังคับให้เหยื่อที่ใส่ = เป้าหมายไหม (forceBait เปิด · Advisor โหมดลงมือเอง · หรือโหมดล่าปลาเทพ — ต้องคุมขั้นเหยื่อเอง)
-  const enforceBait = () => isOn('forceBait') || (isOn('advisor') && isOn('advisorAuto')) || mythicActive();
+  // ต้องบังคับให้เหยื่อที่ใส่ = เป้าหมายไหม (forceBait เปิด · Advisor โหมดลงมือเอง · โหมดล่าปลาเทพ · ไล่สต๊อก — ต้องคุมขั้นเหยื่อเอง)
+  const enforceBait = () => isOn('forceBait') || (isOn('advisor') && isOn('advisorAuto')) || mythicActive() || (isOn('useBaitStock') && !!drainTier);
   // ⚡ turbo มีผลจริงไหม — โหมดล่าปลาเทพบังคับเปิด (แรร์สุ่มต่อครั้ง → ตกถี่สุด = โอกาสมากสุด)
   const turboEff = () => isOn('turbo') || mythicActive();
   function disableForSession(key, why) {
@@ -4084,7 +4091,11 @@
         // ปุ่มสลับเหยื่อจะข้ามขั้นที่ของหมด ถ้าวนครบแล้วยังไม่ได้ = ขั้นนั้นไม่มีของ (targetBait รวม override โหมดล่าปลาเทพ)
         const ok = await cycleTo('เลือกเหยื่อ', targetBait(), () => currentBait()?.tier);
         if (!ok) {
-          if (isOn('autoBuy')) {
+          // 🪱 v6.193: โหมดไล่สต๊อก — สลับไปขั้นที่ไล่ไม่ได้ (ของหมด) → ทิ้งกองนี้ สแกนใหม่ (อย่าซื้อมาเติม)
+          if (isOn('useBaitStock') && drainTier && targetBait() === drainTier) {
+            say(`🪱 สต๊อกเหยื่อขั้น ${drainTier} หมดแล้ว — หากองถัดไป/กลับโหมดปกติ`);
+            drainTier = 0; void scanDrainTier();
+          } else if (autoBuyEff()) {
             needBuy = true;   // ให้ไปซื้อขั้นนี้มาก่อน แล้วค่อยสลับใหม่รอบหน้า
             say(`ไม่มีเหยื่อขั้น ${targetBait()} เหลืออยู่ — จะแวะซื้อให้`);
           } else if (isOn('forceBait')) {
@@ -4253,6 +4264,40 @@
     } catch { return null; }
     finally { await closeShop(); busy = false; }
   }
+  // ---------- 🪱 v6.193: ไล่ใช้สต๊อกเหยื่อขั้นคุ้มก่อนซื้อใหม่ ----------
+  //   รายได้/ครั้ง แบบตัดฟลุ๊ค (ใช้ advTrimStat เดิม — ตัด legendary/mythic กันขั้น 5 ถูกปลาเทพลากขึ้นเกินจริง)
+  const baitRevCast = (tier) => { try { const s = advTrimStat(tier, 0); return s ? s.revCast : null; } catch { return null; } };
+  let drainTier = 0, lastDrainScan = -1e9;
+  // เปิดร้านครั้งเดียว อ่านสต๊อกทุกขั้น แล้วเลือก "ขั้นกองใหญ่ที่รายได้/ครั้งสูงสุด และไม่แย่กว่าขั้นที่ Advisor จะเลือก"
+  async function scanDrainTier() {
+    if (busy || orchestrating || testRunning || mythicActive()) return;
+    lastDrainScan = now();
+    busy = true;
+    try {
+      if (!await openShop()) return;
+      await shopTab('🪱 เหยื่อ'); await sleep(200);
+      const rows = shopRows().filter((r) => r.tier && r.stock !== null);
+      // baseTier = ขั้นที่จะฟาร์มถ้าไม่ไล่สต๊อก (Advisor เลือก หรือ cfg) — ห้ามไล่ขั้นที่รายได้ต่ำกว่านี้
+      let baseTier = cfg.baitTier || 1;
+      try { const a = advisorDecide(); if (a && a.bestTier) baseTier = a.bestTier; } catch {}
+      const baseRev = baitRevCast(baseTier) ?? 0;
+      const cands = rows
+        .filter((r) => r.stock >= (cfg.baitStockMin || 200) && r.tier !== baseTier)
+        .map((r) => ({ tier: r.tier, stock: r.stock, rev: baitRevCast(r.tier) }))
+        .filter((c) => c.rev != null && c.rev >= baseRev)      // ไม่ไล่ขั้นที่ตกได้น้อยกว่าฐาน (เสียโอกาส/ครั้ง)
+        .sort((a, b) => b.rev - a.rev);
+      const prev = drainTier;
+      drainTier = cands.length ? cands[0].tier : 0;
+      if (drainTier && drainTier !== prev)
+        say(`🪱 ไล่ใช้สต๊อกเหยื่อขั้น ${drainTier} ก่อน (มี ${cands[0].stock} · รายได้/ครั้ง ~${Math.round(cands[0].rev)} ≥ ฐานขั้น ${baseTier} ~${Math.round(baseRev)}) — ใช้ของที่ซื้อไว้แล้วให้คุ้ม ไม่ซื้อใหม่จนกว่าจะหมด`);
+      else if (!drainTier && prev)
+        say('🪱 ไล่สต๊อกเหยื่อขั้นคุ้มหมดแล้ว — กลับไปโหมดปกติ (Advisor เลือกขั้น + ซื้อตามเดิม)');
+    } catch (e) { logErr('สแกนสต๊อกเหยื่อล้มเหลว', e); }
+    finally { await closeShop(); busy = false; }
+  }
+  // ระงับการซื้อเฉพาะตอนกำลังไล่สต๊อก (ไม่งั้นซื้อขั้นที่กำลังไล่มาเติม = ไล่ไม่มีวันหมด)
+  const autoBuyEff = () => isOn('autoBuy') && !(isOn('useBaitStock') && drainTier);
+
   // อ่าน "เพดานเหยื่อจริง" จากร้าน (ขั้นสูงสุดที่ปลดล็อกแล้ว) — กันทดสอบขั้นที่ยังล็อกอยู่ + แจ้งช่วงให้ตรง
   async function detectBaitCeil() {
     await waitFor(() => !busy && !orchestrating, 20000);   // รอคิวว่าง (เด้งเงียบ = เพดานผิดทั้งการทดสอบ)
@@ -5364,13 +5409,19 @@ ${esc(reason)}
         const bait = currentBait();
         // ระหว่างทดสอบ: ข้ามการจัดการเหยื่อ/เบ็ดของ tick ทั้งหมด — ระบบทดสอบคุมเหยื่อเอง (ไม่ให้เปลี่ยนขั้นมั่ว)
         if (!testRunning) {
+          // 🪱 v6.193: โหมดไล่สต๊อก — ขั้นที่กำลังไล่หมดแล้ว → สแกนใหม่ (เลือกกองถัดไป/คืน Advisor) แทนที่จะซื้อมาเติม
+          if (isOn('useBaitStock') && drainTier && bait && bait.tier === drainTier && (bait.stock === 0 || bait.stock == null)) {
+            drainTier = 0; void scanDrainTier(); return requestAnimationFrame(tick);
+          }
+          // สแกนหากองใหญ่เมื่อยังไม่มีขั้นที่ไล่อยู่ (ทุก 5 นาที) — เปิดโหมดครั้งแรก/หลังไล่หมด · ตอนกำลังไล่ไม่ต้องรบกวน
+          if (isOn('useBaitStock') && !drainTier && !mythicActive() && now() - lastDrainScan > 300000) { void scanDrainTier(); }
           // (3) เหยื่อขั้นที่ใช้อยู่หมดเกลี้ยง -> สลับไปขั้นที่ยังมีของก่อน ไม่ต้องรอให้กดพลาด
-          if (bait && (bait.tier === null || bait.stock === 0) && !(needBuy && isOn('autoBuy'))) {
+          if (bait && (bait.tier === null || bait.stock === 0) && !(needBuy && autoBuyEff())) {
             void handleNoBait();
             return requestAnimationFrame(tick);
           }
-          // เหยื่อใกล้หมด -> แวะร้านซื้อ (needBuy = หมดเกลี้ยง ต้องข้ามคูลดาวน์ 20 วิ)
-          if (isOn('autoBuy') && now() > baitBuyFailUntil && (needBuy || now() - lastBuyTry > 20000)) {
+          // เหยื่อใกล้หมด -> แวะร้านซื้อ (needBuy = หมดเกลี้ยง ต้องข้ามคูลดาวน์ 20 วิ) · ระงับตอนไล่สต๊อก (autoBuyEff)
+          if (autoBuyEff() && now() > baitBuyFailUntil && (needBuy || now() - lastBuyTry > 20000)) {
             const low = bait && bait.tier === targetBait() && bait.stock <= cfg.buyBelow;
             if (low || needBuy) {
               lastBuyTry = now();
@@ -6293,6 +6344,16 @@ ${esc(reason)}
       'ขายปลาให้หมดก่อนช่วงต่อ (ตามกฎล็อก · ปลาที่ล็อกไม่ขาย) เพื่อรับรู้รายได้/เคลียร์กระเป๋าให้บัญชีชัด · '
       + '"ก่อนซื้อเหยื่อใหม่" = ก่อนเติมเหยื่อทุกครั้ง',
       labeled('ก่อนซื้อเหยื่อใหม่', checkbox('sellBeforeBuy')),
+    ));
+
+    panel.appendChild(row(
+      '🪱 ไล่ใช้สต๊อกเหยื่อเก่าก่อนซื้อใหม่',
+      'เหยื่อที่ซื้อไว้แล้ว = ต้นทุนจม (ใช้ฟรี) · เปิดแล้วบอทจะ "ไล่ใช้กองเหยื่อขั้นที่รายได้/ครั้งสูงสุด (ตัดฟลุ๊ค) ก่อน" แล้วค่อยกลับไปให้ Advisor เลือก+ซื้อตามเดิม · '
+      + 'ไล่เฉพาะขั้นที่คุ้ม (รายได้/ครั้ง ≥ ขั้นที่ Advisor จะเลือก) — ขั้นรายได้ต่ำ (เช่น 7/8) ไม่ไล่ เพราะตกได้น้อยกว่าขั้นถูก แนะนำ "ขายคืน 50%" ในกระเป๋าแทน · '
+      + 'ระหว่างไล่จะไม่ซื้อเหยื่อเพิ่ม (ไม่งั้นไล่ไม่มีวันหมด) · '
+      + '"กองใหญ่" = มีเหยื่อขั้นนั้น ≥ จำนวนที่ตั้ง',
+      labeled('เปิด', checkbox('useBaitStock')),
+      labeled('กองใหญ่เมื่อ ≥', numInput('baitStockMin', 20, 1000, 56)),
     ));
 
     panel.appendChild(row(
