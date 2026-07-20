@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.169
+// @version      6.170
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.169';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.170';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1384,6 +1384,21 @@
   //       (วัดสด: 2:20 → 1:30 ใน 51 วิ = ลด 1 หน่วย/วินาที · ไม่ใช่ H:MM)
   //   v6.103 รู้จักแต่รูปแบบแรก → พอเหลือ < 1 ชม. (ซึ่งเป็นช่วงที่ bossLeadMin ต้องใช้เสมอ!) คืน null
   //   → bossHuntDue() เป็นเท็จตลอด = ระบบล่าบอสไม่เคยทำงานเลย
+  // 🐯 v6.170 (เจอสด): ป้ายบอสมี "โหมดย่อ" — เป็นปุ่ม title="แตะดูเวลาเต็ม" แสดงแค่ `MM:SS` (หรือ `H:MM:SS`)
+  //   ไม่มีคำว่า "บอสถัดไป" เลย → TreeWalker เดิมหาไม่เจอ → คืน null → bossHuntDue เป็นเท็จ = ไม่ล่าบอส
+  //   (ยืนยันสด: chip ขึ้น 28:32 = บอสอีก 28 นาที แต่บอทมองไม่เห็นเลย) · ผู้ใช้สลับโหมดย่อ/เต็มได้เอง บอทจึงต้องอ่านได้ทั้งคู่
+  //   หน่วยเป็น นาที:วินาที (ไม่ใช่ ชม.:นาที) — ยืนยันจากการวัดสดใน v6.106
+  function bossTimerChipMin() {
+    try {
+      const b = [...document.querySelectorAll('button')].find((x) =>
+        !isBotUI(x) && x.offsetParent && /แตะดูเวลาเต็ม/.test(x.getAttribute('title') || '')
+        && /^\d{1,2}:\d{2}(:\d{2})?$/.test((x.textContent || '').trim()));
+      if (!b) return null;
+      const p = (b.textContent || '').trim().split(':').map(Number);
+      if (p.some(isNaN)) return null;
+      return p.length === 3 ? p[0] * 60 + p[1] : p[0];
+    } catch { return null; }
+  }
   let bossNowLabelSeen = false;   // v6.169: กัน log ซ้ำทุก 5 วิ ตอนป้าย "ถึงรอบบอสแล้ว" ค้างอยู่
   function bossTimerMin() {
     try {
@@ -1411,7 +1426,7 @@
         if (/โผล่แล้ว|กำลังโผล่|มาแล้ว/.test(t)) return 0;
       }
     } catch {}
-    return null;
+    return bossTimerChipMin();   // 🐯 v6.170: ไม่เจอป้ายแบบข้อความ → ลองอ่าน "chip โหมดย่อ" (MM:SS) ก่อนยอมแพ้
   }
 
   // ---- เรียนรู้กราฟแมพ (persist) : map -> { targetMap: {x,y} } ----
