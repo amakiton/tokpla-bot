@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.179
+// @version      6.180
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.179';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.180';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2072,20 +2072,39 @@
     try { getPhaserScene().autoWalker.navigate({ x: t.x, y: t.y, mapId: 'fisher_town' }); } catch {}
     return !!await waitFor(() => { try { return getPhaserScene()?.nearNpcId === id; } catch { return false; } }, 15000, 300);
   }
-  const npcCloseDialog = () => { const x = [...document.querySelectorAll('button')].find((b) => /^✕$|^×$/.test((b.textContent || '').trim())); if (x) fireClick(x); };
+  // 🛡️ v6.180: ปิด dialog NPC ให้ได้จริง — เดิมหาแค่ปุ่มที่ "ข้อความ" เป็น ✕/× ซึ่งเปราะมาก
+  //   DOM จริงของคลัง: <button aria-label="ปิดคลัง">✕</button> → ใช้ aria-label เป็นหลัก (เจาะจงกว่า) แล้วค่อย fallback
+  //   ปิดไม่ได้ = popup ค้างบังจอ ตกปลาต่อไม่ได้ (อาการที่ผู้ใช้เจอ) จึงซ้อน 3 ชั้น + Escape ปิดท้าย
+  const npcCloseDialog = () => {
+    const vis = (b) => !isBotUI(b) && b.offsetParent !== null;
+    const byAria = [...document.querySelectorAll('button')].find((b) => vis(b) && /^ปิด/.test(b.getAttribute('aria-label') || ''));
+    const byText = [...document.querySelectorAll('button')].find((b) => vis(b) && /^(✕|×|✖)$/.test((b.textContent || '').trim()));
+    const x = byAria || byText;
+    if (x) fireClick(x);
+    gameEscape();   // ชั้นสุดท้าย: Esc = "ปิดหน้าต่างทั้งหมด" (มีข้อยกเว้นหน้าต่างรางวัลอยู่แล้ว)
+  };
+  // ปิดเฉพาะ popup "เลือกจำนวน" (ไม่ปิดคลังทั้งบาน) — ใช้ตอนฝากใบนี้ไม่ได้แล้วจะลองใบถัดไป
+  const npcCloseQtyPopup = () => {
+    const b = [...document.querySelectorAll('button')].find((x) => !isBotUI(x) && x.offsetParent !== null && /^(ยกเลิก|ปิด)$/.test((x.textContent || '').trim()));
+    if (b) fireClick(b);
+  };
   const npcVisible = (el) => { try { const r = el.getBoundingClientRect(); return el.offsetParent !== null && r.width > 10 && r.height > 10; } catch { return false; } };
   const NPC_RARWORD = { 'ไม่ธรรมดา': 'uncommon', 'หายาก': 'rare', 'สุดยอด': 'epic', 'ตำนาน': 'legendary', 'เทพนิยาย': 'mythic' };
   const npcDismissCatchPopup = () => { const c = [...document.querySelectorAll('button')].find((b) => /^ตกต่อ/.test((b.textContent || '').trim())); if (c) fireClick(c); };   // ปิด popup ผลตกปลาที่ค้างบัง
   // 🧪 ยายแก่น (v6.151 ยืนยันสด): คลิกแถวปลา (เลือก) → กด "สกัดเลย!" → ได้แก่น · ทีละตัวจนไม่มีปลาเข้าเกณฑ์ (rare+/ตาม config)
   async function npcDoEssence() {
-    npcDismissCatchPopup(); await sleep(200);
-    const talk = [...document.querySelectorAll('button')].find((b) => /คุยกับยายแก่น/.test(b.textContent || ''));
-    if (!talk) { say('🧪 หาปุ่มคุยยายแก่นไม่เจอ'); return 0; }
-    fireClick(talk);
-    if (!(await waitFor(() => [...document.querySelectorAll('*')].some((e) => /โต๊ะปรุงของยายแก่น/.test(e.textContent || '')), 4000))) return 0;
-    const essMin = rarityRank(cfg.npcEssenceRarity), stoMin = rarityRank(cfg.npcStorageRarity);
+    // v6.180: ครอบ try/finally เหมือนลุงคลัง — early-return เดิมไม่ปิด dialog = เสี่ยง popup ค้างแบบเดียวกัน
     let done = 0;
-    for (let i = 0; i < 80; i++) {
+    try {
+      npcDismissCatchPopup(); await sleep(200);
+      const talk = [...document.querySelectorAll('button')].find((b) => /คุยกับยายแก่น/.test(b.textContent || ''));
+      if (!talk) { say('🧪 หาปุ่มคุยยายแก่นไม่เจอ'); return 0; }
+      fireClick(talk);
+      if (!(await waitFor(() => [...document.querySelectorAll('*')].some((e) => /โต๊ะปรุงของยายแก่น/.test(e.textContent || '')), 6000))) {
+        say('🧪 เปิดโต๊ะยายแก่นไม่สำเร็จ (รอ 6 วิ)'); return 0;
+      }
+      const essMin = rarityRank(cfg.npcEssenceRarity), stoMin = rarityRank(cfg.npcStorageRarity);
+      for (let i = 0; i < 80; i++) {
       const fb = [...document.querySelectorAll('button')].find((b) => {
         if (!npcVisible(b) || b.disabled) return false; const t = (b.textContent || ''); if (!/kg/.test(t)) return false;   // แถวปลา = มีน้ำหนัก "N kg"
         const w = Object.keys(NPC_RARWORD).find((k) => t.includes(k)); return w && npcEssTake(rarityRank(NPC_RARWORD[w]), essMin, stoMin);   // 🧠 ไม่แลกตัวที่ลุงคลังจะเก็บ
@@ -2095,21 +2114,34 @@
       const craft = [...document.querySelectorAll('button')].find((b) => /สกัดเลย/.test(b.textContent || '') && npcVisible(b) && !b.disabled);
       if (!craft) break;
       fireClick(craft); done++; await sleep(800);            // สกัด → ได้แก่น
-    }
-    npcCloseDialog(); await sleep(300); return done;
+      }
+    } catch (e) { logErr('npcDoEssence', e); }
+    finally { npcCloseDialog(); await sleep(300); }   // v6.180: ปิดเสมอ
+    return done;
   }
   // 🏬 ลุงคลัง (v6.151 ยืนยันสด): คลิกการ์ดปลา(ที่มองเห็น) → popup จำนวน → "ทั้งหมด" → "เลือก N ตัว" → "ฝาก →"
   //   ระวัง: เกมมี layout ซ้อน (มือถือ sm:hidden + จอใหญ่) → readBag เจอการ์ดซ้ำ ต้องเลือกเฉพาะ "ที่มองเห็น" (npcVisible)
   async function npcDoStorage() {
-    npcDismissCatchPopup(); await sleep(200);
-    const talk = [...document.querySelectorAll('button')].find((b) => /ฝากของ/.test(b.textContent || b.getAttribute('aria-label') || ''));
-    if (!talk) { say('🏬 หาปุ่มฝากของไม่เจอ'); return 0; }
-    fireClick(talk);
-    if (!(await waitFor(() => [...document.querySelectorAll('*')].some((e) => /คลังลุงคลัง/.test(e.textContent || '')), 4000))) return 0;
-    const ft = [...document.querySelectorAll('button')].find((b) => /🐟\s*ปลา/.test(b.textContent || '') && npcVisible(b)); if (ft) { fireClick(ft); await sleep(300); }
-    const stoMin = rarityRank(cfg.npcStorageRarity);
+    // 🐛 v6.180 (ผู้ใช้รายงาน + ยืนยันจาก log): "เดินไปหาลุงคลัง แต่ไม่ฝาก + popup ค้างเปิดทิ้งไว้ แล้วเดินกลับ"
+    //   ต้นเหตุ 2 ชั้นที่เจอ: (1) early-return หลายจุด **ไม่ปิด dialog** → popup ค้างบังจอถาวร
+    //   (2) หลังกดแท็บ "🐟 ปลา" รอแค่ 300ms คงที่ แล้วอ่านการ์ดทันที — React ยังเรนเดอร์ grid ไม่เสร็จ
+    //       → readBag() ได้ 0 ใบ → break ทันที → "ฝาก 0" (log จริง: ทริปจบใน 14 วิ)
+    //   แก้: ครอบ try/finally ปิด dialog เสมอ + รอ "การ์ดโผล่จริง" แทนหน่วงคงที่ + log บอกจุดที่ล้ม
     let done = 0;
-    for (let round = 0; round < 40; round++) {
+    try {
+      npcDismissCatchPopup(); await sleep(200);
+      const talk = [...document.querySelectorAll('button')].find((b) => /ฝากของ/.test(b.textContent || b.getAttribute('aria-label') || ''));
+      if (!talk) { say('🏬 หาปุ่มฝากของไม่เจอ'); return 0; }
+      fireClick(talk);
+      if (!(await waitFor(() => [...document.querySelectorAll('*')].some((e) => /คลังลุงคลัง/.test(e.textContent || '')), 6000))) {
+        say('🏬 เปิดคลังลุงคลังไม่สำเร็จ (รอ 6 วิ)'); return 0;
+      }
+      const ft = [...document.querySelectorAll('button')].find((b) => /🐟\s*ปลา/.test(b.textContent || '') && npcVisible(b)); if (ft) { fireClick(ft); }
+      // ⏳ รอ "การ์ดปลาโผล่จริง" (ไม่ใช่หน่วงคงที่) — ต้นเหตุ "ฝาก 0" ที่ผู้ใช้เจอ
+      const gotCards = await waitFor(() => readBag().some((c) => c.rarity != null && npcVisible(c.el)), 4000, 200);
+      if (!gotCards) { say('🏬 เปิดคลังแล้วแต่การ์ดปลาไม่โผล่ — ข้ามรอบนี้'); return 0; }
+      const stoMin = rarityRank(cfg.npcStorageRarity);
+      for (let round = 0; round < 40; round++) {
       const card = readBag().find((c) => c.rarity != null && rarityRank(c.rarity) >= stoMin && (c.count - c.lockedCount) > 0 && npcVisible(c.el));
       if (!card) break;
       fireClick(card.el); await sleep(400);                  // เปิด popup เลือกจำนวน
@@ -2123,10 +2155,13 @@
       if (pick) { fireClick(pick); await sleep(250); }
       const sel = [...document.querySelectorAll('button')].find((b) => /^เลือก\s*\d+\s*(ตัว|ชิ้น)/.test((b.textContent || '').trim()) && npcVisible(b)); if (sel) { fireClick(sel); await sleep(400); }
       const dep = [...document.querySelectorAll('button')].find((b) => /ฝาก\s*→/.test(b.textContent || '') && npcVisible(b) && !b.disabled);
-      if (!dep) { npcCloseDialog(); await sleep(250); continue; }   // กดไม่ได้ (เกินลิมิต/ยังไม่เลือก) → ปิด popup ลองใบถัดไป แทนที่จะเลิกทั้งหมด
+      if (!dep) { npcCloseQtyPopup(); await sleep(250); continue; }   // กดไม่ได้ (เกินลิมิต/ยังไม่เลือก) → ปิดเฉพาะ popup จำนวน ลองใบถัดไป
       fireClick(dep); done++; await sleep(800);              // ฝาก
-    }
-    npcCloseDialog(); await sleep(300); return done;
+      }
+      if (!done) say('🏬 เปิดคลังได้แต่ไม่มีปลาเข้าเกณฑ์ให้ฝาก');
+    } catch (e) { logErr('npcDoStorage', e); }
+    finally { npcCloseDialog(); await sleep(300); }   // 🛡️ v6.180: ปิด dialog เสมอ ไม่ว่าออกทางไหน (กัน popup ค้างบังจอแล้วเดินกลับ)
+    return done;
   }
   // 🏪 v6.152 (B): ไปทำธุระเมืองประมง "ครั้งเดียวทำครบ" (แลกแก่น + ฝากของ + สุ่มหิน ตามที่ถึงเกณฑ์/เปิด) แล้วกลับแมพเดิม
   async function runTownErrands(due) {
@@ -2145,6 +2180,7 @@
       let es = 0, st = 0;
       if (isOn('npcEssenceOn')) { if (await npcWalkNear('kaen')) es = await npcDoEssence(); }
       if (isOn('npcStorageOn')) { if (await npcWalkNear('khlang')) st = await npcDoStorage(); }
+      npcCloseDialog(); await sleep(300);   // 🛡️ v6.180: กันเดินกลับทั้งที่ popup NPC ยังค้างบังจอ (อาการที่ผู้ใช้เจอ)
       say(`🏪 ธุระเสร็จ — แลกแก่น ${es} · ฝาก ${st} — กลับไปฟาร์ม`);
       if (isOn('tgOn')) void tgSend(`🏪 ธุระเมืองประมงเสร็จ: แลกแก่น ${es} · ฝาก ${st}`);
       lastNpcErrandAt = now();
