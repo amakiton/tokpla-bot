@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.173
+// @version      6.174
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.173';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.174';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -93,6 +93,8 @@
     bossMaxWaitMin: 8,           // อยู่ในถ้ำบอสสูงสุดกี่นาที (รอบอส+สู้) — ครบแล้วกลับบ้านแม้บอสไม่ตาย/ไม่มา
     bossHomeMap: '',             // แมพที่จะกลับไปฟาร์มต่อ (ว่าง = แมพที่อยู่ตอนเริ่มล่า)
     bossBaitTier: 2,             // 👹 เหยื่อ "จุดอ่อนบอส" ระหว่างตี (วิดีโอ: มัดอ้วนขั้น2/กุ้งฝอยขั้น4 = ดาเมจ x1.5) · 0 = ไม่สลับ
+    bossRodId: '',               // 🎣 v6.174: UUID "ชิ้นเบ็ด" ที่ใช้ตอนตีบอส (เช่นชิ้นที่ติดหินดาเมจบอส) · ว่าง = ไม่สลับ
+    farmRodId: '',               // 🎣 v6.174: UUID "ชิ้นเบ็ด" ที่ใช้ตอนฟาร์มปกติ · ว่าง = กลับไปชิ้นเดิมก่อนเข้าไฟต์
 
     // 🏪 ระบบ NPC เมืองชาวประมง (v6.150) — เดินไปด้วย game A* แล้วกลับแมพเดิมฟาร์มต่อ
     npcStorageOn: false,         // 🏬 ลุงคลัง: ฝากปลาระดับ >= npcStorageRarity เข้าคลัง (ปลอดภัย+ไม่กินช่องกระเป๋า) เมื่อมี >= npcStorageMin ตัว
@@ -1642,6 +1644,14 @@
     const fz = bossFishingZone();
     // เหยื่อจุดอ่อน (วิดีโอ: ขั้น2 มัดอ้วน / ขั้น4 กุ้งฝอย = ดาเมจ x1.5) — สลับก่อนตี (DOM ไม่ต้องเดิน)
     //   v6.121: จำขั้นเดิมไว้สลับคืนหลังสู้จบ — ไม่งั้นถ้าผู้ใช้ปิด forceBait เหยื่อจะค้างขั้นจุดอ่อนตลอด (ฟาร์มต่อผิดเหยื่อ)
+    // 🎣 v6.174 (ผู้ใช้ขอ): สลับ "ชิ้นเบ็ด" ไปตัวที่อัปเกรดมาตีบอส (เช่นติดหินดาเมจบอสจากช่างหิน) แล้วสลับคืนตอนฟาร์ม
+    //   เกมแยกเบ็ดเป็น instance (tokpla_rod_instance = UUID) → เบ็ด "ชนิดเดียวกันแต่อัปเกรดต่างกัน" แยกออกจากกันได้จริง
+    const prevRodId = currentRodId();
+    if (cfg.bossRodId && prevRodId && prevRodId !== cfg.bossRodId) {
+      busy = true;
+      try { say('👹 สลับไปเบ็ดสำหรับตีบอส'); await switchRodTo(cfg.bossRodId); } catch {}
+      finally { busy = false; }
+    }
     let prevBaitTier = null;
     if (cfg.bossBaitTier > 0 && currentBait() && currentBait().tier !== cfg.bossBaitTier) {
       prevBaitTier = currentBait().tier;
@@ -1784,6 +1794,13 @@
     if (prevBaitTier != null && currentBait()?.tier !== prevBaitTier) {
       busy = true;
       try { await cycleTo('เลือกเหยื่อ', prevBaitTier, () => currentBait()?.tier); } catch {}
+      finally { busy = false; }
+    }
+    // 🎣 v6.174: คืนเบ็ด — กลับไปเบ็ดฟาร์มที่ตั้งไว้ (ถ้าไม่ได้ตั้ง ใช้ชิ้นเดิมก่อนเข้าไฟต์)
+    const backRod = cfg.farmRodId || prevRodId;
+    if (backRod && currentRodId() !== backRod) {
+      busy = true;
+      try { say('🎣 สลับกลับเบ็ดสำหรับฟาร์ม'); await switchRodTo(backRod); } catch {}
       finally { busy = false; }
     }
     const outcome = killed ? '✅ บอสตาย!' : bossSeen ? '🏁 บอสหมดเวลา/หายไป — เก็บ reward ตามส่วนที่ช่วยตี' : '⌛ บอสไม่มาในเวลาที่รอ';
@@ -2926,6 +2943,23 @@
     const ok = !!await waitFor(() => !!readBagCount(), 2000, 150);
     if (ok) logInfo('🔤 เปิดกระเป๋าด้วยคีย์ลัด B (ปุ่มในแผงเมนูไม่มี)');
     return ok;
+  }
+
+  // 🎣 v6.174: สลับ "ชิ้นเบ็ด" (instance) — รองรับเบ็ดชนิดเดียวกันหลายชิ้นที่อัปเกรดต่างกัน (เช่นติดหินดาเมจบอส)
+  //   เกมเก็บชิ้นที่ใส่อยู่ใน localStorage `tokpla_rod_instance` (UUID) แยกจาก `tokpla_rod_selected` (ขั้น/ชนิด)
+  //   วิธีสลับ: กดคีย์ลัด G (สลับเบ็ด — จากตารางคีย์ลัดในเกม) วนไปเรื่อยๆ แล้วอ่าน UUID จนตรงเป้า
+  //   → ไม่ต้องพึ่งโครง DOM ของหน้าจออุปกรณ์เลย (เปิด UI ตอนบอทกำลังเหวี่ยงไม่ได้อยู่แล้ว)
+  const currentRodId = () => { try { return W.localStorage.getItem('tokpla_rod_instance') || ''; } catch { return ''; } };
+  async function switchRodTo(id, maxTries = 15) {
+    if (!id) return false;
+    if (currentRodId() === id) return true;
+    for (let i = 0; i < maxTries; i++) {
+      gameHotkey('KeyG', 71);
+      await sleep(320);
+      if (currentRodId() === id) { logInfo(`🎣 สลับเบ็ดสำเร็จ (กด G ${i + 1} ครั้ง)`); return true; }
+    }
+    logWarn(`🎣 สลับเบ็ดไม่สำเร็จ — วนครบ ${maxTries} ครั้งแล้วยังไม่เจอชิ้นที่ตั้งไว้ (เบ็ดอาจถูกขาย/เปลี่ยน — ตั้งใหม่ได้ในแผงบอท)`);
+    return false;
   }
 
   async function openShop() {
@@ -5679,6 +5713,35 @@ ${esc(reason)}
       labeled('เหยื่อจุดอ่อน (ขั้น)', numInput('bossBaitTier', 0, 8, 44)),
       labeled('แมพบ้าน', smallTextInput('bossHomeMap', 'ว่าง=อัตโนมัติ', 96)),
     ));
+
+    // 🎣 v6.174: สลับ "ชิ้นเบ็ด" ตอนตีบอส vs ฟาร์ม — เบ็ดชนิดเดียวกันหลายชิ้นที่อัปเกรดต่างกัน แยกด้วย instance UUID
+    //   ให้ผู้ใช้ "ใส่เบ็ดที่ต้องการแล้วกดจำ" แทนการพิมพ์ UUID เอง (UUID ยาว จำ/พิมพ์เองไม่ไหว)
+    {
+      const mkRodBtn = (key, label, tip) => {
+        const b = document.createElement('button');
+        b.setAttribute('data-tkbot', '1');
+        b.style.cssText = 'padding:5px 8px;border-radius:7px;border:1px solid #4a5568;background:#2d3748;color:#e2e8f0;font-size:11px;cursor:pointer;margin:2px 3px 2px 0;';
+        const paint = () => { b.textContent = cfg[key] ? `${label} ✓` : label; b.title = tip + (cfg[key] ? `\nจำไว้แล้ว: ${cfg[key].slice(0, 8)}…` : '\n(ยังไม่ได้ตั้ง)'); };
+        b.addEventListener('click', () => {
+          const id = currentRodId();
+          if (!id) { say('🎣 อ่านเบ็ดที่ใส่อยู่ไม่ได้ — ลองใส่เบ็ดในเกมก่อน'); return; }
+          if (cfg[key] === id) { cfg[key] = ''; say(`🎣 ล้างค่า ${label} แล้ว`); }
+          else { cfg[key] = id; say(`🎣 จำเบ็ดที่ใส่อยู่เป็น "${label}" แล้ว`); }
+          saveCfg(); paint();
+        });
+        paint();
+        return b;
+      };
+      panel.appendChild(row(
+        '🎣 สลับชิ้นเบ็ด: ตีบอส vs ฟาร์ม',
+        'เบ็ด "ชนิดเดียวกันแต่คนละชิ้น" อัปเกรดต่างกันได้ (เช่นชิ้นหนึ่งติดหินดาเมจบอสจากช่างหิน) — เกมแยกด้วยรหัสชิ้น (instance) ไม่ใช่ชื่อ · '
+        + 'วิธีตั้ง: **ใส่เบ็ดที่ต้องการในเกมก่อน แล้วกดปุ่มจำ** (กดซ้ำ = ล้างค่า) · '
+        + 'บอทจะสลับเป็น "เบ็ดบอส" ตอนเริ่มตีบอส แล้วสลับกลับ "เบ็ดฟาร์ม" หลังสู้จบอัตโนมัติ · '
+        + 'สลับด้วยคีย์ลัด G ของเกม (วนจนเจอชิ้นที่ตั้งไว้) — ไม่ต้องเปิดหน้าจออุปกรณ์ · ว่างทั้งคู่ = ไม่สลับเลย (เหมือนเดิม)',
+        mkRodBtn('bossRodId', '👹 จำเป็นเบ็ดบอส', 'ใส่เบ็ดที่แรงกับบอส (เช่นติดหินดาเมจบอส) แล้วกดปุ่มนี้'),
+        mkRodBtn('farmRodId', '🎣 จำเป็นเบ็ดฟาร์ม', 'ใส่เบ็ดที่ใช้ตกปลาปกติ แล้วกดปุ่มนี้'),
+      ));
+    }
 
     // ---------- 🏪 ระบบ NPC เมืองชาวประมง ----------
     sectionHead('🏪 NPC เมืองชาวประมง (ฝากของ/แลกแก่น)', false);
