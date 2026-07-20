@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.170
+// @version      6.171
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.170';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.171';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1471,6 +1471,13 @@
   //   และ story dialog "ฤๅษีเงา" ที่ยึด input ระหว่างเดินทาง (อันตรายที่เคยทำ auto-travel พัง)
   //   ยิงช่องทางเดียวกับ bossFireKey (document + canvas + window) เพราะเกมฟังที่ document
   const gameEscape = () => {
+    // 🐛 v6.171: ห้ามปิด "หน้าต่างที่ยังมีรางวัลรอรับ" — v6.165 เผลอ Esc ทิ้ง victory dialog ตอนเดินกลับบ้าน
+    //   → auto-claim ไม่มีวันได้เห็น = รางวัลบอสค้างในเมล์ (เจอจริง 2 ใบ) · เจอปุ่มรับ = ข้ามการล้างจอรอบนี้
+    try {
+      const keep = [...document.querySelectorAll('button')].some((b) => !isBotUI(b) && b.offsetParent
+        && (/เปิดจดหมาย/.test(b.textContent || '') || (b.classList.contains('tk-btn-primary') && !b.disabled && b.textContent.trim() === 'รับของ')));
+      if (keep) { logInfo('⎋ ข้ามการกด Esc — มีหน้าต่างรางวัลรอรับอยู่'); return; }
+    } catch {}
     for (const type of ['keydown', 'keyup']) {
       const mk = () => new KeyboardEvent(type, { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true });
       try { document.dispatchEvent(mk()); } catch {}
@@ -1852,7 +1859,12 @@
         await ensureBossBaitStock();   // 👹 v6.134: ซื้อเหยื่อจุดอ่อนก่อนเข้าถ้ำ (ในถ้ำซื้อไม่ได้)
         const reached = await bossTravelTo(BOSS_MAP);
         if (!reached) { say('👹 ไปถ้ำบอสไม่สำเร็จ — กลับบ้าน'); }
-        else { bossPhase = 'fight'; saveBossState(); await bossFight(cfg.bossMaxWaitMin); await bossLinger(); }
+        else {
+          bossPhase = 'fight'; saveBossState();
+          await bossFight(cfg.bossMaxWaitMin);
+          await bossLinger();
+          await claimBossMail(true);   // 📬 v6.171: รับรางวัล "ก่อน" เดินกลับ — ไม่งั้น gameEscape ตอนเดินทางจะปิด victory dialog ทิ้ง
+        }
       }
       bossPhase = 'return'; saveBossState();
       const back = await bossTravelTo(bossHome);
@@ -1869,8 +1881,10 @@
   let mailClaiming = false;
   const mailOpenBtn = () => [...document.querySelectorAll('button')].find((b) => !isBotUI(b) && b.offsetParent && /เปิดจดหมาย/.test(b.textContent || '')) || null;
   const mailClaimBtns = () => [...document.querySelectorAll('button.tk-btn-primary')].filter((b) => !isBotUI(b) && !b.disabled && b.offsetParent && b.textContent.trim() === 'รับของ');
-  async function claimBossMail() {
-    if (mailClaiming || busy || orchestrating) return 0;
+  //   🐛 v6.171: เพิ่ม force — ตอนจบไฟต์บอท "อยู่ใน orchestrating" ตลอด (runBossHunt) → watcher ปกติถูกบล็อก
+  //     และ v6.165 ยัง Esc ปิด victory dialog ทิ้งตอนเดินกลับบ้าน = รางวัลค้างไม่มีวันได้รับ (เจอจริง 2 ใบ)
+  async function claimBossMail(force) {
+    if (mailClaiming || (!force && (busy || orchestrating))) return 0;
     const ob = mailOpenBtn();
     if (!ob && !mailClaimBtns().length) return 0;      // ไม่มี dialog รางวัล/ของค้างรับ → ออก (เบา: query ทุก 2 วิ)
     if (gameState() === 'minigame') return 0;          // อย่าแทรกตอนกำลังดึงปลา (เกจ core — กฎเหล็ก #1)
@@ -1956,6 +1970,7 @@
       if (isOn('tgOn')) void tgSend('👹 <b>เจอบอสในถ้ำ</b> — เข้าตีทันที (ไม่ต้องเดินทาง)');
       await bossFight(cfg.bossMaxWaitMin);
       await bossLinger();   // ⏳ v6.163: อยู่ในถ้ำต่อ 20-30 วิ (สุ่ม) ก่อนเดินกลับ
+      await claimBossMail(true);   // 📬 v6.171: รับรางวัลก่อนเดินกลับ (เหตุผลเดียวกับใน runBossHunt)
       // 👹 v6.139: หลังตีจบ เดินกลับแมพบ้าน — ฟาร์มต่อ (เช่น sea_dock ที่สถิติปลาเทพดี) + "เรียนรู้เส้นทาง" ระหว่างเดินผ่าน village
       //   → ครั้งหน้า runBossHunt auto-travel ไป boss_cave ได้เอง (แก้บั๊กบอทไม่รู้ route ต้องเดินเอง) · เดินไม่ได้ = ฟาร์มในถ้ำต่อ
       if (bossMapId() === BOSS_MAP && bossHome && bossHome !== BOSS_MAP) {
