@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.162
+// @version      6.163
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.162';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.163';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1761,6 +1761,16 @@
   }
 
   // orchestrator หลัก — เดินไปล่าแล้วกลับ (ครอบด้วย orchestrating เพื่อหยุดฟาร์มปกติชั่วคราว)
+  // ⏳ v6.163 (ผู้ใช้สั่ง): จบไฟต์แล้ว "อยู่ในถ้ำต่ออีก 20-30 วิ (สุ่ม)" ก่อนเดินกลับ/ทำอย่างอื่น
+  //   สุ่มช่วง = จังหวะออกจากถ้ำไม่ซ้ำเป๊ะทุกรอบ · นอนเป็นช่วงละ 1 วิ เช็ค enabled → กดหยุดบอทแล้วออกได้ทันที ไม่ค้าง 30 วิ
+  async function bossLinger() {
+    if (bossMapId() !== BOSS_MAP) return 0;   // หลุดออกจากถ้ำไปแล้ว (ตาย/เดินออก) = ไม่ต้องหน่วง
+    const ms = 20000 + Math.floor(Math.random() * 10001);
+    say(`👹 อยู่ในถ้ำต่ออีก ~${Math.round(ms / 1000)} วิ ก่อนไปต่อ`);
+    for (let left = ms; left > 0 && enabled; left -= 1000) await sleep(Math.min(1000, left));
+    return ms;
+  }
+
   async function runBossHunt(resumeHome) {
     // ถูกเรียกตอน resume แต่มีงานอื่นยึดอยู่ (เช่น ทดสอบเหยื่อ resume ก่อน) → ล้าง state ทิ้ง (ไม่มีใคร retry ให้ —
     //   ถ้ายังค้างในถ้ำ strandedInBossCave จะพาออกเอง) กัน tokpla_boss_state ค้างข้ามวัน
@@ -1788,7 +1798,7 @@
         await ensureBossBaitStock();   // 👹 v6.134: ซื้อเหยื่อจุดอ่อนก่อนเข้าถ้ำ (ในถ้ำซื้อไม่ได้)
         const reached = await bossTravelTo(BOSS_MAP);
         if (!reached) { say('👹 ไปถ้ำบอสไม่สำเร็จ — กลับบ้าน'); }
-        else { bossPhase = 'fight'; saveBossState(); await bossFight(cfg.bossMaxWaitMin); }
+        else { bossPhase = 'fight'; saveBossState(); await bossFight(cfg.bossMaxWaitMin); await bossLinger(); }
       }
       bossPhase = 'return'; saveBossState();
       const back = await bossTravelTo(bossHome);
@@ -1891,6 +1901,7 @@
       say('👹 เจอบอสในถ้ำ — เข้าตี (เกจ→กดแถบแดง + กระโดดหลบ)');
       if (isOn('tgOn')) void tgSend('👹 <b>เจอบอสในถ้ำ</b> — เข้าตีทันที (ไม่ต้องเดินทาง)');
       await bossFight(cfg.bossMaxWaitMin);
+      await bossLinger();   // ⏳ v6.163: อยู่ในถ้ำต่อ 20-30 วิ (สุ่ม) ก่อนเดินกลับ
       // 👹 v6.139: หลังตีจบ เดินกลับแมพบ้าน — ฟาร์มต่อ (เช่น sea_dock ที่สถิติปลาเทพดี) + "เรียนรู้เส้นทาง" ระหว่างเดินผ่าน village
       //   → ครั้งหน้า runBossHunt auto-travel ไป boss_cave ได้เอง (แก้บั๊กบอทไม่รู้ route ต้องเดินเอง) · เดินไม่ได้ = ฟาร์มในถ้ำต่อ
       if (bossMapId() === BOSS_MAP && bossHome && bossHome !== BOSS_MAP) {
