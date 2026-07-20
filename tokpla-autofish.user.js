@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.171
+// @version      6.172
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.171';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.172';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1871,7 +1871,7 @@
       say(back ? `👹 กลับถึง ${bossHome} — ฟาร์มต่อ` : `👹 กลับบ้านไม่สำเร็จ (อยู่ ${bossMapId()}) — ฟาร์มที่นี่ไปก่อน`);
       if (isOn('tgOn')) void tgSend(back ? `🎣 กลับมาฟาร์มต่อที่ ${bossHome}` : `⚠️ กลับแมพเดิมไม่สำเร็จ — อยู่ ${bossMapId()}`);
     } catch (e) { logErr('ล่าบอสล้มเหลว', e); }
-    finally { bossReleaseAll(); bossPhase = 'idle'; clearBossState(); lastBossHuntAt = now(); orchestrating = false; lastCast = now(); pendingCast = 0; }
+    finally { bossReleaseAll(); bossPhase = 'idle'; clearBossState(); lastBossHuntAt = now(); orchestrating = false; lastCast = now(); pendingCast = 0; resumeTestAfterBoss(); }
   }
 
   // 📬 v6.158: รับรางวัลบอสจากจดหมายอัตโนมัติ — บอสตายจะเด้ง dialog "รางวัลส่งเข้าจดหมายแล้ว" (ปุ่ม "📬 เปิดจดหมาย")
@@ -1980,7 +1980,7 @@
         say(back ? `👹 กลับถึง ${bossHome} — ฟาร์มต่อ` : `👹 กลับบ้านไม่สำเร็จ (อยู่ ${bossMapId()}) — ฟาร์มที่นี่ก่อน`);
       }
     } catch (e) { logErr('สู้บอส(ในถ้ำ)ล้มเหลว', e); }
-    finally { bossReleaseAll(); bossPhase = 'idle'; clearBossState(); lastBossHuntAt = now(); orchestrating = false; lastCast = now(); pendingCast = 0; }
+    finally { bossReleaseAll(); bossPhase = 'idle'; clearBossState(); lastBossHuntAt = now(); orchestrating = false; lastCast = now(); pendingCast = 0; resumeTestAfterBoss(); }
   }
 
   // ===== 🏪 ระบบ NPC เมืองชาวประมง (v6.150) — ลุงคลัง(ฝากของ) + ยายแก่น(แลกแก่นปลา) =====
@@ -2216,7 +2216,7 @@
     const due = min != null && min <= clamp(cfg.bossLeadMin, 1, 60);
     // 🧪 v6.148: ถ้ามีเทสต์เหยื่อรันอยู่ = ปกติไม่ล่า (เทสต์คุมเหยื่อ) · แต่ถ้า "บอสใกล้มาแล้ว" → หยุดเทสต์ให้ไปล่าบอสก่อน
     //   (บอสสำคัญ+นานๆ ครั้ง · เทสต์กด "ทำต่อจากเดิม" ทีหลังได้) — แก้บั๊ก: เทสต์ค้าง (เช่น autoResume ปลุก) บล็อกล่าบอสถาวร → พลาดบอส
-    if (testRunning) { if (due) stopTest(); return false; }
+    if (testRunning) { if (due) stopTest(true); return false; }   // v6.172: true = พักเพราะบอส → resumeTestAfterBoss() จะทำต่อให้เอง
     return due;
   }
 
@@ -4029,7 +4029,23 @@
     say(act === 'gameauto' ? '🧪 ทดสอบครบ — ตกต่อโหมด 🎮 ออโต้ของเกม' : '🧪 ทดสอบครบ — ตกต่อโหมด 🤖 บอทตกเอง');
     if (isOn('tgOn')) void tgSend(`🧪 <b>ทดสอบครบทุกรอบ</b> — ${act === 'gameauto' ? 'ตกต่อโหมด 🎮 ออโต้ของเกม' : 'ตกต่อโหมด 🤖 บอทตกเอง'}`);
   }
-  function stopTest() { if (testRunning) { testRunning = false; saveTestProgress(); say('🧪 หยุดทดสอบ (กด "ทำต่อจากเดิม" เพื่อไปต่อได้)'); } }
+  // 🧪 v6.172: byBoss = หยุดเพราะบอสใกล้มา (ไม่ใช่ผู้ใช้สั่ง) → จำไว้ให้ "ทำต่อเอง" หลังล่าบอสจบ
+  //   บั๊กที่ทำให้ทดสอบเหยื่อ "ไม่เคยจบสักครั้ง": v6.148 สั่ง stopTest() ทุกครั้งที่บอสใกล้ (ทุก ~3 ชม.)
+  //   แต่ไม่มีใครสั่งทำต่อ → เทสต์ค้างถาวร (ผลที่ได้จึงเป็น aborted:true เสมอ = สรุปเหยื่อที่ดีสุดไม่ได้)
+  let testPausedByBoss = false;
+  function stopTest(byBoss) {
+    if (!testRunning) return;
+    testRunning = false; saveTestProgress();
+    testPausedByBoss = !!byBoss;
+    say(byBoss ? '🧪 พักทดสอบชั่วคราว (บอสใกล้มา) — จะทำต่อเองหลังล่าบอสเสร็จ' : '🧪 หยุดทดสอบ (กด "ทำต่อจากเดิม" เพื่อไปต่อได้)');
+  }
+  // เรียกท้าย runBossHunt/bossFightHere — กลับมาทำเทสต์ต่อถ้าถูกพักเพราะบอส
+  function resumeTestAfterBoss() {
+    if (!testPausedByBoss || testRunning || !enabled) return;
+    testPausedByBoss = false;
+    say('🧪 ล่าบอสจบแล้ว — กลับไปทดสอบเหยื่อต่อจากเดิม');
+    setTimeout(() => void runBaitTest(true), 4000);   // เว้นให้ระบบกลับบ้าน/ขายจบก่อน
+  }
   function sendTestReport(aborted) {
     const rows = [];   // คำนวณจาก recs จริง (N ล่าสุด/ โหมด×ขั้น×สถานะยา = ครั้งที่เพิ่งทดสอบ)
     const testedModes = (test.modes || ['bot']).map((m) => m === 'gameauto' ? 'g' : 'b');
