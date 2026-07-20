@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.185
+// @version      6.186
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.185';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.186';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -143,6 +143,7 @@
     testMode: 'bot',             // 🧪 ทดสอบโหมดไหน: 'bot'=บอทเหวี่ยงเอง · 'gameauto'=ออโต้ของเกม · 'both'=ทั้งคู่ (จำนวนรอบ ×2)
     testDoneAction: 'stop',      // 🧪 ทดสอบครบทุกรอบแล้วทำอะไรต่อ: 'stop'=หยุดบอท · 'bot'=ตกต่อโหมดบอท · 'gameauto'=ตกต่อโหมดออโต้เกม
     testNoTiers: '',             // 🧪 ข้ามขั้นเหยื่อที่ไม่อยากทดสอบ (CSV เช่น "6,7,8") — กันเสียเงินทดสอบขั้นแพง/ขาดทุน · ว่าง = ทดสอบทุกขั้น
+    testSkipLosing: true,        // 🧪📉 ข้ามขั้นที่ "ข้อมูลจริงพิสูจน์แล้วว่าขาดทุน" อัตโนมัติ (ดู provenLossTier) — v6.186: เทสต์เคยเผาเงินฟาร์มขั้น 8 ที่ -366/ครั้ง ทั้งที่มีข้อมูล 400 ตัวอย่างชี้ชัดแล้ว
 
     noRestOnBuff: true,          // 🧪 ถ้ากำลังใช้ยาบัฟอยู่ (🐋/🍀) ห้ามพัก/นั่งพัก — ตกต่อจนยาหมด (ไม่เสียเวลายา 30 นาที)
     energyManage: false,         // จัดการพลังงานเชิงรุก (พักเมื่อถึงเกณฑ์ล่าง กลับมาตกเมื่อถึงเกณฑ์บน)
@@ -3573,6 +3574,33 @@
     return !anyAllowed || !no.has(t);
   }
 
+  // ---- 📉 v6.186: "ขั้นนี้ขาดทุนแน่แล้ว" — prior แข็งจากข้อมูลจริงทุกแมพ ----
+  //   ทำไมไม่กรองแมพ/ไม่ตัดฟลุ๊คเหมือน advTrimStat: ตรงนี้ไม่ได้ "เทียบขั้นไหนดีกว่า" แต่ถามคำถามหยาบกว่าคือ
+  //   "ขั้นนี้เผาเงินทิ้งจริงไหม" → ยิ่งเอาข้อมูลดิบทั้งหมดยิ่งตัดสินแม่น (ตัวอย่างเยอะ) และรวมฟลุ๊คเข้าไปด้วย
+  //   = เข้าข้างขั้นแพงแล้ว ถ้ายังขาดทุนอยู่ก็คือขาดทุนจริง
+  const LOSS_MIN_N = 150;          // ต่ำกว่านี้ = ยังไม่ฟันธง (เทสต์ 1 รอบ = 100 → ต้องมากกว่า 1 รอบถึงเชื่อ)
+  function baitNet(t) {
+    const list = profit.recs[t] || [];
+    if (list.length < LOSS_MIN_N) return null;
+    const rev = list.reduce((a, c) => a + (c.price || 0), 0);
+    return { n: list.length, net: rev / list.length - baitUnit(t) };
+  }
+  // ขาดทุนเกิน 10% ของค่าเหยื่อถึงนับ — กันขั้นที่ก้ำกึ่ง (-1,-2 🪙) ถูกตัดทิ้งเพราะ noise
+  function provenLossTier(t) {
+    const s = baitNet(t);
+    return s && s.net < -Math.max(5, baitUnit(t) * 0.1) ? { t, ...s } : null;
+  }
+  // ที่ลงจอดเวลาเหยื่อเดิมใช้ไม่ได้ = ให้ Advisor ตัดสิน (อย่าคำนวณเองซ้ำ!)
+  //   ⚠️ บทเรียน v6.186: ตอนแรกเขียนเป็น "ขั้นที่ net ดิบสูงสุด" → ได้ขั้น 5 เพราะข้อมูลดิบรวมทุกแมพ
+  //   ถูกปลา legendary ตัวเดียวลากขึ้น (บึงบัว n=51 · ดิบ +578 · ตัดฟลุ๊คจริง -38) = เลือกผิดสนิท
+  //   Advisor กรองแมพปัจจุบัน + ตัด legendary/mythic + คุมขนาดตัวอย่างอยู่แล้ว → แม่นกว่า
+  function bestLandingTier() {
+    try {
+      const t = advisorDecide()?.bestTier;
+      return (t >= 1 && t <= (baitCeil || 8)) ? t : null;
+    } catch { return null; }
+  }
+
   // สถิติแบบ "ตัดฟลุ๊ค": กรองแมพปัจจุบัน + ตัด legendary/mythic (ฟลุ๊ค EV เท่ากันทุกขั้น — ตัดแล้วเทียบขั้นแม่น)
   // ขยะ/ปลาปกตินับหมด (กินเหยื่อจริง) · คืน null ถ้าไม่มีข้อมูล
   function advTrimStat(tier, useN) {
@@ -4142,8 +4170,17 @@
     if (!testRunning || !enabled) { testRunning = false; return; }   // ถูกหยุดระหว่างเช็ค
     // v6.100: ข้ามขั้นที่ผู้ใช้ระบุ (testNoTiers เช่น "6,7,8" — ไม่อยากเสียเงินทดสอบขั้นแพง/ขาดทุน)
     const skipTiers = new Set((cfg.testNoTiers || '').split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => n >= 1 && n <= 8));
-    const tiers = []; for (let t = 1; t <= (baitCeil || 8); t++) if (!skipTiers.has(t)) tiers.push(t);
-    if (!tiers.length) { say('🧪 ไม่มีขั้นเหยื่อให้ทดสอบ — "ข้ามขั้น" ครอบทุกขั้นที่ปลดล็อก · แก้แล้วลองใหม่'); testRunning = false; return; }
+    // v6.186: ข้ามขั้นที่ "ข้อมูลจริงพิสูจน์แล้วว่าขาดทุน" — Advisor ห้ามแตะเหยื่อระหว่างเทสต์ (กฎเหล็ก #4)
+    //   → เทสต์จึงบังคับให้ฟาร์มขั้นขาดทุนเต็ม N ครั้งโดยไม่มีใครห้ามได้ (เคสจริง: ขั้น 8 = -366/ครั้ง)
+    const autoSkip = [];
+    const tiers = [];
+    for (let t = 1; t <= (baitCeil || 8); t++) {
+      if (skipTiers.has(t)) continue;
+      const loss = isOn('testSkipLosing') ? provenLossTier(t) : null;
+      if (loss) { autoSkip.push(loss); continue; }
+      tiers.push(t);
+    }
+    if (!tiers.length) { say(`🧪 ไม่มีขั้นเหยื่อให้ทดสอบ — ถูกข้ามหมดทุกขั้นที่ปลดล็อก${autoSkip.length ? ' (บางขั้นข้ามอัตโนมัติเพราะขาดทุน — ปิดได้ที่ "ข้ามขั้นที่ขาดทุน")' : ' ("ข้ามขั้น" ครอบทุกขั้น)'} · แก้แล้วลองใหม่`); testRunning = false; return; }
     if (skipTiers.size) say(`🧪 ข้ามขั้น ${[...skipTiers].filter((t) => t <= (baitCeil || 8)).sort().join(',')} (ตามที่ตั้ง) — ทดสอบขั้น ${tiers.join(',')}`);
     test.tiers = tiers;
     // มิติทดสอบ: โหมด (bot / gameauto) × ยา (buff / plain) × ขั้นเหยื่อ
@@ -4151,6 +4188,13 @@
     const modes = testModesArr();
     // รอบยา 3 ทาง (v6.101): both = ยาก่อนแล้วค่อยไม่ใช้ยา (ยาหมดพอดีตอนเข้ารอบ plain — เหตุผลเดิม v6.53)
     const buffOpts = cfg.testBuffMode === 'both' ? [true, false] : cfg.testBuffMode === 'buff' ? [true] : [false];
+    // ประกาศให้ชัดว่าข้ามอะไรไปบ้าง + ประหยัดไปเท่าไร (ห้ามตัดเงียบ — ผู้ใช้ต้องรู้ว่ารายงานไม่ครอบขั้นไหน)
+    if (autoSkip.length) {
+      const saved = autoSkip.reduce((a, s) => a + Math.round(-s.net) * N * modes.length * buffOpts.length, 0);
+      const detail = autoSkip.map((s) => `ขั้น${s.t} (${Math.round(s.net)}/ครั้ง · ${s.n} ตัวอย่าง)`).join(' · ');
+      say(`🧪📉 ข้ามอัตโนมัติ ${autoSkip.length} ขั้นที่ข้อมูลพิสูจน์แล้วว่าขาดทุน: ${detail} — ประหยัด ~${saved.toLocaleString()} 🪙 · รายงานจะไม่ครอบขั้นเหล่านี้ (ปิดสวิตช์นี้ได้ถ้าอยากทดสอบซ้ำ)`);
+      if (isOn('tgOn')) void tgSend(`🧪📉 <b>ข้ามขั้นที่ขาดทุน</b>\n${esc(detail)}\nประหยัด ~${saved.toLocaleString()} 🪙`);
+    }
     const rounds = [];
     for (const mode of modes) for (const buff of buffOpts) for (const t of tiers) rounds.push({ t, mode, buff });
     test.totalRounds = rounds.length;   // เก็บไว้คำนวณ % ความคืบหน้า (testStatus/testPct)
@@ -4202,7 +4246,19 @@
     finally {
       testRunning = false; test.tier = null; test.phase = null;
       // คืนเหยื่อเดิม (ถ้ายังเป็นค่าที่ ensureTestBait ตั้งค้างไว้) — กันฟาร์มต่อด้วยเหยื่อขั้นแพงที่เพิ่งทดสอบ
-      if (cfg.baitTier !== origBait) { cfg.baitTier = origBait; saveCfg(); syncPanel?.(); say(`🧪 คืนค่าเหยื่อกลับเป็นขั้น ${origBait} (ก่อนทดสอบ) — ดูผลแล้วปรับตามที่ดีสุดได้`); }
+      // v6.186: "คืนค่าเดิม" ต้องไม่คืนไปสู่ขั้นที่ขาดทุน — เคสจริง origBait=8 (-366/ครั้ง) ทำให้จบเทสต์แล้วฟาร์มขาดทุนต่อ
+      //   จนกว่า Advisor จะตื่นรอบถัดไป (ทุก 5 นาที) · ถ้า Advisor ปิดอยู่ = ขาดทุนยาวจนกว่าผู้ใช้จะเห็นเอง
+      let back = origBait, why = '(ก่อนทดสอบ)';
+      const lossBack = provenLossTier(origBait), bestBack = lossBack ? bestLandingTier() : null;
+      if (lossBack && bestBack && bestBack !== origBait) {
+        back = bestBack;
+        why = `— ขั้น ${origBait} (ก่อนทดสอบ) ขาดทุน ${Math.round(lossBack.net)}/ครั้ง จึงคืนเป็นขั้นที่ Advisor แนะนำแทน`;
+      } else if (lossBack) why = `(ก่อนทดสอบ · ขาดทุน ${Math.round(lossBack.net)}/ครั้ง ⚠️ Advisor ยังไม่มีขั้นอื่นแนะนำ — รอบหน้าจะแก้ให้เอง)`;
+      if (cfg.baitTier !== back) {
+        cfg.baitTier = back; saveCfg(); syncPanel?.();
+        say(`🧪 คืนค่าเหยื่อเป็นขั้น ${back} ${why}`);
+        if (lossBack && isOn('tgOn')) void tgSend(`🪱 <b>เลี่ยงเหยื่อขาดทุนหลังจบทดสอบ</b>\n${esc(`ขั้น ${origBait} → ${back} ${why}`)}`);
+      }
       // v6.96: จบครบทุกรอบ → ทำตามที่ผู้ใช้ตั้ง (หยุด / ตกต่อโหมดบอท / ตกต่อโหมดออโต้เกม)
       //   หลุดกลางคัน (testDone=false เช่นกด B / เกมค้าง) ไม่แตะ — ให้ "ทำต่อจากเดิม" ได้
       if (testDone) applyTestDoneAction();
@@ -6083,6 +6139,7 @@ ${esc(reason)}
         ['both', '🐋+🚫 ทั้งคู่ (เทียบยา)'],
       ])),
       labeled('ข้ามขั้น', smallTextInput('testNoTiers', 'เช่น 6,7,8', 72)),
+      labeled('ข้ามขั้นที่ขาดทุน', checkbox('testSkipLosing')),
       labeled('เมื่อครบ', selectInput('testDoneAction', [
         ['stop', '⏹ หยุดบอท'],
         ['bot', '🤖 ตกต่อ (บอท)'],
