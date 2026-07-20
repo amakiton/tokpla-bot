@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.189
+// @version      6.190
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.189';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.190';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -93,7 +93,7 @@
     bossMaxWaitMin: 8,           // อยู่ในถ้ำบอสสูงสุดกี่นาที (รอบอส+สู้) — ครบแล้วกลับบ้านแม้บอสไม่ตาย/ไม่มา
     bossHomeMap: '',             // แมพที่จะกลับไปฟาร์มต่อ (ว่าง = แมพที่อยู่ตอนเริ่มล่า)
     bossBaitTier: 2,             // 👹 เหยื่อ "จุดอ่อนบอส" ระหว่างตี (วิดีโอ: มัดอ้วนขั้น2/กุ้งฝอยขั้น4 = ดาเมจ x1.5) · 0 = ไม่สลับ
-    rodSwitchOn: false,          // ⛔ v6.189: ปิดไว้ — พิสูจน์แล้วว่า G สลับได้แค่ "tier" ไม่ใช่ "ชิ้นเบ็ด" (CHANGELOG v6.188)
+    rodSwitchOn: true,          // ⛔ v6.189: ปิดไว้ — พิสูจน์แล้วว่า G สลับได้แค่ "tier" ไม่ใช่ "ชิ้นเบ็ด" (CHANGELOG v6.188)
                                  //   เปิดมีประโยชน์กรณีเดียว: เบ็ดบอส/เบ็ดฟาร์มของคุณอยู่คนละ tier กันจริงๆ
     bossRodId: '',               // 🎣 v6.174: UUID "ชิ้นเบ็ด" ที่ใช้ตอนตีบอส (เช่นชิ้นที่ติดหินดาเมจบอส) · ว่าง = ไม่สลับ
     farmRodId: '',               // 🎣 v6.174: UUID "ชิ้นเบ็ด" ที่ใช้ตอนฟาร์มปกติ · ว่าง = กลับไปชิ้นเดิมก่อนเข้าไฟต์
@@ -1662,18 +1662,16 @@
     // ⛔ v6.189: ปิดการสลับเบ็ดโดยปริยาย — พิสูจน์แล้วว่า G สลับได้แค่ "tier" (ดู CHANGELOG v6.188)
     //   ผลที่เกิดจริงถ้าปล่อยไว้: บอทกด G หาชิ้นที่ไม่อยู่ในวง → เขี่ยผู้ใช้หลุดจากเบ็ดบอสที่ใส่ไว้เอง
     //   → **แล้วคืนกลับไม่ได้** (ชิ้นนอกวง G เข้าถึงได้ทางหน้ากระเป๋าเท่านั้น) = แย่กว่าไม่ทำอะไรเลย
-    if (!isOn('rodSwitchOn')) {
-      if (cfg.bossRodId || cfg.farmRodId) logInfo('🎣 ข้ามการสลับเบ็ด — ปุ่ม G ของเกมสลับได้แค่ tier ไม่ใช่ชิ้นเบ็ด (เปิดใช้ได้ที่ "🎣 สลับชิ้นเบ็ด" ถ้าเบ็ดของคุณอยู่คนละ tier กันจริง)');
-    } else if (cfg.bossRodId && prevRodId && prevRodId !== cfg.bossRodId) {
+    // v6.190: เลือกเบ็ด "ดาเมจบอส สูงสุด" ผ่านกระเป๋า (ไม่ใช้ UUID แล้ว — ทน UUID เปลี่ยนตอนตีหิน)
+    if (isOn('rodSwitchOn')) {
       busy = true;
       try {
-        say('👹 สลับไปเบ็ดสำหรับตีบอส');
-        // v6.185: ล้มเหลว = พยายามคืนชิ้นเดิมให้ (ดู switchRodTo) · v6.188: ไม่ลบ config ทิ้งเด็ดขาด
-        if (!(await switchRodTo(cfg.bossRodId, 'bossRodId'))) say('⚠️ ใช้เบ็ดชิ้นเดิมตีบอสแทน (เบ็ดบอสที่ตั้งไว้ G เข้าไม่ถึง)');
-      } catch {}
+        say('👹 เลือกเบ็ดที่ดาเมจบอสสูงสุด');
+        if (!(await equipRodBy('boss'))) say('⚠️ ใช้เบ็ดชิ้นเดิมตีบอสแทน');
+      } catch (e) { logErr('เลือกเบ็ดบอสล้มเหลว', e); }
       finally { busy = false; }
-    } else if (!cfg.bossRodId) {
-      logInfo('👹 ไม่ได้ตั้งเบ็ดบอส — ใช้เบ็ดที่ใส่อยู่ตีบอส');
+    } else {
+      logInfo('👹 ปิดการสลับเบ็ดไว้ — ใช้เบ็ดที่ใส่อยู่ตีบอส');
     }
     let prevBaitTier = null;
     if (cfg.bossBaitTier > 0 && currentBait() && currentBait().tier !== cfg.bossBaitTier) {
@@ -1836,12 +1834,11 @@
       try { await cycleTo('เลือกเหยื่อ', prevBaitTier, () => currentBait()?.tier); } catch {}
       finally { busy = false; }
     }
-    // 🎣 v6.174: คืนเบ็ด — กลับไปเบ็ดฟาร์มที่ตั้งไว้ (ถ้าไม่ได้ตั้ง ใช้ชิ้นเดิมก่อนเข้าไฟต์)
-    const backRod = cfg.farmRodId || prevRodId;
-    if (isOn('rodSwitchOn') && backRod && currentRodId() !== backRod) {
+    // 🎣 v6.190: คืนเบ็ด — เลือกชิ้นที่ "โบนัสปลา" สูงสุดกลับมาฟาร์ม (ไม่อิง UUID เดิมแล้ว)
+    if (isOn('rodSwitchOn')) {
       busy = true;
-      // ล้างค่าอัตโนมัติเฉพาะ "เบ็ดฟาร์มที่ตั้งไว้" — prevRodId เป็นค่าชั่วคราวของไฟต์นี้ ไม่ใช่ค่าที่ผู้ใช้ตั้ง
-      try { say('🎣 สลับกลับเบ็ดสำหรับฟาร์ม'); await switchRodTo(backRod, backRod === cfg.farmRodId ? 'farmRodId' : ''); } catch {}
+      try { say('🎣 สลับกลับเบ็ดสำหรับฟาร์ม'); await equipRodBy('farm'); }
+      catch (e) { logErr('เลือกเบ็ดฟาร์มล้มเหลว', e); }
       finally { busy = false; }
     }
     const outcome = killed ? '✅ บอสตาย!' : bossSeen ? '🏁 บอสหมดเวลา/หายไป — เก็บ reward ตามส่วนที่ช่วยตี' : '⌛ บอสไม่มาในเวลาที่รอ';
@@ -3083,6 +3080,105 @@
     if (isOn('tgOn') && isOn('tgWarn')) void tgSend(`⚠️ <b>สลับเบ็ด</b>\n${esc(msg)}`);
     return false;
   }
+
+  // ---------- 🎣 v6.190: สลับ "ชิ้นเบ็ด" ผ่านกระเป๋า — ทางเดียวที่ทำได้จริง ----------
+  //   G สลับได้แค่ tier (พิสูจน์แล้ว v6.188) · ชิ้นเจาะจงต้อง: เปิดกระเป๋า → แท็บ 🎣เบ็ด → แตะการ์ด → "ใช้เบ็ดนี้"
+  //   เลือกจาก "หินที่ติด" ไม่ใช่ UUID → ทน UUID ที่เปลี่ยนทุกครั้งที่อัปเกรด/ตีหิน (ต้นเหตุ v6.185)
+  //
+  //   ☠️ กติกาเหล็ก: ปุ่ม "ขายคืน +100,000 🪙" อยู่ในแผงเดียวกัน ใต้ปุ่มใช้พอดี
+  //      1) กดได้เฉพาะปุ่มที่ข้อความ === 'ใช้เบ็ดนี้' เป๊ะๆ   2) ต้องเจอปุ่มเดียวเท่านั้น
+  //      3) ปุ่มมีคำว่า "ขาย" เมื่อไร = ยกเลิกทั้งงานทันที   4) ห้ามกดปุ่มอื่นในแผงนี้เด็ดขาด
+  const ROD_USE_TXT = 'ใช้เบ็ดนี้';
+
+  // การ์ดเบ็ด — สโคปใต้หัวข้อ "🎣 เบ็ดที่มี" เท่านั้น (กลุ่ม 🛟 ทุ่น หน้าตาเหมือนกันเป๊ะ ชื่อซ้ำด้วย!)
+  function rodGroupCards() {
+    const head = [...document.querySelectorAll('span,div')].find((e) =>
+      !isBotUI(e) && e.offsetParent && (e.textContent || '').trim() === '🎣 เบ็ดที่มี');
+    if (!head) return [];
+    let box = head;
+    for (let i = 0; i < 6 && box; i++) {
+      const c = [...box.querySelectorAll('button.tk-inner')].filter((b) => b.offsetParent && !isBotUI(b));
+      if (c.length) return c.map((el) => ({
+        el, name: el.getAttribute('title') || '',
+        equipped: /ใช้อยู่/.test(el.getAttribute('aria-label') || ''),
+        orb: ((el.getAttribute('style') || '').match(/#[0-9a-f]{6}/i) || [''])[0],
+      }));
+      box = box.parentElement;
+    }
+    return [];
+  }
+
+  // อ่านแผงรายละเอียด (ขวา) หลังแตะการ์ด — ค่าที่ใช้ตัดสินว่าเบ็ดชิ้นนี้เก่งด้านไหน
+  function rodDetail() {
+    const d = { boss: null, fish: null };
+    for (const e of document.querySelectorAll('div,span,p')) {
+      if (isBotUI(e) || !e.offsetParent || e.children.length) continue;
+      const t = (e.textContent || '').replace(/\s+/g, ' ').trim();
+      if (t.length > 60) continue;
+      let m = /ดาเมจบอส\s*\+?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) d.boss = parseFloat(m[1]);
+      m = /โบนัสปลา\s*\+?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) d.fish = parseFloat(m[1]);
+    }
+    return d;
+  }
+
+  async function bagOpenRodTab() {
+    if (!rodGroupCards().length) { await openBagUI(); await sleep(500); }
+    const tab = [...document.querySelectorAll('button')].find((b) =>
+      !isBotUI(b) && b.offsetParent && /🎣เบ็ด/.test(b.textContent || ''));
+    if (tab) { tab.click(); await sleep(450); }
+    return !!rodGroupCards().length;
+  }
+
+  // เลือกเบ็ดที่เก่งด้าน kind ที่สุด · kind: 'boss' (ดาเมจบอส) | 'farm' (โบนัสปลา)
+  async function equipRodBy(kind) {
+    const field = kind === 'boss' ? 'boss' : 'fish';
+    const label = kind === 'boss' ? 'ดาเมจบอส' : 'โบนัสปลา';
+    if (!await bagOpenRodTab()) { logWarn('🎣 เปิดแท็บเบ็ดในกระเป๋าไม่ได้ — ข้ามการสลับเบ็ด'); return false; }
+    const n = rodGroupCards().length;
+    const scored = [];
+    for (let i = 0; i < n; i++) {
+      const c = rodGroupCards()[i];      // DOM รีเรนเดอร์ทุกครั้งที่แตะ → ต้องหยิบใหม่ทุกรอบ
+      if (!c) continue;
+      c.el.click(); await sleep(420);
+      const d = rodDetail();
+      scored.push({ i, name: c.name, orb: c.orb, equipped: c.equipped, val: d[field] });
+    }
+    const best = scored.filter((s) => s.val > 0).sort((a, b) => b.val - a.val)[0];
+    const brief = scored.map((s) => `${s.name}${s.orb ? `(${s.orb})` : ''}=${s.val ?? '–'}`).join(' · ');
+    if (!best) { logWarn(`🎣 ไม่มีเบ็ดชิ้นไหนมี ${label} เลย — ใช้ชิ้นเดิม · ที่สแกนได้: ${brief}`); await closeBagUI(); return false; }
+    // ⚖️ v6.190: สลับ "เฉพาะเมื่อดีกว่าจริง" — เสมอ = อยู่เฉยๆ
+    //   เคสจริง: เบ็ดมังกร 2 ชิ้นให้โบนัสปลา 35% เท่ากัน แต่ชิ้นที่ใส่อยู่มีหินดาเมจบอส +6% แถม
+    //   ถ้าสลับตอนกลับมาฟาร์มก็เสียหินบอสฟรีๆ โดยไม่ได้อะไร แถมต้องไปยุ่งกับแผงที่มีปุ่มขายทุกไฟต์
+    //   (ตัวชี้วัดเราไม่ครบด้วย — หินอย่าง 🍀 โชคปลาแรร์ ไม่โผล่ในสองค่านี้) → เสมอเมื่อไร ให้เชื่อของเดิมไว้ก่อน
+    const cur = scored.find((s) => s.equipped);
+    if (cur && (cur.val ?? -1) >= best.val) {
+      logInfo(`🎣 คงเบ็ดเดิม — ${label} ของชิ้นที่ใส่อยู่ (${cur.name} +${cur.val ?? 0}%) ไม่แพ้ชิ้นอื่น · ที่สแกน: ${brief}`);
+      await closeBagUI(); return true;
+    }
+    // (ไม่ต้องเช็ค best.equipped ซ้ำ — ถ้าชิ้นที่ใส่อยู่คือชิ้นดีสุด สาขา cur ด้านบนจับไปแล้ว)
+
+    const before = currentRodId();
+    const card = rodGroupCards()[best.i];
+    if (!card) { await closeBagUI(); return false; }
+    card.el.click(); await sleep(450);
+    // ☠️ จุดอันตราย — ตรวจ 3 ชั้นก่อนกด
+    const btns = [...document.querySelectorAll('button')].filter((b) =>
+      b.offsetParent && !isBotUI(b) && (b.textContent || '').trim() === ROD_USE_TXT);
+    if (btns.length !== 1) { logWarn(`🎣 ยกเลิกการสลับเบ็ด — หาปุ่ม "${ROD_USE_TXT}" ได้ ${btns.length} ปุ่ม (ต้องเจอ 1 เท่านั้น)`); await closeBagUI(); return false; }
+    if (/ขาย/.test(btns[0].textContent || '')) { logWarn('🎣 ยกเลิก — ปุ่มที่จะกดมีคำว่า "ขาย"'); await closeBagUI(); return false; }
+    btns[0].click(); await sleep(700);
+
+    const after = currentRodId();
+    await closeBagUI();
+    if (after && after !== before) {
+      logInfo(`🎣 สลับเป็นเบ็ด ${label} แล้ว: ${best.name} +${best.val}% (${before.slice(0, 8)}→${after.slice(0, 8)}) · ที่สแกน: ${brief}`);
+      return true;
+    }
+    logWarn(`🎣 กด "${ROD_USE_TXT}" แล้วแต่เบ็ดไม่เปลี่ยน (${(before || '').slice(0, 8)}) — ใช้ชิ้นเดิมต่อ`);
+    return false;
+  }
+
+  async function closeBagUI() { try { gameEscape(); } catch {} await sleep(250); }
 
   async function openShop() {
     await ensureMenuOpen();
