@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.166
+// @version      6.167
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.166';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.167';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1952,8 +1952,7 @@
     const res = { storage: 0, essence: 0, bagPct: 0 };
     try {
       await ensureMenuOpen();
-      const bagBtn = qBtn('กระเป๋า'); if (!bagBtn) return res;
-      fireClick(bagBtn);
+      if (!(await openBagUI())) return res;   // v6.167: มีคีย์ลัด B เป็นทางสำรองในตัว
       if (!(await waitFor(() => readBagCount(), 3000))) { await closeMenu(); return res; }
       await sleep(250);
       const bc = readBagCount(); if (bc && bc.slots > 0) { res.bagPct = bc.count / bc.slots * 100; lastBagPct = res.bagPct; }   // 🛡️ C: ความเต็มกระเป๋า (v6.165: จำไว้ให้ npcErrandCheck ตัดสินว่า "วิกฤต" ไหม)
@@ -2862,10 +2861,25 @@
     return ok;
   }
 
+  // 🔤 v6.167: เปิดกระเป๋า/ร้าน "ด้วยคีย์ลัดเกม" เป็นทางสำรอง (B=กระเป๋า · P=ร้านค้า จากตารางคีย์ลัดในเกม)
+  //   แก้อาการที่โผล่ซ้ำใน log จริง: "หาปุ่มกระเป๋าไม่เจอ" / "เปิดร้านไม่สำเร็จ" — เกิดเมื่อแผงเมนูถูกย่อ
+  //   แล้วปุ่มหายจาก DOM ทั้งหมด (บั๊ก v6.104) · คีย์ลัดไม่พึ่ง DOM เลยจึงกันพังได้ถาวร
+  //   ปลอดภัยหลัง v6.164: บอทย้ายปุ่มตัวเองไป Alt+B/Alt+P แล้ว → ยิง B/P เปล่าไม่ไปสลับสถานะบอทเอง
+  const gameHotkey = (code, kc) => { bossFireKey('keydown', code, kc); bossFireKey('keyup', code, kc); };
+  async function openBagUI() {
+    await ensureMenuOpen();
+    const b = qBtn('กระเป๋า');
+    if (b) { fireClick(b); return true; }
+    gameHotkey('KeyB', 66);
+    const ok = !!await waitFor(() => !!readBagCount(), 2000, 150);
+    if (ok) logInfo('🔤 เปิดกระเป๋าด้วยคีย์ลัด B (ปุ่มในแผงเมนูไม่มี)');
+    return ok;
+  }
+
   async function openShop() {
     await ensureMenuOpen();
     const s = qBtn('ร้านค้านักตกปลา');
-    if (!s) return false;
+    if (!s) { gameHotkey('KeyP', 80); const ok = !!await waitFor(() => !!qBtn('ปิดร้าน'), 2500, 150); if (ok) logInfo('🔤 เปิดร้านด้วยคีย์ลัด P (ปุ่มในแผงเมนูไม่มี)'); return ok; }
     fireClick(s);
     // v6.105: ยืนยันด้วย aria "ปิดร้าน" (มีเฉพาะตอนร้านเปิดจริง · ชนกับ UI บอทไม่ได้)
     //   เดิมรอ btnByText('🪱 เหยื่อ') = ข้อความ ซึ่งไปแมตช์หัวข้อแผงบอท → คืน true ทั้งที่ร้านยังไม่เปิด
@@ -3049,9 +3063,7 @@
   async function useConsumable(nameRe) {
     try {
       await ensureMenuOpen();   // v6.104: เมนูถูกย่อ = ปุ่มกระเป๋าหายจาก DOM
-      const bagBtn = qBtn('กระเป๋า');
-      if (!bagBtn) return false;
-      fireClick(bagBtn);
+      if (!(await openBagUI())) return false;
       await sleep(700);
       const tab = btnByText('🎒 ของใช้');
       if (!tab) { await closeMenu(); return false; }
@@ -4169,11 +4181,8 @@
     busy = true;
     try {
       await ensureMenuOpen();   // v6.104: เมนูถูกย่อ = ปุ่มกระเป๋าหายจาก DOM
-      const bagBtn = qBtn('กระเป๋า');
-      if (!bagBtn) { say('หาปุ่มกระเป๋าไม่เจอ'); return; }
-
       say('เปิดกระเป๋าเช็คของ...');
-      fireClick(bagBtn);
+      if (!(await openBagUI())) { say('เปิดกระเป๋าไม่สำเร็จ (ทั้งปุ่มและคีย์ลัด B)'); return; }
 
       const ok = await waitFor(() => readBagCount());
       if (!ok) { say('เปิดกระเป๋าไม่สำเร็จ'); await closeMenu(); return; }
@@ -4198,6 +4207,10 @@
       }
 
       // ================= ขายปลา (แท็บ 🐟) =================
+      // 🗑️ v6.167 (ผู้ใช้รายงาน): เดิม 2 จุดล่างนี้ `return` ทิ้งกลางทางเมื่อหาปุ่มไม่เจอ → **ข้ามการขายขยะไปเลย**
+      //   เคสร้าย: กระเป๋าเต็ม + ปลาล็อกหมด → ขยะคือของชิ้นเดียวที่ขายได้เพื่อเปิดช่องว่าง แต่บอทกลับไม่ได้ไปขาย
+      //   แก้: ใช้ labeled block — ล้มเหลวตรงไหนก็ `break fishSell` แล้ว "ไหลต่อไปขายขยะ" เสมอ (ไม่ปิดเมนู/ไม่ return)
+      fishSell:
       if (!cards.length) {
         say(`ไม่มีปลาในกระเป๋า (${bag.count}/${bag.slots})`);
       } else {
@@ -4213,7 +4226,7 @@
           // (แตะทั้งใบธรรมดาและใบ ✨ ของชนิดเดียวกัน = toggle 2 ครั้ง = ยกเลิกการเลือก)
           say(`ขาย ${want.length} ชนิด: ${want.join(', ')}`);
           const pick = btnByText('☑️ เลือกขาย');
-          if (!pick) { say('หาปุ่มเลือกขายไม่เจอ'); await closeMenu(); return; }
+          if (!pick) { say('หาปุ่มเลือกขายไม่เจอ — ข้ามไปขายขยะแทน'); break fishSell; }
           fireClick(pick);
           await sleep(250);
 
@@ -4228,7 +4241,7 @@
           }
 
           const sellBtn = await waitFor(() => btnByText('ขายที่เลือก ('), 2000);
-          if (!sellBtn) { say('หาปุ่มขายที่เลือกไม่เจอ'); await closeMenu(); return; }
+          if (!sellBtn) { say('หาปุ่มขายที่เลือกไม่เจอ — ข้ามไปขายขยะแทน'); break fishSell; }
           fireClick(sellBtn);
           await readSellToast();
         }
@@ -4242,8 +4255,11 @@
           fireClick(jt);
           await sleep(350);                 // รอสลับแท็บ + React วาดปุ่มขายใหม่
           const jTotal = readTotalCoins();  // ตอนนี้ปุ่มขายทั้งหมด = "ขายขยะทั้งหมด N 🪙"
-          if (jTotal > 0) {
-            say(`ขายขยะทั้งหมด (${jTotal.toLocaleString()} 🪙)...`);
+          // v6.167: เดิมเชื่อยอดเหรียญอย่างเดียว — ขยะบางชิ้นราคา 0/อ่านยอดไม่ออก = ข้ามทิ้งทั้งที่มีของกินช่องอยู่
+          //   เพิ่มเงื่อนไข "ปุ่มขายทั้งหมดกดได้" = มีของให้ขายจริง (สำคัญมากตอนกระเป๋าเต็ม — ขยะคือช่องว่างที่ได้มาฟรี)
+          const jBtn = sellAllBtn();
+          if (jTotal > 0 || (jBtn && !jBtn.disabled)) {
+            say(`ขายขยะทั้งหมด (${jTotal > 0 ? jTotal.toLocaleString() + ' 🪙' : 'อ่านยอดไม่ออก — ขายเพื่อเปิดช่อง'})...`);
             await sellAllCurrentTab();
           } else {
             say('ไม่มีขยะให้ขาย');
@@ -6355,9 +6371,7 @@ ${esc(reason)}
     busy = true;
     try {
       await ensureMenuOpen();   // v6.104: เมนูถูกย่อ = ปุ่มกระเป๋าหายจาก DOM
-      const bagBtn = qBtn('กระเป๋า');
-      if (!bagBtn) { say('หาปุ่มกระเป๋าไม่เจอ'); return; }
-      fireClick(bagBtn);
+      if (!(await openBagUI())) { say('หาปุ่มกระเป๋าไม่เจอ (คีย์ลัด B ก็ไม่ผ่าน)'); return; }
       if (!await waitFor(() => readBagCount())) { say('เปิดกระเป๋าไม่สำเร็จ'); await closeMenu(); return; }
       await sleep(250);
 
