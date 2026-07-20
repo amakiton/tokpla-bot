@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.178
+// @version      6.179
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.178';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.179';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3169,7 +3169,12 @@
 
   // ===== ☕ ซื้อกาแฟเติมพลัง (เกมล่าสุด: อยู่แท็บ "🧪 ยา" · ซื้อแล้วต้องกดใช้จากกระเป๋า · จำกัด 3/วัน) =====
   const COFFEE_PRICE = 1500;
-  let coffeeFailUntil = 0;   // cooldown เมื่อซื้อไม่สำเร็จ (ทุกกรณี — กันวนเปิดร้านรัวๆ ตอนพลังต่ำค้าง)
+  // ☕🧪 v6.179 (audit — คลาสบั๊กเดียวกับ v6.176): cooldown "ซื้อไม่สำเร็จ พัก 2 ชม." เดิมอยู่บนฐาน performance.now()
+  //   → หายทุกรีโหลด → บอทเปิดร้านลองซื้อซ้ำหลังรีโหลดทุกครั้งทั้งที่ครบลิมิตวัน (เห็นจริงใน log 16:22:28)
+  //   persist เป็นเวลาจริง (epoch) แล้วแปลงกลับตอนโหลด — เสียเวลาเปิดร้านฟรี ~10-15 วิ/รีโหลด หายไป
+  const loadFailUntil = (key) => { try { const t = +W.localStorage.getItem(key) || 0; return t > Date.now() ? now() + (t - Date.now()) : 0; } catch { return 0; } };
+  const saveFailUntil = (key, perfUntil) => { try { W.localStorage.setItem(key, String(Date.now() + Math.max(0, perfUntil - now()))); } catch {} };
+  let coffeeFailUntil = loadFailUntil('tokpla_coffee_failuntil');   // cooldown เมื่อซื้อไม่สำเร็จ (ทุกกรณี — กันวนเปิดร้านรัวๆ ตอนพลังต่ำค้าง)
   let coffeeBagFailUntil = 0;   // v6.133: พักลอง "กาแฟจากกระเป๋า" เมื่อใช้แล้วพลังไม่ขึ้น (กันวนสแปม)
   let lastCoffeeTry = 0;
   async function buyCoffee() {
@@ -3234,6 +3239,7 @@
       }
       // ❌ = ซื้อไม่ผ่าน (อาจติดลิมิต 3/วัน) — พักยาว 2 ชม. กันวนพยายามทั้งวัน
       coffeeFailUntil = now() + (done === 'fail' ? 7200000 : 180000);
+      saveFailUntil('tokpla_coffee_failuntil', coffeeFailUntil);   // v6.179: จำข้ามรีโหลด
       say('☕ ซื้อกาแฟไม่สำเร็จ' + (done === 'fail' ? ' (อาจครบลิมิต 3 แก้ว/วัน — พัก 2 ชม.)' : ''));
       await sleep(400); await closeShop();
       return false;
@@ -3260,7 +3266,7 @@
   }
 
   // ===== 🧪 ซื้อยาบัฟอัตโนมัติ (🐋 หนัก+15% · 🍀 โชค+8%) — ซื้อเมื่อบัฟหมด & รายได้ถึงเกณฑ์คุ้ม =====
-  let potionFailUntil = 0, lastPotionCheck = 0, lastPotionEnergySayAt = 0, lastPotionCphSayAt = 0;
+  let potionFailUntil = loadFailUntil('tokpla_potion_failuntil'), lastPotionCheck = 0, lastPotionEnergySayAt = 0, lastPotionCphSayAt = 0;   // v6.179: persist ข้ามรีโหลด
   // ขั้นเหยื่อที่ "อนุญาตให้ต่อยา" (จาก cfg.potionBaitTiers) — memoize parse ใหม่เฉพาะตอนสตริงเปลี่ยน
   let _potRaw = null, _potSet = new Set();
   function potionTierSet() {
@@ -3404,6 +3410,7 @@
       }
       // ❌ = อาจติดลิมิต 5 ขวด/วัน — พักยาว 2 ชม.
       potionFailUntil = now() + (done === 'fail' ? 7200000 : 180000);
+      saveFailUntil('tokpla_potion_failuntil', potionFailUntil);   // v6.179: จำข้ามรีโหลด
       say('🧪 ซื้อยาไม่สำเร็จ' + (done === 'fail' ? ' (อาจครบลิมิต 5 ขวด/วัน — พัก 2 ชม.)' : ''));
       await sleep(400); await closeShop();
     } catch (e) {
@@ -3730,7 +3737,7 @@
       if (isOn('autoBuy')) {
         needBuy = true;      // ธงนี้ข้ามคูลดาวน์ซื้อให้เอง (ดูเงื่อนไขใน tick)
         say('เหยื่อหมดทุกขั้น — กำลังไปซื้อ');
-      } else if (cfg.autoBuy && cfg.baitTier > 1 && !isOn('forceBait')) {
+      } else if (cfg.autoBuy && cfg.baitTier > 1 && !isOn('forceBait') && !testRunning) {   // 🛡️ v6.179 (audit): กฎเหล็ก #4 — ระหว่างเทสต์ห้ามแตะ baitTier (เทสต์มีทาง "ข้ามรอบ" ของมันเอง)
         // v6.97: autoBuy ถูก "พักเพราะเงินไม่พอ" (ไม่ใช่ผู้ใช้ปิด) + ยังตั้งเหยื่อขั้นแพงอยู่
         //   → ลงขั้น 1 (ถูกสุด 5🪙/ชิ้น) แล้วปลุกระบบซื้อลองใหม่ แทนการหยุดบอท
         //   กันเคส: ตั้ง baitTier ขั้นแพง (เช่น 7=250🪙) + เงินร่อยหรอ → ซื้อไม่ไหว → เหยื่อหมด → บอทตายทั้งที่ขั้น 1 ยังซื้อไหว+ทำกำไร
