@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.195
+// @version      6.196
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.195';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.196';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -928,9 +928,11 @@
     switch (c) {
       case 'help': case 'start': reply(TG_HELP); break;
       case 'status': reply(enabled ? heartbeatMsg() : '⏹ บอทปิดอยู่ · /on เพื่อเปิด'); break;
-      case 'bossstats': case 'bossstat': {   // 📊 v6.195: สถิติล่าบอส N ครั้งล่าสุด · "clear" = ล้าง
-        if ((args[0] || '').toLowerCase() === 'clear') { try { W.localStorage.removeItem(BOSS_STATS_KEY); } catch {} reply('📊 ล้างสถิติล่าบอสแล้ว'); break; }
-        reply(bossStatsSummary()); break;
+      case 'bossstats': case 'bossstat': {   // 📊 v6.195/6.196: ตารางรายไฟต์ (default) · "avg"=เฉลี่ย · "clear"=ล้าง
+        const sub = (args[0] || '').toLowerCase();
+        if (sub === 'clear') { try { W.localStorage.removeItem(BOSS_STATS_KEY); } catch {} reply('📊 ล้างสถิติล่าบอสแล้ว'); break; }
+        if (sub === 'avg' || sub === 'เฉลี่ย') { reply(bossStatsSummary()); break; }
+        reply(`<pre>${esc(bossStatsTable())}</pre>`); break;   // <pre> = monospace จัดคอลัมน์ตรงใน Telegram
       }
       case 'on': if (!enabled) toggle(); reply('▶️ เปิดบอทแล้ว'); break;
       case 'off': case 'stop':
@@ -1439,6 +1441,54 @@
       return `${icon} ${t} · ดาเมจ ${fmt(r.dmg)}${r.pct != null ? `(${r.pct}%)` : ''} · เกจ ${r.gauge ?? '–'} · หลบ ${r.aoeDodges ?? '–'} · ตาย ${r.deaths ?? 0} · HP↓${r.hpMin != null ? Math.round(r.hpMin) + '%' : '–'}`;
     });
     return lines.join('\n') + '\n— ล่าสุด —\n' + recent.join('\n');
+  }
+  // 📊 v6.196: ตารางเทียบ "รายไฟต์" (ไม่ใช่เฉลี่ย) — ใหม่→เก่า · ASCII/ตัวเลขล้วนในเซลล์เพื่อจัดคอลัมน์ตรงใน monospace
+  function bossStatsTable() {
+    const arr = loadBossStats();
+    if (!arr.length) return '📊 ยังไม่มีสถิติล่าบอส (จะเริ่มเก็บหลังจบไฟต์แรก)';
+    const pad = (s, w, right = true) => { s = String(s); return right ? s.padStart(w) : s.padEnd(w); };
+    const dt = (ts) => { if (!ts) return '??/?? ??:??'; const d = new Date(ts); const z = (x) => String(x).padStart(2, '0'); return `${z(d.getDate())}/${z(d.getMonth() + 1)} ${z(d.getHours())}:${z(d.getMinutes())}`; };
+    const res = (o) => o === 'kill' ? 'k' : o === 'timeout' ? 't' : 'm';
+    const cols = [
+      { h: '#', w: 3, g: (r, i) => i + 1 },
+      { h: 'date', w: 11, right: false, g: (r) => dt(r.ts) },
+      { h: 'res', w: 3, right: false, g: (r) => res(r.outcome) },
+      { h: 'dmg', w: 8, g: (r) => r.dmg != null ? r.dmg.toLocaleString() : '-' },
+      { h: 'pct', w: 5, g: (r) => r.pct != null ? r.pct.toFixed(1) : '-' },
+      { h: 'gg', w: 4, g: (r) => r.gauge ?? '-' },
+      { h: 'dg', w: 3, g: (r) => r.aoeDodges ?? '-' },
+      { h: 'di', w: 3, g: (r) => r.deaths ?? 0 },
+      { h: 'hp', w: 5, g: (r) => r.hpMin != null ? r.hpMin + '%' : '-' },
+      { h: 'sec', w: 4, g: (r) => r.durMs ? Math.round(r.durMs / 1000) : '-' },
+    ];
+    const rows = arr.slice().reverse();   // ใหม่สุดอยู่บน
+    const header = cols.map((c) => pad(c.h, c.w, c.right === false ? false : true)).join(' ');
+    const sep = cols.map((c) => '-'.repeat(c.w)).join(' ');
+    const body = rows.map((r, i) => cols.map((c) => pad(c.g(r, i), c.w, c.right === false ? false : true)).join(' ')).join('\n');
+    const kills = arr.filter((r) => r.outcome === 'kill').length;
+    return `📊 เทียบรายไฟต์ล่าบอส (${arr.length} ครั้ง · ใหม่→เก่า) · ฆ่า ${kills}/${arr.length}\n`
+      + `res: k=ฆ่า t=หมดเวลา m=ไม่มา · gg=กดเกจ dg=หลบAoE di=ตาย hp=HPต่ำสุด sec=วินาที\n\n`
+      + header + '\n' + sep + '\n' + body;
+  }
+  // แสดงตารางในหน้าต่างของบอทเอง (monospace · ไม่พึ่ง alert ที่ฟอนต์ไม่ตรง) — data-tkbot กัน isBotUI จับ
+  function showBossStatsModal() {
+    document.querySelectorAll('[data-tkbot="bossstat-modal"]').forEach((e) => e.remove());
+    const ov = document.createElement('div');
+    ov.setAttribute('data-tkbot', 'bossstat-modal');
+    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;padding:16px;';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#1a202c;border:1px solid #4a5568;border-radius:10px;max-width:96vw;max-height:88vh;overflow:auto;padding:14px 16px;box-shadow:0 8px 40px rgba(0,0,0,.6);';
+    const pre = document.createElement('pre');
+    pre.textContent = bossStatsTable();
+    pre.style.cssText = 'margin:0;font-family:Consolas,"Courier New",monospace;font-size:12px;line-height:1.5;color:#e2e8f0;white-space:pre;';
+    const close = document.createElement('button');
+    close.setAttribute('data-tkbot', '1');
+    close.textContent = '✕ ปิด';
+    close.style.cssText = 'margin-top:12px;padding:6px 14px;border-radius:7px;border:1px solid #4a5568;background:#2d3748;color:#e2e8f0;font-size:12px;cursor:pointer;';
+    close.addEventListener('click', () => ov.remove());
+    ov.addEventListener('click', (e) => { if (e.target === ov) ov.remove(); });   // คลิกพื้นหลัง = ปิด
+    box.appendChild(pre); box.appendChild(close); ov.appendChild(box); document.body.appendChild(ov);
+    try { console.table(loadBossStats().slice().reverse()); } catch {}   // โบนัส: ตารางจริงใน DevTools
   }
 
   // อ่านนาทีจนบอสเกิดครั้งถัดไป จากป้าย HUD (ทุกแมพ) — null = อ่านไม่ได้
@@ -6227,16 +6277,14 @@ ${esc(reason)}
     {
       const statBtn = document.createElement('button');
       statBtn.setAttribute('data-tkbot', '1');
-      statBtn.textContent = '📊 ดูสถิติล่าบอส';
+      statBtn.textContent = '📊 ตารางเทียบรายไฟต์';
       statBtn.style.cssText = 'padding:5px 10px;border-radius:7px;border:1px solid #4a5568;background:#2d3748;color:#e2e8f0;font-size:11px;cursor:pointer;margin:2px 3px 6px 0;';
-      statBtn.addEventListener('click', () => {
-        const t = bossStatsSummary().replace(/<\/?b>/g, '');
-        say(t); console.log('[Tokpla Bot] สถิติล่าบอส\n' + t); alert(t);
-      });
+      statBtn.addEventListener('click', () => { showBossStatsModal(); });   // ตารางรายไฟต์ในหน้าต่าง monospace
       panel.appendChild(row(
         '📊 สถิติล่าบอส (เก็บ N ครั้งล่าสุด)',
         'บันทึกทุกไฟต์อัตโนมัติ: ผล (ฆ่า/หมดเวลา/ไม่มา) · ดาเมจ+% · กดเกจ · หลบ AoE · ตาย · HP ต่ำสุด · เวลา/ไฟต์ · '
-        + 'เก็บแบบ "วนทับ" เฉพาะ N ครั้งล่าสุดที่ตั้งไว้ (0 = ปิดการเก็บ) · กดปุ่มดูสรุป+เฉลี่ย · หรือสั่ง /bossstats ทาง Telegram · ล้างได้ด้วย /bossstats clear',
+        + 'เก็บแบบ "วนทับ" เฉพาะ N ครั้งล่าสุดที่ตั้งไว้ (0 = ปิดการเก็บ) · กดปุ่ม "📊 ตารางเทียบรายไฟต์" ดูตารางแยกทีละไฟต์ (ไม่ใช่เฉลี่ย) · '
+        + '/bossstats = ตาราง · /bossstats avg = ค่าเฉลี่ย · /bossstats clear = ล้าง (ทาง Telegram)',
         labeled('เก็บกี่ครั้ง', numInput('bossStatKeep', 0, 200, 52)),
       ));
       panel.appendChild(statBtn);
