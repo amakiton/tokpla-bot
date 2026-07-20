@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.165
+// @version      6.166
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.165';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.166';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2015,10 +2015,17 @@
       const card = readBag().find((c) => c.rarity != null && rarityRank(c.rarity) >= stoMin && (c.count - c.lockedCount) > 0 && npcVisible(c.el));
       if (!card) break;
       fireClick(card.el); await sleep(400);                  // เปิด popup เลือกจำนวน
-      const all = [...document.querySelectorAll('button')].find((b) => /^ทั้งหมด$/.test((b.textContent || '').trim()) && npcVisible(b)); if (all) { fireClick(all); await sleep(200); }
-      const sel = [...document.querySelectorAll('button')].find((b) => /^เลือก\s*\d+\s*ตัว/.test((b.textContent || '').trim()) && npcVisible(b)); if (sel) { fireClick(sel); await sleep(400); }
+      // ⚠️ v6.166 (เจอสด): คลังจำกัด "เลือกทีละไม่เกิน 100 ตัว" — กอง >100 ถ้ากด "ทั้งหมด" ปุ่ม "ฝาก →" จะกดไม่ได้
+      //   ผลเดิม: บอทวนเปล่าครบ 40 รอบแล้วเลิก โดยไม่ได้ฝากอะไรเลย (กระเป๋าเต็มต่อ → หยุดบอท)
+      //   แก้: กอง >100 กด "ครึ่ง" แทน (≤100 เสมอสำหรับกอง ≤200 · กองใหญ่กว่านั้นรอบถัดไปจะเล็กลงเรื่อยๆ จนฝากหมด)
+      const stack = Math.max(0, card.count - card.lockedCount);
+      const pick = stack > 100
+        ? [...document.querySelectorAll('button')].find((b) => /^ครึ่ง$/.test((b.textContent || '').trim()) && npcVisible(b))
+        : [...document.querySelectorAll('button')].find((b) => /^ทั้งหมด$/.test((b.textContent || '').trim()) && npcVisible(b));
+      if (pick) { fireClick(pick); await sleep(250); }
+      const sel = [...document.querySelectorAll('button')].find((b) => /^เลือก\s*\d+\s*(ตัว|ชิ้น)/.test((b.textContent || '').trim()) && npcVisible(b)); if (sel) { fireClick(sel); await sleep(400); }
       const dep = [...document.querySelectorAll('button')].find((b) => /ฝาก\s*→/.test(b.textContent || '') && npcVisible(b) && !b.disabled);
-      if (!dep) break;
+      if (!dep) { npcCloseDialog(); await sleep(250); continue; }   // กดไม่ได้ (เกินลิมิต/ยังไม่เลือก) → ปิด popup ลองใบถัดไป แทนที่จะเลิกทั้งหมด
       fireClick(dep); done++; await sleep(800);              // ฝาก
     }
     npcCloseDialog(); await sleep(300); return done;
