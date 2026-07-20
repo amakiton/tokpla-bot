@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.190
+// @version      6.191
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.190';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.191';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1713,6 +1713,9 @@
     let aoeSamples = [[841, 744]];
     try { const sv = JSON.parse(W.localStorage.getItem('tokpla_aoe_samples') || 'null'); if (Array.isArray(sv) && sv.length) aoeSamples = sv; } catch {}
     let lastRecenter = 0, recenters = 0;
+    // 📊 v6.191: วัด HP จริงตลอดไฟต์ (start→ต่ำสุด→จบ) + นับ "ค้างหลบ" (ปากทางกินทิศหลบหมด)
+    //   ผู้ใช้ยืนยัน: เกมไม่ฟื้นเลือด → ทางรอดเดียวคือหลบไม่ให้โดน · ต้องรู้ว่าเสียเลือดตรงไหนก่อนปรับ
+    let hpStart = null, hpMin = 101, lastHpChk = 0, aoeStalls = 0;
     // 🛡️ v6.175: เดิมเงื่อนไขลูปมี isOn('bossHunt') → **ปิดโหมดล่าบอสกลางไฟต์ = ทิ้งบอสทันที**
     //   เจอสด 16:30:14: เข้าตีตอน 16:30:00 แล้วโดนตัดจบใน 14 วิ ("กดเกจ 0") ทั้งที่บอสยืนอยู่ตรงหน้า
     //   ซ้ำร้าย พอเปิดโหมดใหม่ ขา "เข้าถ้ำ" ชนกับขา "กลับบ้าน" → แมพเด้ง ถ้ำ↔บ่อตกปลา 6 รอบ โดนตีฟรีจน HP เหลือ 16%
@@ -1723,6 +1726,11 @@
       const rb = raidBossState();
       const present = !!(rb && rb.present);
       if (present) { bossSeen = true; goneAt = 0; }
+      // 📊 วัด HP แบบ throttle (getPhaserScene แพง) — เก็บ start ครั้งแรกที่อ่านได้ + ต่ำสุดตลอดไฟต์
+      if (present && now() - lastHpChk > 400) {
+        lastHpChk = now(); const _h = bossPlayerHpPct();
+        if (_h != null) { if (hpStart == null) hpStart = _h; if (_h < hpMin) hpMin = _h; }
+      }
       if (rb && rb.dead) { killed = true; break; }
       // 💀 v6.149: ตายถูกส่งออกจากถ้ำ (บ่อน้ำหมู่บ้าน · เลือดหมดจากโดน AoE) → รอ respawn ~10 วิ แล้วกลับเข้าถ้ำสู้ต่อ (เดิมหลุดออก = จบเลย เสีย reward)
       if (bossSeen && bossMapId() !== BOSS_MAP) {
@@ -1757,15 +1765,28 @@
           if (gy > 6) dirs.push('down'); else if (gy < -6) dirs.push('up');
           // 🚪 v6.157: กัน "เดินหลบทะลุปากทางออกถ้ำ" (boss_cave→village @≈836,915) แล้วหลุดออกจากถ้ำกลางสู้ (เข้าใจผิดว่าตาย)
           //   ต้นเหตุ: หลบ (เข้าเขียว/หนีแดง) ดันตัวไปทางปากทาง → เหยียบพอร์ทัล → เปลี่ยนแมพ · แก้: ใกล้ปากทาง <120px = ตัด "ทิศที่เข้าหาปากทาง" ออก (ยังเดินแนวขนานหลบได้ แต่ไม่ออกถ้ำ)
+          let clampExit = null;    // ปากทางที่ใกล้สุด — ไว้คำนวณ slide ถ้าตัดทิศจนหมด
           try {
             for (const ex of (bossMapExits() || [])) {
               const ecx = ex.x + (ex.w || 0) / 2, ecy = ex.y + (ex.h || 0) / 2, edx = ecx - _sc.player.x, edy = ecy - _sc.player.y;
-              if (Math.hypot(edx, edy) < 120) {
+              const ed = Math.hypot(edx, edy);
+              if (ed < 120) {
+                if (!clampExit || ed < clampExit.d) clampExit = { dx: edx, dy: edy, d: ed };
                 let i; if (edx > 10) { if ((i = dirs.indexOf('right')) >= 0) dirs.splice(i, 1); } else if (edx < -10 && (i = dirs.indexOf('left')) >= 0) dirs.splice(i, 1);
                 if (edy > 10) { if ((i = dirs.indexOf('down')) >= 0) dirs.splice(i, 1); } else if (edy < -10 && (i = dirs.indexOf('up')) >= 0) dirs.splice(i, 1);
               }
             }
           } catch {}
+          // 🚪 v6.191: ปากทางกินทิศหลบจนหมด แต่ยัง "ไม่ปลอดภัย" → เดิม bossMoveDirs([]) = ยืนนิ่งกิน AoE เต็มๆ
+          //   แก้: เลื่อนตัว "ขนานปากทาง" (perpendicular) ทางที่มุ่งเข้าที่ปลอดภัยมากสุด — ขยับหลบได้โดยไม่ทะลุออกถ้ำ
+          //   ยังไม่มี log ยืนยันว่าเคยเกิดจริง จึงนับ aoeStalls ไว้ให้ไฟต์หน้าพิสูจน์ (วัดก่อนเชื่อ)
+          if (!dirs.length && clampExit) {
+            const perps = [[-clampExit.dy, clampExit.dx], [clampExit.dy, -clampExit.dx]];
+            const s = perps.sort((a, b) => (b[0] * gx + b[1] * gy) - (a[0] * gx + a[1] * gy))[0];
+            if (s[0] > 6) dirs.push('right'); else if (s[0] < -6) dirs.push('left');
+            if (s[1] > 6) dirs.push('down'); else if (s[1] < -6) dirs.push('up');
+            if (dirs.length) { aoeStalls++; if (aoeStalls === 1) logInfo(`🚪 หลบชิดปากทาง — เลื่อนขนานแทนยืนนิ่ง (${dirs.join('+')})`); }
+          }
           bossMoveDirs(dirs);
           if (!bossDodging) {
             bossDodging = true; aoeDodges++;
@@ -1845,7 +1866,10 @@
     // v6.169: เพิ่มตัวเลขวัดผลของใหม่ — recenter (v6.162) · ความเร็วเข็มที่วัดได้ (เกจอัจฉริยะ v6.162) · จุดกลางวง AoE ที่เรียนรู้
     //   เดิมสรุปไม่มีตัวเลขพวกนี้เลย = อัปเกรดแล้ววัดไม่ได้ว่าดีขึ้นจริงไหม
     const aoeMid = aoeSamples.length > 1 ? ` · กลางวง ${Math.round(aoeSamples.reduce((s, a) => s + a[0], 0) / aoeSamples.length)},${Math.round(aoeSamples.reduce((s, a) => s + a[1], 0) / aoeSamples.length)}` : '';
-    const stat = `เริ่มตี ${hits} · กดเกจ ${gaugePresses} · กระโดด ${dodges} · หลบ AoE ${aoeDodges} · recenter ${recenters} · เข็ม ${Math.round(Math.abs(gVel))}°/s · ตาย ${deaths} · HP ${bossPlayerHpPct() != null ? Math.round(bossPlayerHpPct()) + '%' : '?'}`;
+    // 📊 v6.191: HP โปรไฟล์ (start→จบ + ต่ำสุด) แทนตัวเลข HP เดี่ยว — วัดว่าหลบดีขึ้นไหมโดยดู "ต่ำสุด" ไม่ใช่แค่ตอนจบ
+    const hpEnd = bossPlayerHpPct();
+    const hpTxt = `HP ${hpStart != null ? Math.round(hpStart) + '%' : '?'}→${hpEnd != null ? Math.round(hpEnd) + '%' : '?'}${hpMin <= 100 ? ` (ต่ำสุด ${Math.round(hpMin)}%)` : ''}`;
+    const stat = `เริ่มตี ${hits} · กดเกจ ${gaugePresses} · กระโดด ${dodges} · หลบ AoE ${aoeDodges}${aoeStalls ? `(ค้างปากทาง ${aoeStalls})` : ''} · recenter ${recenters} · เข็ม ${Math.round(Math.abs(gVel))}°/s · ตาย ${deaths} · ${hpTxt}`;
     logInfo(`👹 จบสู้บอส: ${outcome} · ${stat}${aoeMid}`);
     if (isOn('tgOn')) void tgSend(`👹 <b>จบสู้บอส</b> ${esc(outcome)}\n${esc(stat)}\nกำลังกลับไปฟาร์ม`);
     say(`👹 ${outcome}`);
