@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.198
+// @version      6.199
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.198';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.199';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -930,8 +930,9 @@
       case 'status': reply(enabled ? heartbeatMsg() : '⏹ บอทปิดอยู่ · /on เพื่อเปิด'); break;
       case 'bossstats': case 'bossstat': {   // 📊 v6.195/6.196: ตารางรายไฟต์ (default) · "avg"=เฉลี่ย · "clear"=ล้าง
         const sub = (args[0] || '').toLowerCase();
-        if (sub === 'clear') { try { W.localStorage.removeItem(BOSS_STATS_KEY); } catch {} reply('📊 ล้างสถิติล่าบอสแล้ว'); break; }
+        if (sub === 'clear') { try { W.localStorage.removeItem(BOSS_STATS_KEY); W.localStorage.removeItem(BOSS_EV_KEY); } catch {} reply('📊 ล้างสถิติ+เหตุการณ์ล่าบอสแล้ว'); break; }
         if (sub === 'avg' || sub === 'เฉลี่ย') { reply(bossStatsSummary()); break; }
+        if (sub === 'ev' || sub === 'log') { reply(`<pre>${esc(bossEventsText())}</pre>`); break; }   // v6.199: ทำไมไป/ไม่ไป
         reply(`<pre>${esc(bossStatsTable())}</pre>`); break;   // <pre> = monospace จัดคอลัมน์ตรงใน Telegram
       }
       case 'on': if (!enabled) toggle(); reply('▶️ เปิดบอทแล้ว'); break;
@@ -1404,6 +1405,22 @@
     } catch { return { dmg: null, pct: null }; }
   }
 
+  // 📋 v6.199: บันทึก "เหตุการณ์/เหตุผล" ของระบบล่าบอสแยกจาก log หลัก
+  //   ทำไมต้องแยก: log หลักเก็บ 300 บรรทัด แต่ทุกครั้งที่ตกปลาเขียน 1 บรรทัด → เต็มใน ~38 นาที
+  //   → ตอนผู้ใช้ถามว่า "ทำไมบอทออกล่า 10:36 แทน 10:22" หลักฐานหมุนทับไปแล้ว วินิจฉัยไม่ได้เลย
+  //   ที่นี่เขียนเฉพาะเหตุการณ์บอส (นานๆ ครั้ง) → เก็บได้เป็นวัน
+  const BOSS_EV_KEY = 'tokpla_boss_events';
+  const loadBossEvents = () => { try { const a = JSON.parse(W.localStorage.getItem(BOSS_EV_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch { return []; } };
+  function bossEvent(m) {
+    try { const a = loadBossEvents(); a.push({ at: Date.now(), m }); while (a.length > 80) a.shift(); W.localStorage.setItem(BOSS_EV_KEY, JSON.stringify(a)); } catch {}
+  }
+  function bossEventsText() {
+    const a = loadBossEvents();
+    if (!a.length) return '(ยังไม่มีเหตุการณ์บอสบันทึกไว้)';
+    const t = (ts) => { const d = new Date(ts); const z = (x) => String(x).padStart(2, '0'); return `${z(d.getDate())}/${z(d.getMonth() + 1)} ${z(d.getHours())}:${z(d.getMinutes())}:${z(d.getSeconds())}`; };
+    return a.slice().reverse().map((e) => `${t(e.at)}  ${e.m}`).join('\n');
+  }
+
   // 📊 v6.195: สถิติล่าบอส — ring buffer เก็บ "N ครั้งล่าสุด" (ตั้งได้ที่ cfg.bossStatKeep)
   const BOSS_STATS_KEY = 'tokpla_boss_stats';
   const loadBossStats = () => { try { const a = JSON.parse(W.localStorage.getItem(BOSS_STATS_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch { return []; } };
@@ -1479,7 +1496,8 @@
     const box = document.createElement('div');
     box.style.cssText = 'background:#1a202c;border:1px solid #4a5568;border-radius:10px;max-width:96vw;max-height:88vh;overflow:auto;padding:14px 16px;box-shadow:0 8px 40px rgba(0,0,0,.6);';
     const pre = document.createElement('pre');
-    pre.textContent = bossStatsTable();
+    // v6.199: ตารางไฟต์ + "บันทึกเหตุการณ์/เหตุผล" (ทำไมไป/ไม่ไป) — log หลักหมุนทับเร็ว ตัวนี้อยู่ได้เป็นวัน
+    pre.textContent = bossStatsTable() + '\n\n📋 เหตุการณ์ระบบล่าบอส (ใหม่→เก่า)\n' + bossEventsText();
     pre.style.cssText = 'margin:0;font-family:Consolas,"Courier New",monospace;font-size:12px;line-height:1.5;color:#e2e8f0;white-space:pre;';
     const close = document.createElement('button');
     close.setAttribute('data-tkbot', '1');
@@ -1989,6 +2007,7 @@
     const dmgTxt = lastContrib.dmg != null ? ` · ดาเมจ ${lastContrib.dmg.toLocaleString()}${lastContrib.pct != null ? ` (${lastContrib.pct}%)` : ''}` : '';
     const stat = `เริ่มตี ${hits} · กดเกจ ${gaugePresses} · กระโดด ${dodges} · หลบ AoE ${aoeDodges}${aoeStalls ? `(ค้างปากทาง ${aoeStalls})` : ''} · recenter ${recenters} · เข็ม ${Math.round(Math.abs(gVel))}°/s · ตาย ${deaths} · ${hpTxt}${dmgTxt}`;
     logInfo(`👹 จบสู้บอส: ${outcome} · ${stat}${aoeMid}`);
+    bossEvent(`🏁 จบไฟต์: ${outcome}${dmgTxt} · กดเกจ ${gaugePresses} · หลบ ${aoeDodges} · ตาย ${deaths}`);
     // 📊 v6.195: เก็บสถิติไฟต์นี้เข้า ring buffer (N ครั้งล่าสุด · ตั้งที่ bossStatKeep)
     recordBossFight({
       ts: Date.now(),
@@ -2061,19 +2080,22 @@
       if (!resumeHome && bossMapId() !== BOSS_MAP) {
         say('👹 ใกล้เวลาบอส — ทดสอบว่าคุมตัวละครได้ก่อน...');
         if (!await bossCanControl()) {
-          say('⚠️ ยกเลิกล่าบอส — เดินตัวละครไม่ได้ตอนนี้ (แท็บไม่โฟกัส/เกมไม่รับปุ่ม?) ฟาร์มต่อที่เดิม');
-          if (isOn('tgOn') && isOn('tgWarn')) void tgSend('⚠️ <b>ยกเลิกล่าบอส</b> — บอทเดินตัวละครไม่ได้ (ต้องเปิดแท็บเกมไว้หน้าสุด) · ฟาร์มต่อปกติ');
-          bossReleaseAll(); bossPhase = 'idle'; clearBossState(); stampBossHunt(); orchestrating = false; return;
+          say('⚠️ ยกเลิกล่าบอส — เดินตัวละครไม่ได้ตอนนี้ (แท็บไม่โฟกัส/เกมไม่รับปุ่ม?) ลองใหม่ใน 1 นาที');
+          if (isOn('tgOn') && isOn('tgWarn')) void tgSend('⚠️ <b>ยกเลิกล่าบอส</b> — บอทเดินตัวละครไม่ได้ (ต้องเปิดแท็บเกมไว้หน้าสุด) · จะลองใหม่ใน 1 นาที');
+          bossEvent('⚠️ ยกเลิกก่อนออกเดินทาง — เทสต์เดินตัวละครไม่ผ่าน (แท็บไม่โฟกัส/มีแผงเปิดค้าง?) · คูลดาวน์สั้น 60 วิ แล้วลองใหม่');
+          // 👹 v6.199: ยกเลิก "ก่อนออกเดินทาง" = ยังไม่เจอบอสเลย → คูลดาวน์สั้น (เดิม 10 นาที = พลาดบอสทั้งรอบ)
+          bossReleaseAll(); bossPhase = 'idle'; clearBossState(); stampBossHunt(60000); orchestrating = false; return;
         }
       }
       if (!resumeHome) {
         bossPhase = 'travel'; saveBossState();
         say('👹 ใกล้เวลาบอส — ออกเดินทางไปถ้ำบ่อโบราณ');
+        bossEvent(`🚶 ออกเดินทางไปถ้ำ (บอสอีก ${bossTimerMin() ?? '?'} นาที · ตั้ง lead ${cfg.bossLeadMin} · จาก ${bossHome})`);
         if (isOn('tgOn')) void tgSend(`👹 <b>ออกล่าบอส</b> — จากแมพ ${bossHome} → ถ้ำบ่อโบราณ (จะกลับมาฟาร์มต่อ)`);
         recordBossGraph();
         await ensureBossBaitStock();   // 👹 v6.134: ซื้อเหยื่อจุดอ่อนก่อนเข้าถ้ำ (ในถ้ำซื้อไม่ได้)
         const reached = await bossTravelTo(BOSS_MAP);
-        if (!reached) { say('👹 ไปถ้ำบอสไม่สำเร็จ — กลับบ้าน'); }
+        if (!reached) { say('👹 ไปถ้ำบอสไม่สำเร็จ — กลับบ้าน'); bossEvent('❌ เดินไปถ้ำไม่สำเร็จ — กลับบ้าน'); }
         else {
           bossPhase = 'fight'; saveBossState();
           await bossFight(cfg.bossMaxWaitMin);
@@ -2143,7 +2165,16 @@
     const t = +W.localStorage.getItem('tokpla_boss_lasthunt') || 0;
     if (t && Date.now() - t < 10 * 60000) lastBossHuntAt = now() - (Date.now() - t);
   } catch {}
-  const stampBossHunt = () => { lastBossHuntAt = now(); try { W.localStorage.setItem('tokpla_boss_lasthunt', String(Date.now())); } catch {} };
+  // 👹 v6.199: คูลดาวน์แยกตามสาเหตุ — เดิมทุกกรณีกิน 10 นาทีเท่ากัน รวมถึง "ยกเลิกก่อนออกเดินทาง"
+  //   เคสจริงที่ผู้ใช้เจอ: เทสต์เดินตัวละครล้มเหลวตอน ~10:22 → ยกเลิก + ประทับคูลดาวน์ 10 นาที
+  //   → ไปไม่ได้จนถึง ~10:32 · บอสเกิด 10:30 · บอทออกจริง 10:36 = พลาดช่วงต้นไฟต์ทั้งที่ตั้ง lead ไว้ 8 นาที
+  //   ใหม่: ยกเลิกก่อนเดินทาง (ยังไม่ได้เจอบอสเลย) = คูลดาวน์สั้น ลองใหม่ได้ทัน · จบไฟต์จริง = 10 นาทีเหมือนเดิม
+  let bossHuntCoolMs = 10 * 60000;
+  const stampBossHunt = (coolMs) => {
+    lastBossHuntAt = now();
+    bossHuntCoolMs = coolMs || 10 * 60000;
+    try { W.localStorage.setItem('tokpla_boss_lasthunt', String(Date.now())); } catch {}
+  };
   // 👹 v6.112: "ติดอยู่ในถ้ำบอส" โดยไม่ได้กำลังล่า/ไม่มีบอส — ถ้ำบอสตกปกติไม่ได้ → บอทตกไม่ออก → recoveryWatch รีโหลดวนเปล่า
   //   (เกิดเมื่อ bossHunt เดินไปแล้วกลับบ้านไม่สำเร็จ เพราะ WASD ไม่เสถียร) · แก้: เดินออกไปแมพบ้านเอง · เดินไม่ได้ = แจ้ง+หยุดลองสแปม
   //   v6.138: หนีออกเฉพาะตอน "ปิดล่าบอส" — ถ้าเปิดล่าบอสแล้วอยู่ในถ้ำ = ผู้ใช้/บอทตั้งใจมารอตีบอส ห้ามเดินหนีออก
@@ -2452,18 +2483,35 @@
   // เงื่อนไขเริ่มล่า (เรียกจาก idle branch) — ใกล้เวลา + ยังไม่เพิ่งล่า + อยู่โหมด bot/gameauto (ไม่ใช่ off)
   //   v6.121: idle branch เรียกทุก 150ms แต่ bossTimerMin = TreeWalker ทั้ง DOM (แพง) → cache ผล 5 วิ (เวลาบอสละเอียดระดับนาที เหลือเฟือ)
   let bossTimerCache = null, bossTimerCacheAt = 0;
+  let lastBossBlockLog = 0;
   function bossHuntDue() {
-    if (!isOn('bossHunt') || orchestrating || busy || bossPhase !== 'idle') return false;
-    // 🛡️ v6.175: กัน "ออกล่ารอบใหม่ทับขากลับบ้านที่ยังเดินไม่ถึง" — ต้นเหตุแมพเด้ง ถ้ำ↔บ่อตกปลา 6 รอบ (HP ร่วงเหลือ 16%)
-    //   เพิ่งจบไฟต์/เพิ่งเดินกลับ ให้พัก 45 วิ ก่อนพิจารณาล่าใหม่ (บอสรอบถัดไปห่างเป็นชั่วโมงอยู่แล้ว ไม่เสียโอกาส)
-    if (now() - lastBossHuntAt < 45000) return false;
-    if (now() - lastBossHuntAt < 10 * 60000) return false;   // กันล่าซ้ำถี่ (บอสห่างเป็นชั่วโมง)
+    if (!isOn('bossHunt')) return false;
+    // 📋 v6.199: อ่านเวลาบอส "ก่อน" เช็คตัวขวาง — เพื่อบันทึกได้ว่า "ถึงเวลาแล้วแต่ไม่ไปเพราะอะไร"
+    //   (เดิม return ออกก่อนอ่านเวลา → ไม่มีทางรู้ย้อนหลังว่าพลาดเพราะคูลดาวน์/busy/เทสต์)
     if (now() - bossTimerCacheAt > 5000) { bossTimerCacheAt = now(); bossTimerCache = bossTimerMin(); }
     const min = bossTimerCache;
     const due = min != null && min <= clamp(cfg.bossLeadMin, 1, 60);
-    // 🧪 v6.148: ถ้ามีเทสต์เหยื่อรันอยู่ = ปกติไม่ล่า (เทสต์คุมเหยื่อ) · แต่ถ้า "บอสใกล้มาแล้ว" → หยุดเทสต์ให้ไปล่าบอสก่อน
-    //   (บอสสำคัญ+นานๆ ครั้ง · เทสต์กด "ทำต่อจากเดิม" ทีหลังได้) — แก้บั๊ก: เทสต์ค้าง (เช่น autoResume ปลุก) บล็อกล่าบอสถาวร → พลาดบอส
-    if (testRunning) { if (due) stopTest(true); return false; }   // v6.172: true = พักเพราะบอส → resumeTestAfterBoss() จะทำต่อให้เอง
+    // 🛡️ v6.175: กัน "ออกล่ารอบใหม่ทับขากลับบ้านที่ยังเดินไม่ถึง" — ต้นเหตุแมพเด้ง ถ้ำ↔บ่อตกปลา 6 รอบ (HP เหลือ 16%)
+    //   v6.199: คูลดาวน์ยาว/สั้นตามสาเหตุครั้งก่อน (ดู stampBossHunt) · อย่างน้อย 45 วิเสมอ
+    const coolMs = Math.max(45000, bossHuntCoolMs);
+    const coolLeft = coolMs - (now() - lastBossHuntAt);
+    const why = orchestrating ? 'กำลังทำงานอื่น (orchestrating)'
+      : busy ? 'บอทติดงานอื่นอยู่ (busy — เปิดร้าน/กระเป๋า/สลับเหยื่อ)'
+      : bossPhase !== 'idle' ? `ยังอยู่ในเฟส ${bossPhase}`
+      : coolLeft > 0 ? `คูลดาวน์หลังล่าครั้งก่อน เหลืออีก ${Math.ceil(coolLeft / 1000)} วิ`
+      : testRunning ? 'กำลังทดสอบเหยื่อ'
+      : null;
+    // บันทึกเฉพาะตอน "ถึงเวลาแล้วแต่ไปไม่ได้" (throttle 30 วิ กันสแปม) — นี่คือหลักฐานที่เคยหายไป
+    if (due && why && now() - lastBossBlockLog > 30000) {
+      lastBossBlockLog = now();
+      bossEvent(`⏳ ถึงเวลาล่าแล้ว (บอสอีก ${min} นาที ≤ ตั้งไว้ ${cfg.bossLeadMin}) แต่ยังไม่ไป — ${why}`);
+    }
+    // 🧪 v6.148: เทสต์เหยื่อรันอยู่ + บอสใกล้มา → หยุดเทสต์ไปล่าบอสก่อน (resumeTestAfterBoss ทำต่อให้เอง)
+    if (!orchestrating && !busy && bossPhase === 'idle' && coolLeft <= 0 && testRunning) {
+      if (due) stopTest(true);
+      return false;
+    }
+    if (why) return false;
     return due;
   }
 
