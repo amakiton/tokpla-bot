@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.197
+// @version      6.198
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.197';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.198';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4217,7 +4217,7 @@
         if (!ok) disableForSession('forceRod', `สลับไปเบ็ดขั้น ${cfg.rodTier} ไม่ได้ (ยังไม่มีเบ็ดขั้นนั้น?) — พักการบังคับเบ็ด`);
       }
       const b = currentBait();
-      if (enforceBait() && b && b.tier !== null && b.tier !== targetBait()) {
+      if (enforceBait() && !baitTargetBlocked() && b && b.tier !== null && b.tier !== targetBait()) {
         // ปุ่มสลับเหยื่อจะข้ามขั้นที่ของหมด ถ้าวนครบแล้วยังไม่ได้ = ขั้นนั้นไม่มีของ (targetBait รวม override โหมดล่าปลาเทพ)
         const ok = await cycleTo('เลือกเหยื่อ', targetBait(), () => currentBait()?.tier);
         if (!ok) {
@@ -4230,6 +4230,15 @@
             say(`ไม่มีเหยื่อขั้น ${targetBait()} เหลืออยู่ — จะแวะซื้อให้`);
           } else if (isOn('forceBait')) {
             disableForSession('forceBait', `ไม่มีเหยื่อขั้น ${targetBait()} เหลืออยู่ — พักการบังคับเหยื่อ`);
+          } else {
+            // 🪱 v6.198: Advisor บังคับขั้นที่ "ของหมด + ปิดซื้ออัตโนมัติ" → เดิมวน cycleTo ไม่จบ = สลับเหยื่อรัว ไม่ตกปลา
+            //   แก้: เลิกบังคับขั้นนั้นชั่วคราว (3 นาที) แล้วตกด้วยเหยื่อที่มีอยู่จริง (ขั้นที่ cycleTo วนไปหยุด)
+            const eq = currentBait();
+            baitBlockTier = targetBait(); baitBlockUntil = now() + 180000;
+            if (eq && eq.tier != null && (eq.stock == null || eq.stock > 0)) {
+              say(`🪱 ไม่มีเหยื่อขั้น ${targetBait()} + ปิดซื้ออัตโนมัติ → ตกด้วยขั้น ${eq.tier} (${BAIT_TIERS[eq.tier - 1]?.name ?? '?'})${eq.stock != null ? ` เหลือ ${eq.stock}` : ''} ที่มีอยู่แทน · เปิดซื้อ/ตั้งเหยื่อเอง (ปิด Advisor ลงมือเอง) ถ้าต้องการขั้นอื่น`);
+              if (isOn('tgOn') && isOn('tgWarn')) void tgSend(`🪱 เหยื่อขั้น ${targetBait()} หมด + ปิดซื้ออัตโนมัติ → ตกด้วยขั้น ${eq.tier} ที่มีอยู่แทน (เลิกบังคับ 3 นาที)`);
+            }
           }
         }
       }
@@ -4398,6 +4407,10 @@
   //   รายได้/ครั้ง แบบตัดฟลุ๊ค (ใช้ advTrimStat เดิม — ตัด legendary/mythic กันขั้น 5 ถูกปลาเทพลากขึ้นเกินจริง)
   const baitRevCast = (tier) => { try { const s = advTrimStat(tier, 0); return s ? s.revCast : null; } catch { return null; } };
   let drainTier = 0, lastDrainScan = -1e9;
+  // 🪱 v6.198: กัน "วนสลับเหยื่อไม่จบ" เมื่อ Advisor/บังคับ สั่งขั้นที่ "ของหมด + ซื้อไม่ได้ (autoBuy ปิด)"
+  //   → เลิกบังคับขั้นนั้นชั่วคราว แล้วตกด้วยเหยื่อที่มีอยู่ · ลองใหม่หลัง cooldown (เผื่อของกลับมา/เปิดซื้อ)
+  let baitBlockTier = 0, baitBlockUntil = 0;
+  const baitTargetBlocked = () => baitBlockTier === targetBait() && now() < baitBlockUntil;
   // เปิดร้านครั้งเดียว อ่านสต๊อกทุกขั้น แล้วเลือก "ขั้นกองใหญ่ที่รายได้/ครั้งสูงสุด และไม่แย่กว่าขั้นที่ Advisor จะเลือก"
   async function scanDrainTier() {
     if (busy || orchestrating || testRunning || mythicActive()) return;
@@ -5567,8 +5580,9 @@ ${esc(reason)}
           }
           // ใช้เบ็ด/เหยื่อผิดขั้นอยู่ -> สลับให้ตรงก่อนเหวี่ยง (reuse bait ที่อ่านไว้แล้ว · อ่าน rod ครั้งเดียว)
           const rodNow = isOn('forceRod') ? currentRod() : null;
+          // 🪱 v6.198: อย่าบังคับสลับไปขั้นที่เพิ่งพิสูจน์ว่า "ของหมด+ซื้อไม่ได้" (baitTargetBlocked) → ปล่อยตกด้วยขั้นที่มี
           if ((rodNow !== null && rodNow !== cfg.rodTier) ||
-              (enforceBait() && bait?.tier != null && bait.tier !== targetBait())) {
+              (enforceBait() && !baitTargetBlocked() && bait?.tier != null && bait.tier !== targetBait())) {
             void ensureGear();
             return requestAnimationFrame(tick);
           }
