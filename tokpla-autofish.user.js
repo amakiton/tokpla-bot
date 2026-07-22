@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.205
+// @version      6.206
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.205';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.206';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1453,6 +1453,19 @@
       `⚔️ ดาเมจเฉลี่ย ${fmt(aDmg)}${aPct != null ? ` (${aPct.toFixed(1)}%)` : ''} · 🎯 กดเกจเฉลี่ย ${fmt(aGauge)}`,
       `❤️ HP ต่ำสุดเฉลี่ย ${aHpMin != null ? Math.round(aHpMin) + '%' : '–'} · 🌀 หลบ AoE เฉลี่ย ${fmt(aAoe, 1)} · ⏱️ ${aDur != null ? Math.round(aDur / 1000) + ' วิ/ไฟต์' : '–'}`,
     ];
+    // 🎁 v6.206: สรุปรางวัลรวม + ของที่ได้บ่อย
+    const totCoin = arr.reduce((s, r) => s + ((r.reward && r.reward.coins) || 0), 0);
+    const itemCnt = {};
+    for (const r of arr) for (const it of ((r.reward && r.reward.items) || [])) {
+      const nm = String(it).replace(/×\d+$/, '').trim(); const n = parseInt((/×(\d+)$/.exec(it) || [])[1] || 1, 10);
+      itemCnt[nm] = (itemCnt[nm] || 0) + n;
+    }
+    const itemTop = Object.entries(itemCnt).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([k, v]) => `${k}×${v}`);
+    const nRw = arr.filter((r) => r.reward && r.reward.coins).length;
+    if (totCoin || itemTop.length) {
+      lines.push(`🎁 รางวัลรวม ${totCoin.toLocaleString()} 🪙${nRw ? ` (เฉลี่ย ${Math.round(totCoin / nRw).toLocaleString()}/ไฟต์ จาก ${nRw} ไฟต์ที่มีข้อมูล)` : ''}`
+        + (itemTop.length ? `\n📦 ของที่ได้: ${itemTop.join(' · ')}` : ''));
+    }
     // 5 ไฟต์ล่าสุด (ใหม่สุดบน)
     const recent = arr.slice(-5).reverse().map((r) => {
       const t = r.ts ? new Date(r.ts).toLocaleString('th-TH', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '?';
@@ -1479,15 +1492,27 @@
       { h: 'di', w: 3, g: (r) => r.deaths ?? 0 },
       { h: 'hp', w: 5, g: (r) => r.hpMin != null ? r.hpMin + '%' : '-' },
       { h: 'sec', w: 4, g: (r) => r.durMs ? Math.round(r.durMs / 1000) : '-' },
+      { h: 'coin', w: 8, g: (r) => r.reward && r.reward.coins ? r.reward.coins.toLocaleString() : '-' },   // 🎁 v6.206
     ];
     const rows = arr.slice().reverse();   // ใหม่สุดอยู่บน
     const header = cols.map((c) => pad(c.h, c.w, c.right === false ? false : true)).join(' ');
     const sep = cols.map((c) => '-'.repeat(c.w)).join(' ');
     const body = rows.map((r, i) => cols.map((c) => pad(c.g(r, i), c.w, c.right === false ? false : true)).join(' ')).join('\n');
     const kills = arr.filter((r) => r.outcome === 'kill').length;
-    return `📊 เทียบรายไฟต์ล่าบอส (${arr.length} ครั้ง · ใหม่→เก่า) · ฆ่า ${kills}/${arr.length}\n`
-      + `res: k=ฆ่า t=หมดเวลา m=ไม่มา · gg=กดเกจ dg=หลบAoE di=ตาย hp=HPต่ำสุด sec=วินาที\n\n`
-      + header + '\n' + sep + '\n' + body;
+    // 🎁 v6.206: รายละเอียดรางวัล (ของ/ไอเทม) แสดงแยกใต้ตาราง — ยาวเกินใส่คอลัมน์
+    const rw = rows.filter((r) => r.reward && (r.reward.coins || (r.reward.items || []).length))
+      .map((r, i) => {
+        const d = new Date(r.ts); const z = (x) => String(x).padStart(2, '0');
+        const items = [...new Set(r.reward.items || [])];
+        return `  ${z(d.getDate())}/${z(d.getMonth() + 1)} ${z(d.getHours())}:${z(d.getMinutes())}  `
+          + [r.reward.coins ? `${r.reward.coins.toLocaleString()} 🪙` : null, items.length ? items.join(' + ') : null].filter(Boolean).join(' · ');
+      });
+    const totCoin = arr.reduce((s, r) => s + ((r.reward && r.reward.coins) || 0), 0);
+    return `📊 เทียบรายไฟต์ล่าบอส (${arr.length} ครั้ง · ใหม่→เก่า) · ฆ่า ${kills}/${arr.length}`
+      + (totCoin ? ` · รางวัลรวม ${totCoin.toLocaleString()} 🪙` : '') + '\n'
+      + `res: k=ฆ่า t=หมดเวลา m=ไม่มา · gg=กดเกจ dg=หลบAoE di=ตาย hp=HPต่ำสุด sec=วินาที coin=เหรียญรางวัล\n\n`
+      + header + '\n' + sep + '\n' + body
+      + (rw.length ? `\n\n🎁 รางวัลที่ได้รับรายไฟต์\n${rw.join('\n')}` : '\n\n🎁 (ยังไม่มีข้อมูลรางวัล — จะเก็บตั้งแต่ไฟต์ถัดไป)');
   }
   // แสดงข้อความ/ตารางในหน้าต่างของบอทเอง (monospace · ไม่พึ่ง alert ที่ฟอนต์ไม่ตรง) — data-tkbot กัน isBotUI จับ
   //   v6.201: แยกเป็นตัวใช้ซ้ำ (สถิติบอส + ตรวจระดับปลา ใช้ร่วมกัน)
@@ -2170,6 +2195,43 @@
   const mailClaimBtns = () => [...document.querySelectorAll('button.tk-btn-primary')].filter((b) => !isBotUI(b) && !b.disabled && b.offsetParent && b.textContent.trim() === 'รับของ');
   //   🐛 v6.171: เพิ่ม force — ตอนจบไฟต์บอท "อยู่ใน orchestrating" ตลอด (runBossHunt) → watcher ปกติถูกบล็อก
   //     และ v6.165 ยัง Esc ปิด victory dialog ทิ้งตอนเดินกลับบ้าน = รางวัลค้างไม่มีวันได้รับ (เจอจริง 2 ใบ)
+  // 🎁 v6.206: อ่าน "ได้อะไรบ้าง" จากแถวจดหมาย — ต้องอ่าน **ก่อนกดรับ** (กดแล้วข้อความเปลี่ยนเป็น "รับแล้ว")
+  //   เก็บข้อความดิบไว้ด้วยเสมอ — รูปแบบรางวัลของเกมยังไม่เคยเห็นครบ ถ้า parse พลาดจะได้ไม่สูญข้อมูล
+  function mailRowText(btn) {
+    let p = btn;
+    for (let i = 0; i < 6 && p; i++) {
+      p = p.parentElement;
+      const t = (p?.textContent || '').replace(/\s+/g, ' ').trim();
+      if (t.length > 12 && t.length < 400) return t.replace(/รับของ|รับแล้ว|รอรับ/g, ' ').replace(/\s+/g, ' ').trim();
+    }
+    return '';
+  }
+  function parseReward(txt) {
+    const out = { coins: 0, items: [] };
+    const c = /([\d,]+)\s*🪙/.exec(txt);
+    if (c) out.coins = parseInt(c[1].replace(/,/g, ''), 10) || 0;
+    // จับเฉพาะ "คำที่ติดกับ ×" — ห้ามกินคำนำหน้า (เทสต์เจอ: 'ของรางวัล หินออร์บ×1' เคยได้ชื่อเป็น 'ของรางวัล หินออร์บ')
+    const re = /([ก-๙A-Za-z]{2,20})\s*[×x]\s*(\d+)/g;
+    let m;
+    while ((m = re.exec(txt))) { const n = m[1].trim(); if (n) out.items.push(`${n}×${m[2]}`); }
+    return out;
+  }
+  // ผูกรางวัลเข้ากับ "ไฟต์ล่าสุด" ในสถิติ (recordBossFight เขียนไปก่อนแล้ว รางวัลมาทีหลัง)
+  function updateLastBossReward(r) {
+    try {
+      const arr = loadBossStats();
+      const last = arr[arr.length - 1];
+      if (!last) return;
+      if (Date.now() - (last.ts || 0) > 15 * 60000) return;   // ห่างเกินไป = ไม่ใช่รางวัลของไฟต์นี้ อย่าผูกมั่ว
+      const rw = last.reward || (last.reward = { coins: 0, items: [], mails: 0, raw: [] });
+      rw.coins += r.coins || 0;
+      rw.mails += r.mails || 0;
+      for (const it of (r.items || [])) rw.items.push(it);
+      for (const t of (r.raw || [])) if (rw.raw.length < 6) rw.raw.push(t.slice(0, 160));
+      W.localStorage.setItem(BOSS_STATS_KEY, JSON.stringify(arr));
+    } catch (e) { logErr('บันทึกรางวัลบอสล้มเหลว', e); }
+  }
+
   async function claimBossMail(force) {
     if (mailClaiming || (!force && (busy || orchestrating))) return 0;
     const ob = mailOpenBtn();
@@ -2177,12 +2239,16 @@
     if (gameState() === 'minigame') return 0;          // อย่าแทรกตอนกำลังดึงปลา (เกจ core — กฎเหล็ก #1)
     mailClaiming = true; busy = true;
     let claimed = 0;
+    const got = { coins: 0, items: [], raw: [], mails: 0 };   // 🎁 v6.206: เก็บว่าได้อะไรบ้าง
+    const coinBefore = coinsNow();
     try {
       if (ob) { fireClick(ob); await sleep(900); }     // เปิดจดหมายจาก victory dialog
       for (let i = 0; i < 20; i++) {                    // กด "รับของ" ทุกใบ (เผื่อมีหลายบอสค้าง)
         const b = mailClaimBtns()[0];
         if (!b) break;
-        fireClick(b); claimed++;
+        const txt = mailRowText(b);                     // ต้องอ่านก่อนกด — กดแล้วข้อความหาย
+        if (txt) { got.raw.push(txt); const p = parseReward(txt); got.coins += p.coins; got.items.push(...p.items); }
+        fireClick(b); claimed++; got.mails++;
         await sleep(400);
       }
       // ปิดจดหมาย — เฉพาะเมื่อ mail เปิดจริง (ยืนยันด้วยแถว "รับแล้ว"/"รับของ") เพื่อกันคลิกปุ่มผิด
@@ -2193,8 +2259,17 @@
         gameEscape();   // v6.165: ใช้ "ปิดหน้าต่างทั้งหมด" ทางการแทนการยิง Escape เองแบบเดิม
       }
       if (claimed) {
-        say(`📬 รับรางวัลบอสจากจดหมาย ${claimed} ใบ`);
-        if (isOn('tgOn')) void tgSend(`📬 รับรางวัลบอส ${claimed} ใบจากจดหมายแล้ว`);
+        // 🎁 v6.206: เหรียญที่ parse ไม่ได้ → ใช้ "ส่วนต่างเหรียญบน HUD" แทน (กันรูปแบบข้อความที่เรายังไม่รู้จัก)
+        await sleep(500);
+        const coinAfter = coinsNow();
+        if (!got.coins && coinBefore != null && coinAfter != null && coinAfter > coinBefore) got.coins = coinAfter - coinBefore;
+        const items = [...new Set(got.items)];
+        const detail = [got.coins ? `${got.coins.toLocaleString()} 🪙` : null, items.length ? items.join(' + ') : null]
+          .filter(Boolean).join(' · ') || '(อ่านรายละเอียดไม่ได้)';
+        say(`📬 รับรางวัลบอส ${claimed} ใบ — ${detail}`);
+        bossEvent(`🎁 รางวัล ${claimed} ใบ: ${detail}`);
+        updateLastBossReward({ coins: got.coins, items, mails: got.mails, raw: got.raw });
+        if (isOn('tgOn')) void tgSend(`📬 <b>รับรางวัลบอส</b> ${claimed} ใบ\n${esc(detail)}`);
       }
     } catch (e) { logErr('รับรางวัลบอสล้มเหลว', e); }
     finally { busy = false; mailClaiming = false; }
