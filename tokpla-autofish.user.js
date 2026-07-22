@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.206
+// @version      6.207
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.206';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.207';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -181,6 +181,13 @@
     //   → ไม่ไล่ขั้นรายได้ต่ำ (เช่น 7/8) เพราะเอามาตกได้น้อยกว่าฟาร์มขั้น 1 ด้วยซ้ำ (ขายคืน 50% คุ้มกว่า)
     useBaitStock: false,         // ปิดไว้ (opt-in) — เปิด = ไล่ใช้สต๊อกเหยื่อขั้นคุ้มก่อน แล้วค่อยกลับไปให้ Advisor เลือก
     baitStockMin: 200,           // นับเป็น "กองใหญ่ที่ควรไล่" เมื่อมี ≥ เท่านี้
+    // 🔬 v6.207: "สำรวจขั้นเหยื่อเป็นระยะ" — Advisor ใช้ข้อมูล statWin ล่าสุด "เฉพาะขั้นที่ตกอยู่"
+    //   ขั้นอื่นจึงค้างข้อมูลเก่าถาวร → เกมปรับ % / ราคาปลาเมื่อไร บอทไม่มีทางรู้ (exploit อย่างเดียว ไม่ explore)
+    //   เปิดแล้ว = เป็นระยะจะสลับไปเก็บตัวอย่างขั้นที่ "ข้อมูลเก่าสุด" สั้นๆ แล้วกลับมาขั้นที่ Advisor เลือก
+    advExplore: false,           // opt-in (การสำรวจมีต้นทุน — ตกด้วยขั้นที่อาจแย่กว่าชั่วคราว)
+    advExploreHours: 6,          // สำรวจทุกกี่ชั่วโมง
+    advExploreCasts: 30,         // สำรวจครั้งละกี่ครั้ง (ยิ่งมากยิ่งแม่น แต่ยิ่งแพง)
+    advExploreMaxCost: 3000,     // งบต่อรอบสำรวจ (🪙) — ประเมินจาก (กำไรขั้นที่ดีสุด − ขั้นที่จะลอง) × จำนวนครั้ง · เกินงบ = ข้ามขั้นนั้น
     buyPacks: 1,                 // ซื้อกี่แพ็ค (แพ็คละ 100 ชิ้น)
     forceBait: false,            // บังคับสลับไปใช้เหยื่อระดับที่ตั้งไว้
     forceRod: false,             // บังคับสลับไปใช้เบ็ดขั้นที่ตั้งไว้
@@ -755,12 +762,14 @@
       const m = parseInt(cfg.mythicBait, 10) || 0;
       return Math.min(m > 0 ? clamp(m, 1, 8) : mythicAutoTier(), baitCeil || 8);
     }
+    // 🔬 v6.207: กำลังสำรวจขั้นเหยื่อ — ใช้ขั้นที่สำรวจก่อน (ไม่แตะตอนทดสอบ กฎเหล็ก #4)
+    if (exploreTier && !testRunning) return Math.min(exploreTier, baitCeil || 8);
     // 🪱 v6.193: โหมดไล่สต๊อก — ใช้ขั้นที่กำลังไล่ก่อน (override Advisor/cfg · ไม่แตะตอนทดสอบ กฎเหล็ก #4)
     if (isOn('useBaitStock') && drainTier && !testRunning) return Math.min(drainTier, baitCeil || 8);
     return Math.min(cfg.baitTier || 1, baitCeil || 8);
   };
   // ต้องบังคับให้เหยื่อที่ใส่ = เป้าหมายไหม (forceBait เปิด · Advisor โหมดลงมือเอง · โหมดล่าปลาเทพ · ไล่สต๊อก — ต้องคุมขั้นเหยื่อเอง)
-  const enforceBait = () => isOn('forceBait') || (isOn('advisor') && isOn('advisorAuto')) || mythicActive() || (isOn('useBaitStock') && !!drainTier);
+  const enforceBait = () => isOn('forceBait') || (isOn('advisor') && isOn('advisorAuto')) || mythicActive() || (isOn('useBaitStock') && !!drainTier) || !!exploreTier;
   // ⚡ turbo มีผลจริงไหม — โหมดล่าปลาเทพบังคับเปิด (แรร์สุ่มต่อครั้ง → ตกถี่สุด = โอกาสมากสุด)
   const turboEff = () => isOn('turbo') || mythicActive();
   function disableForSession(key, why) {
@@ -4243,7 +4252,8 @@
       // คำตัดสินยาแยกราย 🐋/🍀 → คุม gate ใน buyPotions (แทนเกณฑ์ potionMinCph คงที่)
       advisorPotionVerdict = { weight: adv.pot.weight, luck: adv.pot.luck };
       // สลับเหยื่อเอง (มี cooldown · ด่วน (ขาดทุน) ข้าม cooldown ได้)
-      if (adv.bestTier !== cfg.baitTier && !busy && !orchestrating &&
+      // 🔬 v6.207: ระหว่างสำรวจห้ามแตะ cfg.baitTier — ไม่งั้น Advisor จะดึงกลับทันทีจนเก็บตัวอย่างไม่ครบ
+      if (!exploreTier && adv.bestTier !== cfg.baitTier && !busy && !orchestrating &&
           (adv.urgent || now() - lastAutoSwitchAt > ADV.COOLDOWN)) {
         // v6.121: ขาขึ้น (ขั้นแพงกว่า) ต้องมีเงินซื้อจริงอย่างน้อย 1 แพ็ค — ไม่งั้นวน "สลับขึ้น → ซื้อไม่ไหว → พัก autoBuy → เหยื่อหมด"
         if (adv.bestTier > cfg.baitTier) {
@@ -4663,6 +4673,59 @@
   }
   // ระงับการซื้อเฉพาะตอนกำลังไล่สต๊อก (ไม่งั้นซื้อขั้นที่กำลังไล่มาเติม = ไล่ไม่มีวันหมด)
   const autoBuyEff = () => isOn('autoBuy') && !(isOn('useBaitStock') && drainTier);
+
+  // ---------- 🔬 v6.207: สำรวจขั้นเหยื่อเป็นระยะ (explore) ----------
+  //   ปัญหา: Advisor เป็น exploit ล้วน — ยึดขั้นที่ดีที่สุด "ตามข้อมูลที่มี" แล้วตกขั้นนั้นตลอด
+  //   → ขั้นอื่นไม่มีข้อมูลใหม่เข้าเลย · เกมปรับสมดุล (% แรร์ / ราคาปลา / โต๊ะดรอป) เมื่อไร บอทไม่มีทางรู้
+  //   วิธี: เป็นระยะ สลับไปตกขั้นที่ "ข้อมูลเก่าสุด" สั้นๆ (N ครั้ง) เพื่อรีเฟรชสถิติ แล้วกลับขั้นเดิม
+  //   ⚖️ คุมต้นทุน: ประเมิน (กำไร/ครั้งของขั้นดีสุด − ของขั้นที่จะลอง) × จำนวนครั้ง · เกินงบ = ข้ามขั้นนั้น
+  let exploreTier = 0, exploreLeft = 0, lastExploreAt = NEVER;
+  try { const t = +W.localStorage.getItem('tokpla_bait_explore') || 0; if (t) lastExploreAt = now() - Math.min(Date.now() - t, 24 * 3600000); } catch {}
+  // เวลาที่ "เก็บข้อมูลขั้นนี้ล่าสุด" (แมพปัจจุบัน) — ไม่มีข้อมูลเลย = เก่าสุด (ควรลองก่อน)
+  function baitLastSeen(tier) {
+    const list = profit.recs[tier] || [];
+    for (let i = list.length - 1; i >= 0; i--) { const c = list[i]; if (!curMap || c.map === curMap) return c.at || 0; }
+    return 0;
+  }
+  // กำไร/ครั้ง แบบตัดฟลุ๊ค (ใช้ประเมินต้นทุนการสำรวจ) — ไม่มีข้อมูล = ถือว่าเท่าขั้นฐาน (ไม่กีดกันขั้นที่ยังไม่เคยลอง)
+  const baitNetEst = (tier, baseNet) => { const s = advTrimStat(tier, cfg.statWin || 200); return s ? s.score : baseNet; };
+  function pickExploreTier() {
+    let baseTier = cfg.baitTier || 1;
+    try { const a = advisorDecide(); if (a && a.bestTier) baseTier = a.bestTier; } catch {}
+    const baseNet = baitNetEst(baseTier, 0);
+    const casts = clamp(cfg.advExploreCasts || 30, 5, 300);
+    const budget = Math.max(0, cfg.advExploreMaxCost || 0);
+    const cands = [];
+    for (let t = 1; t <= (baitCeil || 8); t++) {
+      if (t === baseTier) continue;
+      if (!advTierOk(t)) continue;                       // เคารพ "ห้าม Advisor ใช้ขั้นนี้" ของผู้ใช้
+      const cost = Math.max(0, baseNet - baitNetEst(t, baseNet)) * casts;
+      if (budget && cost > budget) continue;                 // แพงเกินงบ → ไม่ลองขั้นนี้
+      cands.push({ tier: t, at: baitLastSeen(t), cost });
+    }
+    if (!cands.length) return null;
+    cands.sort((a, b) => a.at - b.at);                       // ข้อมูลเก่าสุดก่อน
+    return { ...cands[0], casts, baseTier };
+  }
+  function startExplore() {
+    const p = pickExploreTier();
+    lastExploreAt = now();
+    try { W.localStorage.setItem('tokpla_bait_explore', String(Date.now())); } catch {}
+    if (!p) { logInfo('🔬 ยังไม่มีขั้นเหยื่อที่คุ้มจะสำรวจรอบนี้ (ติดงบ/ถูกห้าม) — ข้าม'); return; }
+    exploreTier = p.tier; exploreLeft = p.casts;
+    const age = p.at ? `${Math.round((Date.now() - p.at) / 3600000)} ชม.ก่อน` : 'ไม่เคยเก็บในแมพนี้';
+    say(`🔬 สำรวจขั้นเหยื่อ ${p.tier} จำนวน ${p.casts} ครั้ง (ข้อมูลล่าสุด: ${age} · ประเมินต้นทุน ~${Math.round(p.cost).toLocaleString()} 🪙) — เช็คว่าเกมเปลี่ยนค่าไหม แล้วจะกลับขั้น ${p.baseTier}`);
+    if (isOn('tgOn')) void tgSend(`🔬 <b>สำรวจขั้นเหยื่อ</b> ขั้น ${p.tier} × ${p.casts} ครั้ง (ข้อมูลเก่า: ${esc(age)}) · กลับขั้น ${p.baseTier} เมื่อครบ`);
+  }
+  function exploreTick(n) {   // เรียกทุกครั้งที่เหวี่ยงจริง
+    if (!exploreTier) return;
+    exploreLeft -= n;
+    if (exploreLeft > 0) return;
+    const done = exploreTier; exploreTier = 0; exploreLeft = 0;
+    const s = advTrimStat(done, cfg.advExploreCasts || 30);
+    say(`🔬 สำรวจขั้น ${done} ครบแล้ว — ${s ? `กำไร/ครั้งล่าสุด ${Math.round(s.score)} 🪙 (จาก ${s.n} ตัวอย่าง)` : 'เก็บตัวอย่างไม่พอ'} · ให้ Advisor ตัดสินต่อ`);
+    try { advisorTick(true); } catch {}   // ให้ Advisor คิดใหม่ทันทีด้วยข้อมูลสด
+  }
 
   // อ่าน "เพดานเหยื่อจริง" จากร้าน (ขั้นสูงสุดที่ปลดล็อกแล้ว) — กันทดสอบขั้นที่ยังล็อกอยู่ + แจ้งช่วงให้ตรง
   async function detectBaitCeil() {
@@ -5412,6 +5475,7 @@ ${esc(reason)}
         failedCasts = 0;
         bagFullTries = 0;   // เหวี่ยงติดแล้ว = กระเป๋าไม่เต็มแล้ว
         casts++;
+        exploreTick(1);     // 🔬 v6.207: นับครั้งที่สำรวจ (ครบแล้วกลับขั้นเดิม + ให้ Advisor คิดใหม่)
         pushCastCost();     // คาสต์เข้าน้ำจริง = ใช้เหยื่อ 1 ชิ้น (คิดต้นทุนที่นี่ ไม่ใช่ตอนอ่านผล)
         lastProgressAt = now();
         clearPersistedBreak();   // ตกได้ = ไม่ได้พักอยู่ ล้างพักที่จำไว้
@@ -5824,6 +5888,9 @@ ${esc(reason)}
           }
           // สแกนหากองใหญ่เมื่อยังไม่มีขั้นที่ไล่อยู่ (ทุก 5 นาที) — เปิดโหมดครั้งแรก/หลังไล่หมด · ตอนกำลังไล่ไม่ต้องรบกวน
           if (isOn('useBaitStock') && !drainTier && !mythicActive() && now() - lastDrainScan > 300000) { void scanDrainTier(); }
+          // 🔬 v6.207: ถึงรอบสำรวจขั้นเหยื่อหรือยัง (ลำดับต่ำสุด — ไม่แย่งกับทดสอบ/ล่าปลาเทพ/ไล่สต๊อก)
+          if (isOn('advExplore') && !exploreTier && !drainTier && !testRunning && !mythicActive()
+              && now() - lastExploreAt > clamp(cfg.advExploreHours || 6, 1, 72) * 3600000) startExplore();
           // (3) เหยื่อขั้นที่ใช้อยู่หมดเกลี้ยง -> สลับไปขั้นที่ยังมีของก่อน ไม่ต้องรอให้กดพลาด
           if (bait && (bait.tier === null || bait.stock === 0) && !(needBuy && autoBuyEff())) {
             void handleNoBait();
@@ -6805,6 +6872,18 @@ ${esc(reason)}
       + '"กองใหญ่" = มีเหยื่อขั้นนั้น ≥ จำนวนที่ตั้ง',
       labeled('เปิด', checkbox('useBaitStock')),
       labeled('กองใหญ่เมื่อ ≥', numInput('baitStockMin', 20, 1000, 56)),
+    ));
+
+    panel.appendChild(row(
+      '🔬 สำรวจขั้นเหยื่อเป็นระยะ (กันสถิติค้างเมื่อเกมปรับค่า)',
+      'Advisor ใช้ข้อมูลล่าสุด "เฉพาะขั้นที่ตกอยู่" → ขั้นอื่นค้างข้อมูลเก่าถาวร · ถ้าเกมปรับ % แรร์ / ราคาปลา / โต๊ะดรอป บอทจะไม่มีทางรู้เลย · '
+      + 'เปิดแล้ว = ทุก N ชั่วโมง บอทจะสลับไปตก "ขั้นที่ข้อมูลเก่าสุด" สั้นๆ เพื่อรีเฟรชสถิติ แล้วกลับขั้นที่ Advisor เลือก (ให้ Advisor คิดใหม่ทันทีด้วยข้อมูลสด) · '
+      + '⚖️ คุมต้นทุน: ประเมิน (กำไร/ครั้งของขั้นดีสุด − ของขั้นที่จะลอง) × จำนวนครั้ง — เกินงบที่ตั้ง = ข้ามขั้นนั้นไป (ขั้นที่แย่มากจะไม่ถูกสุ่มมาเผาเงิน) · '
+      + 'เคารพ "ห้าม Advisor ใช้ขั้นนี้" ด้วย · ไม่ทำงานตอนทดสอบเหยื่อ/ล่าปลาเทพ/ไล่สต๊อก',
+      labeled('เปิด', checkbox('advExplore')),
+      labeled('ทุกกี่ชั่วโมง', numInput('advExploreHours', 1, 72, 48)),
+      labeled('ครั้งละ', numInput('advExploreCasts', 5, 300, 48)),
+      labeled('งบ/รอบ 🪙', numInput('advExploreMaxCost', 0, 999999, 64)),
     ));
 
     panel.appendChild(row(
