@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.199
+// @version      6.200
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.199';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.200';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2002,8 +2002,9 @@
     // 📊 v6.191: HP โปรไฟล์ (start→จบ + ต่ำสุด) แทนตัวเลข HP เดี่ยว — วัดว่าหลบดีขึ้นไหมโดยดู "ต่ำสุด" ไม่ใช่แค่ตอนจบ
     const hpEnd = bossPlayerHpPct();
     const hpTxt = `HP ${hpStart != null ? Math.round(hpStart) + '%' : '?'}→${hpEnd != null ? Math.round(hpEnd) + '%' : '?'}${hpMin <= 100 ? ` (ต่ำสุด ${Math.round(hpMin)}%)` : ''}`;
-    // 📊 v6.195: อ่านดาเมจครั้งสุดท้ายเผื่อ HUD ยังอยู่ (ยังไม่ตาย/หมดเวลา) — คืน dmg ที่ดีที่สุดที่จับได้
-    { const _c = readBossContribution(); if (_c.dmg != null && (lastContrib.dmg == null || _c.dmg >= lastContrib.dmg)) lastContrib = _c; }
+    // 📊 v6.195: อ่านดาเมจครั้งสุดท้ายเผื่อ HUD ยังอยู่ — v6.200: เฉพาะเมื่อ "เจอบอสจริง" เท่านั้น
+    //   (ข้อมูลจริงพิสูจน์: เที่ยว noshow 22:49/23:11 ติดดาเมจ 9,680 ของไฟต์ 22:31 มา — HUD "ของเรา" ค้างข้ามรอบ)
+    if (bossSeen) { const _c = readBossContribution(); if (_c.dmg != null && (lastContrib.dmg == null || _c.dmg >= lastContrib.dmg)) lastContrib = _c; }
     const dmgTxt = lastContrib.dmg != null ? ` · ดาเมจ ${lastContrib.dmg.toLocaleString()}${lastContrib.pct != null ? ` (${lastContrib.pct}%)` : ''}` : '';
     const stat = `เริ่มตี ${hits} · กดเกจ ${gaugePresses} · กระโดด ${dodges} · หลบ AoE ${aoeDodges}${aoeStalls ? `(ค้างปากทาง ${aoeStalls})` : ''} · recenter ${recenters} · เข็ม ${Math.round(Math.abs(gVel))}°/s · ตาย ${deaths} · ${hpTxt}${dmgTxt}`;
     logInfo(`👹 จบสู้บอส: ${outcome} · ${stat}${aoeMid}`);
@@ -2170,9 +2171,18 @@
   //   → ไปไม่ได้จนถึง ~10:32 · บอสเกิด 10:30 · บอทออกจริง 10:36 = พลาดช่วงต้นไฟต์ทั้งที่ตั้ง lead ไว้ 8 นาที
   //   ใหม่: ยกเลิกก่อนเดินทาง (ยังไม่ได้เจอบอสเลย) = คูลดาวน์สั้น ลองใหม่ได้ทัน · จบไฟต์จริง = 10 นาทีเหมือนเดิม
   let bossHuntCoolMs = 10 * 60000;
+  // 🔫 v6.200 arm gate — event log (v6.199) เผยบั๊กใหญ่: หลังบอสตาย ป้าย "ถึงรอบบอสแล้ว!" ค้าง → อ่านได้ 0 นาทีตลอด
+  //   → พอคูลดาวน์ 10 นาทีหมด บอทเดินไปถ้ำใหม่ → รอเก้อเต็ม bossMaxWaitMin → "บอสไม่มา" → วนซ้ำ
+  //   ข้อมูลจริง: ฆ่า 5 / เที่ยวเปล่า 8! (22:43+23:07 หลังฆ่า 22:31 · 19:54+20:18+20:36 หลังฆ่า 19:31)
+  //   แก้: ล่าจบ (เจอหรือไม่เจอบอสก็ตาม) = ปลด arm · ต้อง "เห็นตัวนับรอบใหม่ > lead" ก่อน ถึงจะ arm กลับ
+  //   → ป้ายค้าง 0 นาทีไม่มีวันปลุกการล่าซ้ำได้อีก · persist ข้ามรีโหลด (ป้ายค้างอยู่นานกว่าอายุหน้าเว็บ)
+  let bossArmed = true;
+  try { bossArmed = W.localStorage.getItem('tokpla_boss_armed') !== '0'; } catch {}
+  const setBossArmed = (v) => { bossArmed = v; try { W.localStorage.setItem('tokpla_boss_armed', v ? '1' : '0'); } catch {} };
   const stampBossHunt = (coolMs) => {
     lastBossHuntAt = now();
     bossHuntCoolMs = coolMs || 10 * 60000;
+    if (!coolMs) setBossArmed(false);   // จบรอบเต็ม (ไฟต์/รอครบ) = ปลด arm · ยกเลิกก่อนเดินทาง (coolMs สั้น) ยัง arm อยู่
     try { W.localStorage.setItem('tokpla_boss_lasthunt', String(Date.now())); } catch {}
   };
   // 👹 v6.112: "ติดอยู่ในถ้ำบอส" โดยไม่ได้กำลังล่า/ไม่มีบอส — ถ้ำบอสตกปกติไม่ได้ → บอทตกไม่ออก → recoveryWatch รีโหลดวนเปล่า
@@ -2490,6 +2500,8 @@
     //   (เดิม return ออกก่อนอ่านเวลา → ไม่มีทางรู้ย้อนหลังว่าพลาดเพราะคูลดาวน์/busy/เทสต์)
     if (now() - bossTimerCacheAt > 5000) { bossTimerCacheAt = now(); bossTimerCache = bossTimerMin(); }
     const min = bossTimerCache;
+    // 🔫 v6.200: เห็นตัวนับ "รอบใหม่จริง" (มากกว่า lead) = arm กลับ — แปลว่าเกมตั้งรอบถัดไปแล้ว ไม่ใช่ป้ายค้าง
+    if (!bossArmed && min != null && min > clamp(cfg.bossLeadMin, 1, 60)) setBossArmed(true);
     const due = min != null && min <= clamp(cfg.bossLeadMin, 1, 60);
     // 🛡️ v6.175: กัน "ออกล่ารอบใหม่ทับขากลับบ้านที่ยังเดินไม่ถึง" — ต้นเหตุแมพเด้ง ถ้ำ↔บ่อตกปลา 6 รอบ (HP เหลือ 16%)
     //   v6.199: คูลดาวน์ยาว/สั้นตามสาเหตุครั้งก่อน (ดู stampBossHunt) · อย่างน้อย 45 วิเสมอ
@@ -2499,6 +2511,7 @@
       : busy ? 'บอทติดงานอื่นอยู่ (busy — เปิดร้าน/กระเป๋า/สลับเหยื่อ)'
       : bossPhase !== 'idle' ? `ยังอยู่ในเฟส ${bossPhase}`
       : coolLeft > 0 ? `คูลดาวน์หลังล่าครั้งก่อน เหลืออีก ${Math.ceil(coolLeft / 1000)} วิ`
+      : !bossArmed ? 'รอบนี้ล่าไปแล้ว — รอเห็นตัวนับรอบใหม่ก่อน (กันป้าย "ถึงรอบบอสแล้ว" ค้างปลุกเที่ยวเปล่า)'
       : testRunning ? 'กำลังทดสอบเหยื่อ'
       : null;
     // บันทึกเฉพาะตอน "ถึงเวลาแล้วแต่ไปไม่ได้" (throttle 30 วิ กันสแปม) — นี่คือหลักฐานที่เคยหายไป
@@ -2507,8 +2520,8 @@
       bossEvent(`⏳ ถึงเวลาล่าแล้ว (บอสอีก ${min} นาที ≤ ตั้งไว้ ${cfg.bossLeadMin}) แต่ยังไม่ไป — ${why}`);
     }
     // 🧪 v6.148: เทสต์เหยื่อรันอยู่ + บอสใกล้มา → หยุดเทสต์ไปล่าบอสก่อน (resumeTestAfterBoss ทำต่อให้เอง)
-    if (!orchestrating && !busy && bossPhase === 'idle' && coolLeft <= 0 && testRunning) {
-      if (due) stopTest(true);
+    if (!orchestrating && !busy && bossPhase === 'idle' && coolLeft <= 0 && bossArmed && testRunning) {
+      if (due) stopTest(true);   // v6.200: ต้อง armed ด้วย — ป้ายค้างห้ามไปหยุดเทสต์เหยื่อฟรีๆ
       return false;
     }
     if (why) return false;
