@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.202
+// @version      6.203
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.202';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.203';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1590,6 +1590,15 @@
     const chip = bossTimerChipMin();   // 🐯 v6.170: ไม่เจอป้ายแบบข้อความ → ลองอ่าน "chip โหมดย่อ" (MM:SS)
     if (chip != null) return chip;
     // เหลือทางเดียวจริงๆ ค่อยเชื่อป้าย "ถึงรอบบอสแล้ว" (v6.173: ไม่ให้ชนะตัวนับอีกต่อไป)
+    // 🔁 v6.203 (ผู้ใช้เจอสด "เดินซ้ำรัวๆ"): ป้ายนี้ **ค้างยาวหลังบอสตาย** และตอนเมนูซ้ายถูกย่อจะ "หาตัวนับไม่เจอ"
+    //   → เข้าเงื่อนไขนี้ทุกครั้ง → คืน 0 → ออกล่า → ถึงถ้ำอ่านได้จริง 139 นาที → กลับ → วนใหม่ทุก ~12 นาที (ปิงปอง)
+    //   ตัวชี้ขาดคือ arm gate (v6.200): ถ้า "รอบนี้ล่าไปแล้ว" (disarmed) ป้ายค้างต้องไม่มีสิทธิ์ปลุกการล่าอีก
+    //   → คืน null (ไม่รู้) แทน 0 · การล่าจะกลับมาได้เมื่อเห็น "ตัวนับรอบใหม่จริง" เท่านั้น
+    //   (บอสโผล่ตรงหน้าในถ้ำยังตีได้ตามปกติ — bossFightHere ดูตัวบอสจริง ไม่ผ่านป้ายนี้)
+    if (sawNowLabel && !bossArmed) {
+      if (!bossNowLabelSeen) { bossNowLabelSeen = true; logInfo('🐯 ป้าย "ถึงรอบบอสแล้ว" ค้างอยู่ แต่รอบนี้ล่าไปแล้ว → ไม่เชื่อป้าย (รอตัวนับรอบใหม่)'); }
+      return null;
+    }
     if (sawNowLabel) {
       if (!bossNowLabelSeen) { bossNowLabelSeen = true; logInfo('🐯 ป้าย "ถึงรอบบอสแล้ว" + ไม่มีตัวนับถอยหลังบนจอ → ถือว่าถึงเวลาบอส'); }
       return 0;
@@ -1813,6 +1822,7 @@
     if (tmin != null && tmin > leadNow + 10 && !((raidBossState() || {}).present)) {
       const msg = `บอสยังอีก ~${tmin} นาที (ตั้งล่วงหน้าไว้ ${leadNow}) — มาผิดรอบ ไม่ยืนรอ กลับไปฟาร์มต่อ`;
       say(`👹 ${msg}`); bossEvent(`↩️ ${msg}`);
+      bossWrongRound = true;   // v6.203: ไม่ได้สู้เลย → ข้าม linger/เก็บเมล์ (ไม่มีอะไรให้รอ/ให้เก็บ)
       return false;
     }
     const effMin = Math.min(45, Math.max(maxMin, (tmin != null && tmin >= 0 ? tmin : 0) + 3));
@@ -2134,9 +2144,13 @@
         if (!reached) { say('👹 ไปถ้ำบอสไม่สำเร็จ — กลับบ้าน'); bossEvent('❌ เดินไปถ้ำไม่สำเร็จ — กลับบ้าน'); }
         else {
           bossPhase = 'fight'; saveBossState();
+          bossWrongRound = false;
           await bossFight(cfg.bossMaxWaitMin);
-          await bossLinger();
-          await claimBossMail(true);   // 📬 v6.171: รับรางวัล "ก่อน" เดินกลับ — ไม่งั้น gameEscape ตอนเดินทางจะปิด victory dialog ทิ้ง
+          // v6.203: มาผิดรอบ (ไม่ได้สู้เลย) → ข้ามการรอในถ้ำ + เก็บเมล์ · กลับไปฟาร์มทันที
+          if (!bossWrongRound) {
+            await bossLinger();
+            await claimBossMail(true);   // 📬 v6.171: รับรางวัล "ก่อน" เดินกลับ — ไม่งั้น gameEscape ตอนเดินทางจะปิด victory dialog ทิ้ง
+          }
         }
       }
       bossPhase = 'return'; saveBossState();
@@ -2211,6 +2225,7 @@
   //   ข้อมูลจริง: ฆ่า 5 / เที่ยวเปล่า 8! (22:43+23:07 หลังฆ่า 22:31 · 19:54+20:18+20:36 หลังฆ่า 19:31)
   //   แก้: ล่าจบ (เจอหรือไม่เจอบอสก็ตาม) = ปลด arm · ต้อง "เห็นตัวนับรอบใหม่ > lead" ก่อน ถึงจะ arm กลับ
   //   → ป้ายค้าง 0 นาทีไม่มีวันปลุกการล่าซ้ำได้อีก · persist ข้ามรีโหลด (ป้ายค้างอยู่นานกว่าอายุหน้าเว็บ)
+  let bossWrongRound = false;   // v6.203: ไฟต์ล่าสุดจบเพราะ "มาผิดรอบ" (ไม่ได้สู้) → ข้าม linger/เมล์
   let bossArmed = true;
   try { bossArmed = W.localStorage.getItem('tokpla_boss_armed') !== '0'; } catch {}
   const setBossArmed = (v) => { bossArmed = v; try { W.localStorage.setItem('tokpla_boss_armed', v ? '1' : '0'); } catch {} };
