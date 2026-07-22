@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.204
+// @version      6.205
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.204';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.205';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3398,14 +3398,19 @@
   }
 
   // อ่านแผงรายละเอียด (ขวา) หลังแตะการ์ด — ค่าที่ใช้ตัดสินว่าเบ็ดชิ้นนี้เก่งด้านไหน
+  // 🔍 v6.205: อ่าน "หินโชค/คริ" ด้วย — เดิมอ่านแค่ 2 ค่า เลยมองไม่เห็นว่าเบ็ดอีกชิ้นมี 🍀 โชคปลาแรร์ +8%
+  //   (ตรวจสดจากแผงจริง: เบ็ดมังกรตำนาน 2 ชิ้น โบนัสปลา +35% เท่ากัน ต่างกันแค่หิน — 🍀 โชค +8% vs ⚔️ ดาเมจบอส +6%)
+  //   รู้ค่าจริงแล้ว = เลือกด้วย "ข้อมูล" ไม่ต้องพึ่งการเดาจาก tie-break อย่างเดียว
   function rodDetail() {
-    const d = { boss: null, fish: null };
+    const d = { boss: null, fish: null, luck: null, crit: null };
     for (const e of document.querySelectorAll('div,span,p')) {
       if (isBotUI(e) || !e.offsetParent || e.children.length) continue;
       const t = (e.textContent || '').replace(/\s+/g, ' ').trim();
       if (t.length > 60) continue;
       let m = /ดาเมจบอส\s*\+?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) d.boss = parseFloat(m[1]);
       m = /โบนัสปลา\s*\+?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) d.fish = parseFloat(m[1]);
+      m = /โชคปลาแรร์\s*\+?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) d.luck = parseFloat(m[1]);
+      m = /คริติคอล\s*\+?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) d.crit = parseFloat(m[1]);
     }
     return d;
   }
@@ -3430,7 +3435,7 @@
       if (!c) continue;
       c.el.click(); await sleep(420);
       const d = rodDetail();
-      scored.push({ i, name: c.name, orb: c.orb, equipped: c.equipped, boss: d.boss, fish: d.fish, val: d[field] });
+      scored.push({ i, name: c.name, orb: c.orb, equipped: c.equipped, boss: d.boss, fish: d.fish, luck: d.luck, crit: d.crit, val: d[field] });
     }
     // ⚖️ v6.204 (ผู้ใช้เจอ "ล่าบอสเสร็จแล้วไม่เปลี่ยนเบ็ดกลับ"):
     //   v6.190 ตัดสินด้วยค่าเดียว + "เสมอ = คงของเดิม" → เบ็ดมังกร 2 ชิ้นโบนัสปลา 35% เท่ากัน
@@ -3438,17 +3443,19 @@
     //   ความจริง: **หินดาเมจบอสไม่ช่วยตกปลาเลย** ส่วนหินของอีกชิ้นเราอ่านค่าไม่ได้ (โชค/คริ ไม่โผล่ใน 2 ค่านี้)
     //   → ตัวตัดสินรอง: ฟาร์ม = โบนัสปลาก่อน · **เสมอให้เลือกชิ้นที่ "ไม่มีดาเมจบอส"** (เก็บเบ็ดบอสไว้ใช้ตอนตีบอส)
     //     ตีบอส = ดาเมจบอสก่อน · เสมอค่อยดูโบนัสปลา
+    //   v6.205: ฟาร์มดูของจริงเพิ่ม — โบนัสปลา → 🍀 โชคปลาแรร์ → 🎯 คริติคอล → สุดท้ายค่อยเลี่ยงหินบอส
     const rank = (s) => kind === 'boss'
       ? [s.boss ?? -1, s.fish ?? -1]
-      : [s.fish ?? -1, -(s.boss ?? 0)];
+      : [s.fish ?? -1, s.luck ?? 0, s.crit ?? 0, -(s.boss ?? 0)];
     const cmp = (a, b) => { const ra = rank(a), rb = rank(b); for (let k = 0; k < ra.length; k++) if (rb[k] !== ra[k]) return rb[k] - ra[k]; return 0; };
     const ordered = scored.slice().sort(cmp);
     const best = ordered.find((s) => (s.val ?? 0) > 0);
-    const brief = scored.map((s) => `${s.name}${s.orb ? `(${s.orb})` : ''}=ปลา${s.fish ?? '–'}/บอส${s.boss ?? '–'}`).join(' · ');
+    const stats = (s) => [`ปลา${s.fish ?? '–'}`, s.luck != null ? `โชค${s.luck}` : null, s.crit != null ? `คริ${s.crit}` : null, s.boss != null ? `บอส${s.boss}` : null].filter(Boolean).join('/');
+    const brief = scored.map((s) => `${s.name}${s.orb ? `(${s.orb})` : ''}=${stats(s)}`).join(' · ');
     if (!best) { logWarn(`🎣 ไม่มีเบ็ดชิ้นไหนมี ${label} เลย — ใช้ชิ้นเดิม · ที่สแกนได้: ${brief}`); await closeBagUI(); return false; }
     const cur = scored.find((s) => s.equipped);
     if (cur && cmp(cur, best) <= 0) {   // ชิ้นที่ใส่อยู่ดีที่สุดตามลำดับนี้แล้ว → ไม่ต้องแตะแผง (มีปุ่มขายอยู่)
-      logInfo(`🎣 คงเบ็ดเดิม — ${cur.name} เหมาะกับ${kind === 'boss' ? 'การตีบอส' : 'การฟาร์ม'}ที่สุดแล้ว (ปลา ${cur.fish ?? 0}% / บอส ${cur.boss ?? 0}%) · ที่สแกน: ${brief}`);
+      logInfo(`🎣 คงเบ็ดเดิม — ${cur.name} เหมาะกับ${kind === "boss" ? "การตีบอส" : "การฟาร์ม"}ที่สุดแล้ว (${stats(cur)}) · ที่สแกน: ${brief}`);
       await closeBagUI(); return true;
     }
 
@@ -3466,7 +3473,7 @@
     const after = currentRodId();
     await closeBagUI();
     if (after && after !== before) {
-      logInfo(`🎣 สลับเบ็ดสำหรับ${kind === 'boss' ? 'ตีบอส' : 'ฟาร์ม'}แล้ว: ${best.name}${best.orb ? `(${best.orb})` : ''} ปลา ${best.fish ?? 0}% / บอส ${best.boss ?? 0}% (${before.slice(0, 8)}→${after.slice(0, 8)}) · ที่สแกน: ${brief}`);
+      logInfo(`🎣 สลับเบ็ดสำหรับ${kind === 'boss' ? 'ตีบอส' : 'ฟาร์ม'}แล้ว: ${best.name}${best.orb ? `(${best.orb})` : ''} ${stats(best)} (${before.slice(0, 8)}→${after.slice(0, 8)}) · ที่สแกน: ${brief}`);
       return true;
     }
     logWarn(`🎣 กด "${ROD_USE_TXT}" แล้วแต่เบ็ดไม่เปลี่ยน (${(before || '').slice(0, 8)}) — ใช้ชิ้นเดิมต่อ`);
