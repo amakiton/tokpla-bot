@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.203
+// @version      6.204
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.203';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.204';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3430,21 +3430,27 @@
       if (!c) continue;
       c.el.click(); await sleep(420);
       const d = rodDetail();
-      scored.push({ i, name: c.name, orb: c.orb, equipped: c.equipped, val: d[field] });
+      scored.push({ i, name: c.name, orb: c.orb, equipped: c.equipped, boss: d.boss, fish: d.fish, val: d[field] });
     }
-    const best = scored.filter((s) => s.val > 0).sort((a, b) => b.val - a.val)[0];
-    const brief = scored.map((s) => `${s.name}${s.orb ? `(${s.orb})` : ''}=${s.val ?? '–'}`).join(' · ');
+    // ⚖️ v6.204 (ผู้ใช้เจอ "ล่าบอสเสร็จแล้วไม่เปลี่ยนเบ็ดกลับ"):
+    //   v6.190 ตัดสินด้วยค่าเดียว + "เสมอ = คงของเดิม" → เบ็ดมังกร 2 ชิ้นโบนัสปลา 35% เท่ากัน
+    //   ชิ้นที่ใส่อยู่ (เบ็ดบอส) เลยชนะแบบเสมอทุกครั้ง = ฟาร์มด้วยเบ็ดบอสตลอด
+    //   ความจริง: **หินดาเมจบอสไม่ช่วยตกปลาเลย** ส่วนหินของอีกชิ้นเราอ่านค่าไม่ได้ (โชค/คริ ไม่โผล่ใน 2 ค่านี้)
+    //   → ตัวตัดสินรอง: ฟาร์ม = โบนัสปลาก่อน · **เสมอให้เลือกชิ้นที่ "ไม่มีดาเมจบอส"** (เก็บเบ็ดบอสไว้ใช้ตอนตีบอส)
+    //     ตีบอส = ดาเมจบอสก่อน · เสมอค่อยดูโบนัสปลา
+    const rank = (s) => kind === 'boss'
+      ? [s.boss ?? -1, s.fish ?? -1]
+      : [s.fish ?? -1, -(s.boss ?? 0)];
+    const cmp = (a, b) => { const ra = rank(a), rb = rank(b); for (let k = 0; k < ra.length; k++) if (rb[k] !== ra[k]) return rb[k] - ra[k]; return 0; };
+    const ordered = scored.slice().sort(cmp);
+    const best = ordered.find((s) => (s.val ?? 0) > 0);
+    const brief = scored.map((s) => `${s.name}${s.orb ? `(${s.orb})` : ''}=ปลา${s.fish ?? '–'}/บอส${s.boss ?? '–'}`).join(' · ');
     if (!best) { logWarn(`🎣 ไม่มีเบ็ดชิ้นไหนมี ${label} เลย — ใช้ชิ้นเดิม · ที่สแกนได้: ${brief}`); await closeBagUI(); return false; }
-    // ⚖️ v6.190: สลับ "เฉพาะเมื่อดีกว่าจริง" — เสมอ = อยู่เฉยๆ
-    //   เคสจริง: เบ็ดมังกร 2 ชิ้นให้โบนัสปลา 35% เท่ากัน แต่ชิ้นที่ใส่อยู่มีหินดาเมจบอส +6% แถม
-    //   ถ้าสลับตอนกลับมาฟาร์มก็เสียหินบอสฟรีๆ โดยไม่ได้อะไร แถมต้องไปยุ่งกับแผงที่มีปุ่มขายทุกไฟต์
-    //   (ตัวชี้วัดเราไม่ครบด้วย — หินอย่าง 🍀 โชคปลาแรร์ ไม่โผล่ในสองค่านี้) → เสมอเมื่อไร ให้เชื่อของเดิมไว้ก่อน
     const cur = scored.find((s) => s.equipped);
-    if (cur && (cur.val ?? -1) >= best.val) {
-      logInfo(`🎣 คงเบ็ดเดิม — ${label} ของชิ้นที่ใส่อยู่ (${cur.name} +${cur.val ?? 0}%) ไม่แพ้ชิ้นอื่น · ที่สแกน: ${brief}`);
+    if (cur && cmp(cur, best) <= 0) {   // ชิ้นที่ใส่อยู่ดีที่สุดตามลำดับนี้แล้ว → ไม่ต้องแตะแผง (มีปุ่มขายอยู่)
+      logInfo(`🎣 คงเบ็ดเดิม — ${cur.name} เหมาะกับ${kind === 'boss' ? 'การตีบอส' : 'การฟาร์ม'}ที่สุดแล้ว (ปลา ${cur.fish ?? 0}% / บอส ${cur.boss ?? 0}%) · ที่สแกน: ${brief}`);
       await closeBagUI(); return true;
     }
-    // (ไม่ต้องเช็ค best.equipped ซ้ำ — ถ้าชิ้นที่ใส่อยู่คือชิ้นดีสุด สาขา cur ด้านบนจับไปแล้ว)
 
     const before = currentRodId();
     const card = rodGroupCards()[best.i];
@@ -3460,7 +3466,7 @@
     const after = currentRodId();
     await closeBagUI();
     if (after && after !== before) {
-      logInfo(`🎣 สลับเป็นเบ็ด ${label} แล้ว: ${best.name} +${best.val}% (${before.slice(0, 8)}→${after.slice(0, 8)}) · ที่สแกน: ${brief}`);
+      logInfo(`🎣 สลับเบ็ดสำหรับ${kind === 'boss' ? 'ตีบอส' : 'ฟาร์ม'}แล้ว: ${best.name}${best.orb ? `(${best.orb})` : ''} ปลา ${best.fish ?? 0}% / บอส ${best.boss ?? 0}% (${before.slice(0, 8)}→${after.slice(0, 8)}) · ที่สแกน: ${brief}`);
       return true;
     }
     logWarn(`🎣 กด "${ROD_USE_TXT}" แล้วแต่เบ็ดไม่เปลี่ยน (${(before || '').slice(0, 8)}) — ใช้ชิ้นเดิมต่อ`);
