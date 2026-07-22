@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.207
+// @version      6.208
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.207';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.208';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4722,6 +4722,11 @@
     exploreLeft -= n;
     if (exploreLeft > 0) return;
     const done = exploreTier; exploreTier = 0; exploreLeft = 0;
+    // ⏱️ v6.208: เริ่มนับรอบถัดไป "ตอนสำรวจจบ" ไม่ใช่ตอนเริ่ม
+    //   เหตุ: ถ้าพลังหมดกลางทาง การสำรวจอาจกินเวลาหลายชั่วโมง (นั่งพักไม่นับครั้ง) → ถ้านับจากตอนเริ่ม
+    //   พอจบปุ๊บครบกำหนดพอดี = สำรวจรอบใหม่ต่อทันที ไม่ได้ฟาร์มเลย · นับจากตอนจบ = การันตีได้ฟาร์มเต็มช่วงทุกครั้ง
+    lastExploreAt = now();
+    try { W.localStorage.setItem('tokpla_bait_explore', String(Date.now())); } catch {}
     const s = advTrimStat(done, cfg.advExploreCasts || 30);
     say(`🔬 สำรวจขั้น ${done} ครบแล้ว — ${s ? `กำไร/ครั้งล่าสุด ${Math.round(s.score)} 🪙 (จาก ${s.n} ตัวอย่าง)` : 'เก็บตัวอย่างไม่พอ'} · ให้ Advisor ตัดสินต่อ`);
     try { advisorTick(true); } catch {}   // ให้ Advisor คิดใหม่ทันทีด้วยข้อมูลสด
