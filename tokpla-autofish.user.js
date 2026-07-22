@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.200
+// @version      6.201
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.200';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.201';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -928,6 +928,8 @@
     switch (c) {
       case 'help': case 'start': reply(TG_HELP); break;
       case 'status': reply(enabled ? heartbeatMsg() : '⏹ บอทปิดอยู่ · /on เพื่อเปิด'); break;
+      case 'fish': case 'rarity':   // 🏷️ v6.201: บอทเห็นปลาแต่ละชนิดเป็นระดับอะไร + จะขาย/ฝาก/แลก (ต้องเปิดกระเป๋าค้างไว้)
+        reply(`<pre>${esc(fishRarityReport())}</pre>`); break;
       case 'bossstats': case 'bossstat': {   // 📊 v6.195/6.196: ตารางรายไฟต์ (default) · "avg"=เฉลี่ย · "clear"=ล้าง
         const sub = (args[0] || '').toLowerCase();
         if (sub === 'clear') { try { W.localStorage.removeItem(BOSS_STATS_KEY); W.localStorage.removeItem(BOSS_EV_KEY); } catch {} reply('📊 ล้างสถิติ+เหตุการณ์ล่าบอสแล้ว'); break; }
@@ -1487,7 +1489,29 @@
       + `res: k=ฆ่า t=หมดเวลา m=ไม่มา · gg=กดเกจ dg=หลบAoE di=ตาย hp=HPต่ำสุด sec=วินาที\n\n`
       + header + '\n' + sep + '\n' + body;
   }
-  // แสดงตารางในหน้าต่างของบอทเอง (monospace · ไม่พึ่ง alert ที่ฟอนต์ไม่ตรง) — data-tkbot กัน isBotUI จับ
+  // แสดงข้อความ/ตารางในหน้าต่างของบอทเอง (monospace · ไม่พึ่ง alert ที่ฟอนต์ไม่ตรง) — data-tkbot กัน isBotUI จับ
+  //   v6.201: แยกเป็นตัวใช้ซ้ำ (สถิติบอส + ตรวจระดับปลา ใช้ร่วมกัน)
+  function showTextModal(title, text) {
+    document.querySelectorAll('[data-tkbot="text-modal"]').forEach((e) => e.remove());
+    const ov = document.createElement('div');
+    ov.setAttribute('data-tkbot', 'text-modal');
+    ov.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;padding:16px;';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#1a202c;border:1px solid #4a5568;border-radius:10px;max-width:96vw;max-height:88vh;overflow:auto;padding:14px 16px;box-shadow:0 8px 40px rgba(0,0,0,.6);';
+    const h = document.createElement('div');
+    h.textContent = title;
+    h.style.cssText = 'color:#f6e05e;font-size:13px;font-weight:700;margin-bottom:8px;';
+    const pre = document.createElement('pre');
+    pre.textContent = text;
+    pre.style.cssText = 'margin:0;font-family:Consolas,"Courier New",monospace;font-size:12px;line-height:1.5;color:#e2e8f0;white-space:pre;';
+    const close = document.createElement('button');
+    close.setAttribute('data-tkbot', '1');
+    close.textContent = '✕ ปิด';
+    close.style.cssText = 'margin-top:12px;padding:6px 14px;border-radius:7px;border:1px solid #4a5568;background:#2d3748;color:#e2e8f0;font-size:12px;cursor:pointer;';
+    close.addEventListener('click', () => ov.remove());
+    ov.addEventListener('click', (e) => { if (e.target === ov) ov.remove(); });
+    box.appendChild(h); box.appendChild(pre); box.appendChild(close); ov.appendChild(box); document.body.appendChild(ov);
+  }
   function showBossStatsModal() {
     document.querySelectorAll('[data-tkbot="bossstat-modal"]').forEach((e) => e.remove());
     const ov = document.createElement('div');
@@ -2308,7 +2332,20 @@
     if (b) fireClick(b);
   };
   const npcVisible = (el) => { try { const r = el.getBoundingClientRect(); return el.offsetParent !== null && r.width > 10 && r.height > 10; } catch { return false; } };
-  const NPC_RARWORD = { 'ไม่ธรรมดา': 'uncommon', 'หายาก': 'rare', 'สุดยอด': 'epic', 'ตำนาน': 'legendary', 'เทพนิยาย': 'mythic' };
+  // 🏷️ v6.201: ตารางคำ "ระดับความหายาก" — ดึงคำจริงจาก i18n ของเกม (fishing.rarity.* + hud.announce.tag.*)
+  //   ยืนยันจากบันเดิลเกม: common=ทั่วไป · uncommon=ไม่ธรรมดา · rare=หายาก · epic=สุดยอด · legendary=ตำนาน · mythic=เทพนิยาย
+  //   ⚠️ เกมมี "คำที่สอง" สำหรับระดับเดียวกันด้วย (ป้ายประกาศ): แรร์ / อีพิค / เลเจนดารี / มิธิค — ตัวเดิมไม่รู้จักเลย
+  //   ⚠️ และตัวเดิม **ไม่มี common** → แถวปลาทั่วไปอ่านระดับไม่ออก
+  //   🐛 กับดักซับสตริง: 'ไม่ธรรมดา' มีคำว่า 'ธรรมดา' อยู่ข้างใน → ต้องจับ "คำที่ยาวที่สุดก่อน" ไม่งั้น uncommon กลายเป็น common
+  const RAR_WORDS = [
+    ['ไม่ธรรมดา', 'uncommon'], ['เลเจนดารี', 'legendary'], ['เทพนิยาย', 'mythic'],
+    ['ทั่วไป', 'common'], ['ธรรมดา', 'common'], ['หายาก', 'rare'], ['แรร์', 'rare'],
+    ['สุดยอด', 'epic'], ['อีพิค', 'epic'], ['ตำนาน', 'legendary'], ['มิธิค', 'mythic'],
+  ].sort((a, b) => b[0].length - a[0].length);   // ยาวสุดก่อนเสมอ (กัน 'ธรรมดา' ชน 'ไม่ธรรมดา')
+  // อ่านระดับจากข้อความ (แถวปลาใน NPC ฯลฯ) — คืน null ถ้าไม่เจอคำที่รู้จัก
+  const rarityFromText = (t) => { for (const [w, k] of RAR_WORDS) if (t.includes(w)) return k; return null; };
+  // เก็บแถวที่อ่านระดับไม่ออก → เตือนครั้งเดียวตอนจบธุระ (ถ้าเกมเปลี่ยนคำ เราจะรู้ทันที ไม่ใช่เงียบแล้วเลือกผิด)
+  const npcRarMiss = new Set();
   // 🛡️ v6.181 — กฎเหล็ก #7 ซ้ำรอย v6.105: เช็ค "หน้าต่าง NPC เปิดแล้ว" ด้วยการหาข้อความทั้ง document
   //   ไปแมตช์ **คำอธิบายในแผงบอทเอง** (แผงตั้งค่า NPC มีคำว่า "คลังลุงคลัง"/"ยายแก่น" อยู่) → waitFor ผ่านทันทีเสมอ
   //   ทั้งที่หน้าต่างจริงยังไม่เปิด → บอทไปอ่านการ์ด = ไม่เจอ → "ฝาก 0" + popup ค้าง (อาการที่ผู้ใช้เจอ)
@@ -2335,7 +2372,9 @@
       for (let i = 0; i < 80; i++) {
       const fb = [...document.querySelectorAll('button')].find((b) => {
         if (!npcVisible(b) || b.disabled) return false; const t = (b.textContent || ''); if (!/kg/.test(t)) return false;   // แถวปลา = มีน้ำหนัก "N kg"
-        const w = Object.keys(NPC_RARWORD).find((k) => t.includes(k)); return w && npcEssTake(rarityRank(NPC_RARWORD[w]), essMin, stoMin);   // 🧠 ไม่แลกตัวที่ลุงคลังจะเก็บ
+        // v6.201: ใช้ rarityFromText (รู้จักคำที่สองของเกม + จับคำยาวสุดก่อน) · อ่านไม่ออก = ไม่แตะ (ปลอดภัยไว้ก่อน)
+        const rk = rarityFromText(t); if (rk == null) { npcRarMiss.add(t.replace(/\s+/g, ' ').slice(0, 40)); return false; }
+        return npcEssTake(rarityRank(rk), essMin, stoMin);   // 🧠 ไม่แลกตัวที่ลุงคลังจะเก็บ
       });
       if (!fb) break;
       fireClick(fb); await sleep(350);                       // เลือกปลา
@@ -2344,7 +2383,16 @@
       fireClick(craft); done++; await sleep(800);            // สกัด → ได้แก่น
       }
     } catch (e) { logErr('npcDoEssence', e); }
-    finally { npcCloseDialog(); await sleep(300); }   // v6.180: ปิดเสมอ
+    finally {
+      // 🏷️ v6.201: เกมเปลี่ยนคำระดับเมื่อไร จะได้รู้ทันที (เดิมอ่านไม่ออก = ข้ามเงียบ เลือกปลาผิดโดยไม่มีใครรู้)
+      if (npcRarMiss.size) {
+        const list = [...npcRarMiss].slice(0, 3).join(' · ');
+        logWarn(`🏷️ อ่าน "ระดับความหายาก" จากแถวปลาไม่ออก ${npcRarMiss.size} แถว — เกมอาจเปลี่ยนคำ · ตัวอย่าง: ${list}`);
+        if (isOn('tgOn') && isOn('tgWarn')) void tgSend(`⚠️ <b>อ่านระดับปลาไม่ออก</b> ${npcRarMiss.size} แถว (เกมอาจเปลี่ยนคำ)\n${esc(list)}`);
+        npcRarMiss.clear();
+      }
+      npcCloseDialog(); await sleep(300);   // v6.180: ปิดเสมอ
+    }
     return done;
   }
   // 🏬 ลุงคลัง (v6.151 ยืนยันสด): คลิกการ์ดปลา(ที่มองเห็น) → popup จำนวน → "ทั้งหมด" → "เลือก N ตัว" → "ฝาก →"
@@ -4788,6 +4836,45 @@
     return { want, all, locked, rarityOf, shinySpecies };
   }
 
+  // 🏷️ v6.201: รายงาน "บอทมองปลาแต่ละชนิดเป็นระดับอะไร + จะทำอะไรกับมัน" — ให้ผู้ใช้ตรวจเองได้ว่าจำถูกไหม
+  //   อ่านจากกระเป๋าจริง (สีวงแหวน) + ระดับที่เคยบันทึกในสถิติ แล้วเทียบให้เห็นถ้าไม่ตรงกัน
+  function fishRarityReport() {
+    const cards = readBag();
+    const stat = {};   // ระดับที่เคยบันทึกไว้ในสถิติ (จาก popup ผลตกปลา)
+    try {
+      for (const t of Object.keys(profit.recs || {}))
+        for (const c of (profit.recs[t] || [])) if (c && c.fish && !c.junk && c.rarity) stat[c.fish] = c.rarity;
+    } catch {}
+    const stoOn = isOn('npcStorageOn'), stoMin = rarityRank(cfg.npcStorageRarity);
+    const essOn = isOn('npcEssenceOn'), essMin = rarityRank(cfg.npcEssenceRarity);
+    const rows = [];
+    const seen = new Set();
+    for (const c of cards) {
+      if (seen.has(c.species)) continue;
+      seen.add(c.species);
+      const r = c.rarity, rk = r ? rarityRank(r) : 99;
+      const st = stat[c.species];
+      rows.push({
+        ชนิด: c.species,
+        ระดับ: r ? RARITY_LABEL[r] : '⚠️ อ่านไม่ออก',
+        ตรงกับสถิติ: !st ? '(ยังไม่มีสถิติ)' : (st === r ? 'ตรง' : `⚠️ สถิติว่า ${RARITY_LABEL[st] || st}`),
+        ขาย: !r ? '❌ ไม่ขาย (อ่านระดับไม่ออก)'
+          : (cfg.lockRarities || []).includes(r) ? `❌ ล็อก (${RARITY_LABEL[r]})`
+          : (cfg.keepShiny && c.shiny) ? '❌ ล็อก (มี ✨)' : '✅ ขาย',
+        ฝากคลัง: stoOn && r && rk >= stoMin ? '✅ ฝาก' : '—',
+        แลกแก่น: essOn && r && npcEssTake(rk, essMin, stoMin) ? '✅ แลก' : '—',
+      });
+    }
+    if (!rows.length) return '🏷️ ไม่เห็นการ์ดปลาในกระเป๋า — เปิดกระเป๋า (แท็บ 🐟 ปลา) ก่อนแล้วกดใหม่';
+    const pad = (s, w) => { s = String(s); return s + ' '.repeat(Math.max(0, w - [...s].length)); };
+    const head = `${pad('ชนิดปลา', 20)} ${pad('ระดับที่บอทเห็น', 16)} ${pad('เทียบสถิติ', 18)} ${pad('ขาย', 22)} ${pad('ฝาก', 6)} แลกแก่น`;
+    const body = rows.map((r) => `${pad(r.ชนิด, 20)} ${pad(r.ระดับ, 16)} ${pad(r.ตรงกับสถิติ, 18)} ${pad(r.ขาย, 22)} ${pad(r.ฝากคลัง, 6)} ${r.แลกแก่น}`);
+    const conf = `ตั้งไว้: ล็อกไม่ขาย [${(cfg.lockRarities || []).map((k) => RARITY_LABEL[k] || k).join(', ') || '-'}]`
+      + ` · ฝากคลัง ${stoOn ? '≥ ' + (RARITY_LABEL[cfg.npcStorageRarity] || cfg.npcStorageRarity) : 'ปิด'}`
+      + ` · แลกแก่น ${essOn ? '≥ ' + (RARITY_LABEL[cfg.npcEssenceRarity] || cfg.npcEssenceRarity) : 'ปิด'}`;
+    return `🏷️ ระดับปลาที่บอทเห็น (${rows.length} ชนิดในกระเป๋า)\n${conf}\n\n${head}\n${body.join('\n')}`;
+  }
+
   async function closeMenu() {
     const x = qBtn('ปิดเมนู');
     if (x) fireClick(x);
@@ -6403,6 +6490,22 @@ ${esc(reason)}
     // ---------- 🏪 ระบบ NPC เมืองชาวประมง ----------
     sectionHead('🏪 NPC เมืองชาวประมง (ฝากของ/แลกแก่น)', false);
     const RAR_OPTS = RARITY.map((r) => [r.key, r.label]);
+    // 🏷️ v6.201: ปุ่มตรวจ "บอทเห็นปลาแต่ละชนิดเป็นระดับอะไร + จะขาย/ฝาก/แลก" — ตรวจเองได้ว่าจำถูกไหม
+    {
+      const rb = document.createElement('button');
+      rb.setAttribute('data-tkbot', '1');
+      rb.textContent = '🏷️ ตรวจระดับปลา (บอทเห็นอะไร + จะทำอะไร)';
+      rb.style.cssText = 'padding:5px 10px;border-radius:7px;border:1px solid #4a5568;background:#2d3748;color:#e2e8f0;font-size:11px;cursor:pointer;margin:2px 3px 6px 0;';
+      rb.addEventListener('click', async () => {
+        rb.disabled = true;
+        try { await openBagUI(); await sleep(600); const ft = btnByText('🐟ปลา') || btnByText('🐟 ปลา'); if (ft) { fireClick(ft); await sleep(500); } } catch {}
+        const t = fishRarityReport();
+        try { console.log('[Tokpla Bot]\n' + t); } catch {}
+        showTextModal('🏷️ ระดับปลาที่บอทเห็น', t);
+        rb.disabled = false;
+      });
+      panel.appendChild(rb);
+    }
     panel.appendChild(row(
       '🏬 ลุงคลัง — ฝากปลาเข้าคลัง',
       'พอในกระเป๋ามีปลา "ระดับที่เลือกขึ้นไป" ครบจำนวน → บอทเดินไปเมืองประมง (A* ในเกม) ฝากเข้าคลังลุงคลัง (ปลอดภัย+ไม่กินช่องกระเป๋า) แล้วกลับมาฟาร์มต่อ · ปลาที่ผู้เล่นล็อกไว้จะไม่ถูกฝาก',
