@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.208
+// @version      6.209
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.208';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.209';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -284,6 +284,7 @@
   let catchNotified = false;   // แจ้ง popup ปลาตัวนี้ไปแล้วหรือยัง (popup เดียวอยู่หลายเฟรม)
   let pauseNotified = false;   // แจ้งเรื่องพักพลังไปแล้วหรือยัง
   let energyResting = false;   // กำลังนั่งพักรอพลังฟื้น (จัดการเชิงรุก)
+  let lastRestCoffeeAt = -1e9;   // v6.209: throttle การลองกาแฟระหว่างนั่งพัก (นาทีละครั้ง)
   let energySat = false;       // กดปุ่มนั่งพักไปแล้ว (ไว้ลุกตอนกลับมาตก)
   let sessionStart = 0;        // เวลาเปิดบอทรอบนี้ (ไว้คำนวณ uptime)
   let lastHeartbeat = 0;       // ส่งรายงานสถานะครั้งล่าสุดเมื่อไร
@@ -5786,6 +5787,15 @@ ${esc(reason)}
               if (cfg.autoQuest && !busy && now() - lastQuestCheck > cfg.questEvery * 60000) {
                 lastQuestCheck = now();
                 void runQuests();
+              }
+              // ☕ v6.209 (ผู้ใช้ส่งคลิป "เหมือนค้าง"): เดิมทางกาแฟถูก guard ด้วย `!energyResting`
+              //   → พอเริ่มพักแล้ว **กาแฟถูกล็อกตายจนจบการพัก** · เคสจริง: พัก 6%→40% = ฟื้น ~0.55%/นาที ≈ **62 นาทีที่ไม่ได้ตกเลย**
+              //   ทั้งที่กาแฟ +50 พลัง จบการพักได้ทันที (ราคา 1,500 🪙 เทียบเวลาที่เสีย ~26,000 🪙 = คุ้มมาก)
+              //   ตอนนี้ระหว่างพักก็ลองกาแฟได้ (ใช้ของในกระเป๋าก่อนเสมอ · เคารพคูลดาวน์/ลิมิตวันเหมือนเดิม)
+              if ((isOn('buyCoffee') || isOn('useBagConsumables')) && !busy && !pendingCast
+                  && now() > coffeeFailUntil && now() - lastRestCoffeeAt > 60000) {
+                lastRestCoffeeAt = now();
+                void buyCoffee();
               }
               updateBadge();
               return requestAnimationFrame(tick);
