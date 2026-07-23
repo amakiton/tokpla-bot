@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.218
+// @version      6.219
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.218';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.219';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -5018,6 +5018,23 @@
     }
   }
 
+  // 🎣 v6.219: เดินกลับ "ริมบ่อ" ถ้าตัวละครไม่ได้อยู่ใกล้บ่อ (scene.nearPond=false)
+  //   ที่มา (ผู้ใช้เจอ v6.218): รีโหลดหน้า/อัปเดตสคริปต์ → ตัวเกิดที่จุด spawn (ไกลบ่อ) → ไม่มี orb "ตกปลา (F)" → บอทยืนนิ่ง
+  //   เดิมบอทถือว่า "อยู่ริมบ่อแล้วเสมอ" — พังทันทีถ้าตัวไปโผล่ที่อื่น (spawn/เก็บหีบ/กลับจากบอส) · ครอบทุกกรณีที่นี่จุดเดียว
+  const sceneNearPond = () => { try { const s = getPhaserScene(); return s ? !!s.nearPond : null; } catch { return null; } };
+  let lastPondWalk = 0, lastPondSay = 0;
+  function walkToPondIfNeeded() {
+    if (bossMapId() === BOSS_MAP || mythicActive()) return false;   // ถ้ำบอสไม่มีบ่อ · ล่าปลาเทพคุมตำแหน่งเอง
+    if (sceneNearPond() !== false) return false;                    // ใกล้บ่อแล้ว/อ่านไม่ได้ = ไม่ยุ่ง (แตะเฉพาะ "ไกลบ่อแน่ๆ")
+    const fz = bossFishingZone(); const aw = gameWalker();
+    if (!fz || !aw) return false;                                   // แมพนี้ไม่มีโซนตกปลา/ไม่มี pathfinder
+    if (now() - lastPondWalk < 4000) return true;                   // กำลังเดินอยู่ อย่าสั่ง navigate ซ้ำถี่
+    lastPondWalk = now();
+    try { aw.navigate({ x: fz.x, y: fz.y + 120, mapId: bossMapId() }); } catch {}
+    if (now() - lastPondSay > 30000) { lastPondSay = now(); logInfo('🎣 ตัวละครไม่ได้อยู่ริมบ่อ (หลังรีโหลด/เก็บหีบ/กลับจากบอส) → เดินกลับบ่อเอง'); }
+    return true;
+  }
+
   // อ่าน "เพดานเหยื่อจริง" จากร้าน (ขั้นสูงสุดที่ปลดล็อกแล้ว) — กันทดสอบขั้นที่ยังล็อกอยู่ + แจ้งช่วงให้ตรง
   async function detectBaitCeil() {
     await waitFor(() => !busy && !orchestrating, 20000);   // รอคิวว่าง (เด้งเงียบ = เพดานผิดทั้งการทดสอบ)
@@ -5978,6 +5995,9 @@ ${esc(reason)}
         if (isOn('grabChest') && !orchestrating && now() - lastChestRunAt < 60000 && chestCloseBtn()) { closeChestDialog(); return requestAnimationFrame(tick); }
         // 🎁 v6.216: เก็บหีบสมบัติที่โผล่ในแมพเป็นระยะ (opt-in) — ลำดับต่ำสุด (หลังบอส/เมือง) · self-throttle chestCheckMin นาที
         if (chestGrabDue()) { void runChestGrab(); return requestAnimationFrame(tick); }
+
+        // 🎣 v6.219: ตัวละครไม่ได้อยู่ริมบ่อ (รีโหลด/เก็บหีบ/กลับจากบอส) → เดินกลับบ่อก่อน ไม่งั้นไม่มี orb ตกปลา = ยืนนิ่ง
+        if (walkToPondIfNeeded()) { updateBadge(); return requestAnimationFrame(tick); }
 
         // 🌈 โหมดล่าปลาเทพ — no-loss gate + เรียนรู้ชื่อ↔id แมพ + ย้ายไปแมพสถิติดีสุด (บอสสำคัญกว่า จึงอยู่หลังเช็คบอส)
         if (mythicActive()) {
