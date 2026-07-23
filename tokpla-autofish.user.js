@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.212
+// @version      6.213
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.212';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.213';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -941,6 +941,11 @@
       case 'status': reply(enabled ? heartbeatMsg() : '⏹ บอทปิดอยู่ · /on เพื่อเปิด'); break;
       case 'fish': case 'rarity':   // 🏷️ v6.201: บอทเห็นปลาแต่ละชนิดเป็นระดับอะไร + จะขาย/ฝาก/แลก (ต้องเปิดกระเป๋าค้างไว้)
         reply(`<pre>${esc(fishRarityReport())}</pre>`); break;
+      case 'explore': case 'สำรวจ': {   // 🔬 v6.213: ไทม์ไลน์สำรวจเหยื่อ · "clear" = ล้าง
+        if ((args[0] || '').toLowerCase() === 'clear') { try { W.localStorage.removeItem(EXPLORE_EV_KEY); } catch {} reply('🔬 ล้างเหตุการณ์สำรวจแล้ว'); break; }
+        const cur = exploreTier ? `\n🔬 กำลังสำรวจขั้น ${exploreTier} (เหลือ ${exploreLeft} ครั้ง)` : '';
+        reply(`<pre>📋 เหตุการณ์สำรวจเหยื่อ (ใหม่→เก่า)${cur}\n\n${esc(exploreEventsText())}</pre>`); break;
+      }
       case 'bossstats': case 'bossstat': {   // 📊 v6.195/6.196: ตารางรายไฟต์ (default) · "avg"=เฉลี่ย · "clear"=ล้าง
         const sub = (args[0] || '').toLowerCase();
         if (sub === 'clear') { try { W.localStorage.removeItem(BOSS_STATS_KEY); W.localStorage.removeItem(BOSS_EV_KEY); } catch {} reply('📊 ล้างสถิติ+เหตุการณ์ล่าบอสแล้ว'); break; }
@@ -1422,17 +1427,21 @@
   //   ทำไมต้องแยก: log หลักเก็บ 300 บรรทัด แต่ทุกครั้งที่ตกปลาเขียน 1 บรรทัด → เต็มใน ~38 นาที
   //   → ตอนผู้ใช้ถามว่า "ทำไมบอทออกล่า 10:36 แทน 10:22" หลักฐานหมุนทับไปแล้ว วินิจฉัยไม่ได้เลย
   //   ที่นี่เขียนเฉพาะเหตุการณ์บอส (นานๆ ครั้ง) → เก็บได้เป็นวัน
-  const BOSS_EV_KEY = 'tokpla_boss_events';
-  const loadBossEvents = () => { try { const a = JSON.parse(W.localStorage.getItem(BOSS_EV_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch { return []; } };
-  function bossEvent(m) {
-    try { const a = loadBossEvents(); a.push({ at: Date.now(), m }); while (a.length > 80) a.shift(); W.localStorage.setItem(BOSS_EV_KEY, JSON.stringify(a)); } catch {}
-  }
-  function bossEventsText() {
-    const a = loadBossEvents();
-    if (!a.length) return '(ยังไม่มีเหตุการณ์บอสบันทึกไว้)';
+  // 📋 v6.213: event ring ทั่วไป (บอส + สำรวจเหยื่อ ใช้ร่วมกัน) — แยกจาก log หลัก 300 บรรทัดที่หมุนเร็ว → อยู่ได้เป็นวัน
+  const loadEvents = (key) => { try { const a = JSON.parse(W.localStorage.getItem(key) || '[]'); return Array.isArray(a) ? a : []; } catch { return []; } };
+  const pushEvent = (key, m, cap = 80) => { try { const a = loadEvents(key); a.push({ at: Date.now(), m }); while (a.length > cap) a.shift(); W.localStorage.setItem(key, JSON.stringify(a)); } catch {} };
+  const eventsText = (key, empty) => {
+    const a = loadEvents(key);
+    if (!a.length) return empty;
     const t = (ts) => { const d = new Date(ts); const z = (x) => String(x).padStart(2, '0'); return `${z(d.getDate())}/${z(d.getMonth() + 1)} ${z(d.getHours())}:${z(d.getMinutes())}:${z(d.getSeconds())}`; };
     return a.slice().reverse().map((e) => `${t(e.at)}  ${e.m}`).join('\n');
-  }
+  };
+  const BOSS_EV_KEY = 'tokpla_boss_events';
+  const bossEvent = (m) => pushEvent(BOSS_EV_KEY, m);
+  const bossEventsText = () => eventsText(BOSS_EV_KEY, '(ยังไม่มีเหตุการณ์บอสบันทึกไว้)');
+  const EXPLORE_EV_KEY = 'tokpla_bait_explore_ev';
+  const exploreEvent = (m) => pushEvent(EXPLORE_EV_KEY, m, 60);
+  const exploreEventsText = () => eventsText(EXPLORE_EV_KEY, '(ยังไม่มีเหตุการณ์สำรวจเหยื่อ)');
 
   // 📊 v6.195: สถิติล่าบอส — ring buffer เก็บ "N ครั้งล่าสุด" (ตั้งได้ที่ cfg.bossStatKeep)
   const BOSS_STATS_KEY = 'tokpla_boss_stats';
@@ -4727,7 +4736,10 @@
   const saveExploreProg = () => { try { if (exploreTier) W.localStorage.setItem(EXPLORE_PROG_KEY, JSON.stringify({ tier: exploreTier, left: exploreLeft, at: Date.now() })); else W.localStorage.removeItem(EXPLORE_PROG_KEY); } catch {} };
   try {   // กู้คืนตอนโหลด — ถ้าค้างไม่เกิน 12 ชม. (นานกว่านั้นถือว่าเก่าเกิน สภาพเกมอาจเปลี่ยน)
     const d = JSON.parse(W.localStorage.getItem(EXPLORE_PROG_KEY) || 'null');
-    if (d && d.tier && d.left > 0 && Date.now() - (d.at || 0) < 12 * 3600000) { exploreTier = d.tier; exploreLeft = d.left; }
+    if (d && d.tier && d.left > 0 && Date.now() - (d.at || 0) < 12 * 3600000) {
+      exploreTier = d.tier; exploreLeft = d.left;
+      exploreEvent(`🔄 กู้คืนหลังรีโหลด — สำรวจขั้น ${exploreTier} ต่อ (เหลือ ${exploreLeft} ครั้ง)`);
+    }
   } catch {}
   // เวลาที่ "เก็บข้อมูลขั้นนี้ล่าสุด" (แมพปัจจุบัน) — ไม่มีข้อมูลเลย = เก่าสุด (ควรลองก่อน)
   function baitLastSeen(tier) {
@@ -4759,9 +4771,10 @@
     const p = pickExploreTier();
     lastExploreAt = now();
     try { W.localStorage.setItem('tokpla_bait_explore', String(Date.now())); } catch {}
-    if (!p) { logInfo('🔬 ยังไม่มีขั้นเหยื่อที่คุ้มจะสำรวจรอบนี้ (ติดงบ/ถูกห้าม) — ข้าม'); return; }
+    if (!p) { logInfo('🔬 ยังไม่มีขั้นเหยื่อที่คุ้มจะสำรวจรอบนี้ (ติดงบ/ถูกห้าม) — ข้าม'); exploreEvent('⏭️ ข้ามรอบสำรวจ — ไม่มีขั้นที่คุ้ม (ติดงบ/ถูกห้าม)'); return; }
     exploreTier = p.tier; exploreLeft = p.casts; exploreMismatch = 0; saveExploreProg();
     const age = p.at ? `${Math.round((Date.now() - p.at) / 3600000)} ชม.ก่อน` : 'ไม่เคยเก็บในแมพนี้';
+    exploreEvent(`🔬 เริ่มสำรวจขั้น ${p.tier} × ${p.casts} ครั้ง (ข้อมูลเก่า ${age} · ต้นทุน ~${Math.round(p.cost).toLocaleString()} 🪙 · จะกลับขั้น ${p.baseTier})`);
     say(`🔬 สำรวจขั้นเหยื่อ ${p.tier} จำนวน ${p.casts} ครั้ง (ข้อมูลล่าสุด: ${age} · ประเมินต้นทุน ~${Math.round(p.cost).toLocaleString()} 🪙) — เช็คว่าเกมเปลี่ยนค่าไหม แล้วจะกลับขั้น ${p.baseTier}`);
     if (isOn('tgOn')) void tgSend(`🔬 <b>สำรวจขั้นเหยื่อ</b> ขั้น ${p.tier} × ${p.casts} ครั้ง (ข้อมูลเก่า: ${esc(age)}) · กลับขั้น ${p.baseTier} เมื่อครบ`);
   }
@@ -4772,7 +4785,11 @@
     try { W.localStorage.setItem('tokpla_bait_explore', String(Date.now())); } catch {}
     if (completed) {
       const s = advTrimStat(tier, cfg.advExploreCasts || 30);
-      say(`🔬 สำรวจขั้น ${tier} ครบแล้ว — ${s ? `กำไร/ครั้งล่าสุด ${Math.round(s.score)} 🪙 (จาก ${s.n} ตัวอย่าง)` : 'เก็บตัวอย่างไม่พอ'} · ให้ Advisor ตัดสินต่อ`);
+      const res = s ? `กำไร/ครั้งล่าสุด ${Math.round(s.score)} 🪙 (จาก ${s.n} ตัวอย่าง)` : 'เก็บตัวอย่างไม่พอ';
+      say(`🔬 สำรวจขั้น ${tier} ครบแล้ว — ${res} · ให้ Advisor ตัดสินต่อ`);
+      exploreEvent(`✅ สำรวจขั้น ${tier} ครบ ${cfg.advExploreCasts || 30} ครั้ง — ${res}`);
+    } else {
+      exploreEvent(`⛔ ยกเลิกสำรวจขั้น ${tier} (ใส่เหยื่อขั้นนี้ไม่ได้/ของหมด)`);
     }
     try { advisorTick(true); } catch {}   // ให้ Advisor คิดใหม่ทันทีด้วยข้อมูลสด
   }
@@ -6961,6 +6978,17 @@ ${esc(reason)}
       labeled('ครั้งละ', numInput('advExploreCasts', 5, 300, 48)),
       labeled('งบ/รอบ 🪙', numInput('advExploreMaxCost', 0, 999999, 64)),
     ));
+    {
+      const eb = document.createElement('button');
+      eb.setAttribute('data-tkbot', '1');
+      eb.textContent = '🔬 ดูไทม์ไลน์สำรวจเหยื่อ';
+      eb.style.cssText = 'padding:5px 10px;border-radius:7px;border:1px solid #4a5568;background:#2d3748;color:#e2e8f0;font-size:11px;cursor:pointer;margin:2px 3px 6px 0;';
+      eb.addEventListener('click', () => {
+        const cur = exploreTier ? `🔬 กำลังสำรวจขั้น ${exploreTier} (เหลือ ${exploreLeft} ครั้ง)\n\n` : '';
+        showTextModal('🔬 เหตุการณ์สำรวจเหยื่อ', cur + exploreEventsText());
+      });
+      panel.appendChild(eb);
+    }
 
     panel.appendChild(row(
       '🧪 ทดสอบเหยื่อ (หาขั้น+ยา+โหมดที่คุ้มสุด)',
