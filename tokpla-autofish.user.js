@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.219
+// @version      6.220
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.219';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.220';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4976,10 +4976,12 @@
         if (k < 4) { if (k === 0) chestEvent('⏳ คูลดาวน์ระหว่างเปิดหีบ — รอแล้วลองใหม่'); await sleep(5000); }
         continue;
       }
-      if (/หายไปแล้ว|เปิดไปแล้ว|คนละแมพ|เปิดครบ|เปิดหีบวันนี้/.test(msg)) {   // เปิดไม่ได้แน่ๆ — ปิดกล่อง เลิกใบนี้
+      // 🐛 v6.220: อย่าเช็ค "เปิดหีบวันนี้ x/y" (นั่นคือ HUD ตัวนับรายวัน โชว์ค้างตลอด ไม่ใช่ error!) →
+      //   เดิม false-block ทุกใบ (log: "เปิดไม่ได้ 🎁 หีบเงิน" ทั้งที่เปิดได้ → เสียเที่ยวเดินซ้ำ) · ลิมิตวันใช้ chestDailyComplete พอ
+      const blk = /หายไปแล้ว|เปิดไปแล้ว|คนละแมพ/.exec(msg);
+      if (blk) {   // error จริง (หมดอายุ/เปิดแล้ว/คนละแมพ) — ปิดกล่อง เลิกใบนี้
         closeChestDialog();
-        const line = (msg.match(/[^\n]*(หีบ|รางวัล|วันนี้)[^\n]*/) || [''])[0].replace(/\s+/g, ' ').trim().slice(0, 60);
-        chestEvent(`ℹ️ เปิดไม่ได้: ${line}`); result = 'blocked'; break;
+        chestEvent(`ℹ️ เปิดไม่ได้: ${blk[0].replace(/\s+/g, ' ').trim().slice(0, 40)}`); result = 'blocked'; break;
       }
     }
     closeChestDialog();   // 🛡️ ปิดหน้าต่างรางวัล/ค้างเสมอ (กันบังจอ — บั๊ก v6.216)
@@ -5022,12 +5024,16 @@
   //   ที่มา (ผู้ใช้เจอ v6.218): รีโหลดหน้า/อัปเดตสคริปต์ → ตัวเกิดที่จุด spawn (ไกลบ่อ) → ไม่มี orb "ตกปลา (F)" → บอทยืนนิ่ง
   //   เดิมบอทถือว่า "อยู่ริมบ่อแล้วเสมอ" — พังทันทีถ้าตัวไปโผล่ที่อื่น (spawn/เก็บหีบ/กลับจากบอส) · ครอบทุกกรณีที่นี่จุดเดียว
   const sceneNearPond = () => { try { const s = getPhaserScene(); return s ? !!s.nearPond : null; } catch { return null; } };
-  let lastPondWalk = 0, lastPondSay = 0;
+  let lastPondWalk = 0, lastPondSay = 0, pondWalkStart = 0;
   function walkToPondIfNeeded() {
-    if (bossMapId() === BOSS_MAP || mythicActive()) return false;   // ถ้ำบอสไม่มีบ่อ · ล่าปลาเทพคุมตำแหน่งเอง
-    if (sceneNearPond() !== false) return false;                    // ใกล้บ่อแล้ว/อ่านไม่ได้ = ไม่ยุ่ง (แตะเฉพาะ "ไกลบ่อแน่ๆ")
+    if (bossMapId() === BOSS_MAP || mythicActive()) { pondWalkStart = 0; return false; }   // ถ้ำบอสไม่มีบ่อ · ล่าปลาเทพคุมตำแหน่งเอง
+    if (sceneNearPond() !== false) { pondWalkStart = 0; return false; }   // ถึงบ่อแล้ว/อ่านไม่ได้ = เลิก (แตะเฉพาะ "ไกลบ่อแน่ๆ")
     const fz = bossFishingZone(); const aw = gameWalker();
     if (!fz || !aw) return false;                                   // แมพนี้ไม่มีโซนตกปลา/ไม่มี pathfinder
+    if (!pondWalkStart) pondWalkStart = now();
+    // 🛡️ v6.220: เดินนานเกิน 45 วิ ยังไม่ถึงบ่อ (หา A* ไม่เจอ/ติดกำแพง) → ปล่อยตรรกะเดิม (เตือน→รีโหลด) จัดการ
+    //   กัน "วนเดินไม่จบ" มาแทน safety-net รีโหลด (ถ้าค้าง early-return ตรงนี้ตลอด บอทจะไม่มีวันรีโหลดหลุด)
+    if (now() - pondWalkStart > 45000) return false;
     if (now() - lastPondWalk < 4000) return true;                   // กำลังเดินอยู่ อย่าสั่ง navigate ซ้ำถี่
     lastPondWalk = now();
     try { aw.navigate({ x: fz.x, y: fz.y + 120, mapId: bossMapId() }); } catch {}
