@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.217
+// @version      6.218
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.217';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.218';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3292,6 +3292,48 @@
     return null;
   }
 
+  // 🛡️ v6.218: ยามเฝ้า "ป๊อบอัพค้าง" ทั่วไป — กันทุกฟีเจอร์ (ปัจจุบัน+อนาคต) ทิ้ง dialog ค้างจนบอทตกปลาต่อไม่ได้
+  //   ที่มา: เปิดหีบ/รับรางวัล/error ของเกมหลายอันเป็น dialog ที่ "ไม่ปิดเอง" + ต้องกดปุ่ม (ESC เดี่ยวๆ ไม่พอทุกอัน)
+  //   วิธีคิด: แทนที่จะไล่แก้ทีละป๊อบอัพ ให้มี "จุดเดียว" คอยเคลียร์ตอน "ควรตกได้แต่ตกไม่ได้เพราะมี dialog ค้าง"
+  //   ⚠️ ไม่แตะหน้าต่าง "รับรางวัล" (รับของ/เปิดจดหมาย) — ปล่อย auto-claim จัดการ กันเผลอปิดทิ้งรางวัล (กฎเดียวกับ gameEscape)
+  const CLAIM_RE = /รับของ|เปิดจดหมาย|รับรางวัล|^รับ$/;
+  function closeLikeBtns() {
+    try {
+      return [...document.querySelectorAll('button')].filter((b) => {
+        if (isBotUI(b) || !b.offsetParent) return false;
+        const t = (b.textContent || '').trim(), a = b.getAttribute('aria-label') || '';
+        if (CLAIM_RE.test(t) || CLAIM_RE.test(a)) return false;                 // ปุ่มรับรางวัล — ห้ามแตะ
+        return t === 'ปิด' || t === 'ตกลง' || t === 'รับทราบ' || /^(✕|×|✖|✗|❌)$/.test(t) || /^ปิด/.test(a);
+      });
+    } catch { return []; }
+  }
+  const hasBlockingDialog = () => closeLikeBtns().length > 0;
+  // เคลียร์ป๊อบอัพที่ปิดได้ (กดปุ่มปิดก่อน เพราะบาง dialog ของเกมไม่ตอบ ESC) แล้วตบท้ายด้วย ESC
+  function clearBlockingUI() {
+    let did = false;
+    for (const b of closeLikeBtns()) { fireClick(b); did = true; }
+    gameEscape();   // ชั้นสุดท้าย (gameEscape มี guard ไม่ปิดหน้าต่างที่มีรางวัลรอรับอยู่แล้ว)
+    return did;
+  }
+  let uiBlockedSince = 0, lastPopupClear = 0, popupClearCount = 0;
+  // เรียกจากสาขา idle เท่านั้น (ไม่ busy/orchestrating) — คืน true ถ้าเพิ่งเคลียร์ (ผู้เรียกควร return รอเฟรมหน้า)
+  function popupWatchdog() {
+    // เหตุที่เกมบอกไว้แล้ว (กระเป๋าเต็ม/ไม่มีเหยื่อ/พลังหมด) = ระบบอื่นจัดการอยู่ ไม่ใช่ป๊อบอัพค้าง
+    const w = warnText();
+    if (w && /กระเป๋าเต็ม|ไม่มีเหยื่อ|เหยื่อหมด|พลังหมด/.test(w)) { uiBlockedSince = 0; return false; }
+    // ตกปลาได้อยู่ (มีปุ่มตกปลา/เกจ/ตกต่อ/เก็บเบ็ด) = ไม่มีอะไรบัง — ปกติ
+    if (detectGameReady()) { uiBlockedSince = 0; return false; }
+    // ตกไม่ได้ แต่ก็ไม่มี dialog ที่ปิดได้ (อาจกำลังโหลด/เปลี่ยนแมพ) = ไม่ใช่หน้าที่เรา
+    if (!hasBlockingDialog()) { uiBlockedSince = 0; return false; }
+    // มี dialog ค้าง + ตกไม่ได้ → จับเวลา ให้ต่อเนื่อง ≥3 วิ ค่อยเคลียร์ (กัน false positive ช่วง transition)
+    if (!uiBlockedSince) { uiBlockedSince = now(); return false; }
+    if (now() - uiBlockedSince < 3000 || now() - lastPopupClear < 3000) return false;
+    lastPopupClear = now(); uiBlockedSince = 0; popupClearCount++;
+    clearBlockingUI();
+    logInfo(`🛡️ เจอป๊อบอัพค้าง (ตกปลาต่อไม่ได้ ≥3 วิ) → เคลียร์อัตโนมัติ · รวมเคลียร์ ${popupClearCount} ครั้ง`);
+    return true;
+  }
+
   // ---- อ่าน popup ปลาที่เพิ่งตกได้ (ก่อนกด "ตกต่อ!") ----
   // ชิพระดับความหายากใช้ inline backgroundColor ซึ่ง DOM คืนค่าเป็น rgb() ไม่ใช่ hex
   const RGB2RARITY = Object.fromEntries(RARITY.map((r) => {
@@ -5914,6 +5956,10 @@ ${esc(reason)}
 
         // พักชั่วคราว (สั่งเอง/ผ่าน Telegram) — ยังเปิดบอทอยู่ แค่ไม่เหวี่ยงตัวใหม่
         if (paused) { updateBadge(); return requestAnimationFrame(tick); }
+
+        // 🛡️ v6.218: ยามเฝ้าป๊อบอัพค้างทั่วไป — "ควรตกได้แต่ตกไม่ได้เพราะมี dialog ค้าง ≥3 วิ" → เคลียร์อัตโนมัติ
+        //   จุดเดียวคุมทุกฟีเจอร์ (หีบ/รางวัล/error) แทนการไล่แก้ทีละป๊อบอัพ · ไม่แตะหน้าต่างรับรางวัล (auto-claim จัดการ)
+        if (popupWatchdog()) return requestAnimationFrame(tick);
 
         // 👹 บอส = สำคัญกว่าตกปลา · ต้องเช็ค "ก่อน" สาขา "ปุ่มตกปลากดไม่ได้" ด้านล่าง
         //   บั๊ก v6.118 (bot.log): ในถ้ำบอสปุ่มตกปลาถูกปิดตลอด → โค้ดไป early-return ที่สาขานั้น →
