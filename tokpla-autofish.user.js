@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.220
+// @version      6.221
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.220';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.221';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1808,9 +1808,11 @@
   // เดินเข้าหา (tx,ty) จนใกล้/ติด/หมดเวลา — คืน 'arrived'|'stuck'|'timeout'|'mapchanged'|'err'
   async function bossWalkTo(tx, ty, opts = {}) {
     const thresh = opts.thresh || 20, maxMs = opts.maxMs || 22000, startMap = bossMapId();
+    // 🐛 v6.221: opts.anyMode = ผู้เรียกที่ "ไม่ใช่บอส/ปลาเทพ" (เก็บหีบ ฯลฯ) — เดิม gate นี้ทำให้ no-op เงียบเมื่อ bossHunt ปิด (ค่า default!)
+    const active = () => enabled && (opts.anyMode || isOn('bossHunt') || mythicActive());
     const t0 = now(); let lastX = null, lastY = null, stuck = 0, slide = 0, slideDir = 1;
     try {
-      while (enabled && (isOn('bossHunt') || mythicActive()) && now() - t0 < maxMs) {   // v6.132: โหมดล่าปลาเทพยืมระบบเดิน — ห้ามผูกกับสวิตช์ล่าบอส
+      while (active() && now() - t0 < maxMs) {   // v6.132: โหมดล่าปลาเทพยืมระบบเดิน — ห้ามผูกกับสวิตช์ล่าบอส
         if (bossMapId() !== startMap) { bossReleaseAll(); return 'mapchanged'; }
         const p = bossPlayerXY(); if (!p) { bossReleaseAll(); return 'err'; }
         const dx = tx - p.x, dy = ty - p.y;
@@ -1842,12 +1844,13 @@
   //   เกม pump step() เองใน update loop → ไม่ต้องกดปุ่มเอง · จุดถึงต่อแมพ = โซนตกปลา/สู้ (เดินไปจุดไหนก็ได้ เกมหาเส้นเอง)
   const BOSS_NAV_TARGET = { boss_cave: { x: 841, y: 445 }, sea_dock: { x: 350, y: 490 }, village: { x: 752, y: 490 }, river_bank: { x: 1467, y: 700 }, fisher_town: { x: 687, y: 770 }, ice_village: { x: 700, y: 500 }, lotus_marsh: { x: 700, y: 500 } };
   const gameWalker = () => { try { const sc = getPhaserScene(); return sc && sc.autoWalker && typeof sc.autoWalker.navigate === 'function' ? sc.autoWalker : null; } catch { return null; } };
-  async function bossGameNavTo(targetMap, maxMs = 90000) {
+  async function bossGameNavTo(targetMap, maxMs = 90000, anyMode = false) {
     gameEscape();   // ⎋ v6.165: story dialog (เช่น "ฤๅษีเงา") ยึด input ระหว่างเดินทาง = ตัวไม่เดิน — ล้างก่อนเสมอ
     const aw = gameWalker(); if (!aw) return false;
     const t = BOSS_NAV_TARGET[targetMap] || { x: 700, y: 500 };
     const t0 = now(); let lastNav = 0, lastP = null, stillFor = 0;
-    while (enabled && (isOn('bossHunt') || mythicActive()) && now() - t0 < maxMs) {
+    // 🐛 v6.221: anyMode = ผู้เรียกที่ไม่ใช่บอส/ปลาเทพ (ธุระเมือง NPC) — เดิม no-op เงียบเมื่อ bossHunt ปิด → ธุระเมืองพัง + วน bag-full
+    while (enabled && (anyMode || isOn('bossHunt') || mythicActive()) && now() - t0 < maxMs) {
       const cur = bossMapId(), p = bossPlayerXY();
       if (cur === targetMap && p && Math.abs(p.x - t.x) < 70 && Math.abs(p.y - t.y) < 70) { aw.cancel && aw.cancel(); return true; }
       // นับว่า "นิ่ง" (ไม่ขยับ) กี่รอบ — ถ้านิ่งนานทั้งที่ยังไม่ถึง = สั่ง navigate ใหม่ (เผื่อ NPC/หลุด)
@@ -2650,7 +2653,7 @@
       gameEscape();   // ⎋ v6.165: ล้างหน้าต่างค้างก่อนออกเดินทาง (dialog บังอยู่ = คลิก NPC/เดินไม่ได้)
       const plan = [isOn('npcEssenceOn') && 'แลกแก่น', isOn('npcStorageOn') && 'ฝากของ'].filter(Boolean).join(' + ');   // v6.178: ตัดสุ่มหิน
       say(`🏪 ไปทำธุระเมืองประมง (ทีเดียวครบ): ${plan}`);
-      if (!(await bossGameNavTo('fisher_town', 90000))) { say('🏪 ไปเมืองประมงไม่สำเร็จ'); return; }
+      if (!(await bossGameNavTo('fisher_town', 90000, true))) { say('🏪 ไปเมืองประมงไม่สำเร็จ'); return; }
       let es = 0, st = 0;
       if (isOn('npcEssenceOn')) { if (await npcWalkNear('kaen')) es = await npcDoEssence(); }
       if (isOn('npcStorageOn')) { if (await npcWalkNear('khlang')) st = await npcDoStorage(); }
@@ -2658,7 +2661,7 @@
       say(`🏪 ธุระเสร็จ — แลกแก่น ${es} · ฝาก ${st} — กลับไปฟาร์ม`);
       if (isOn('tgOn')) void tgSend(`🏪 ธุระเมืองประมงเสร็จ: แลกแก่น ${es} · ฝาก ${st}`);
       lastNpcErrandAt = now();
-      if (home && home !== 'fisher_town') await bossGameNavTo(home, 90000);   // กลับแมพเดิม
+      if (home && home !== 'fisher_town') await bossGameNavTo(home, 90000, true);   // กลับแมพเดิม
     } catch (e) { logErr('runTownErrands', e); }
     finally { orchestrating = false; lastCast = now(); pendingCast = 0; }
   }
@@ -4920,7 +4923,18 @@
   //   บั๊ก v6.216: เปิดหีบแล้วหน้าต่างค้างบังจอ → ตกปลาต่อไม่ได้ (isFishing=false ค้าง) · ต้องปิดให้ได้เสมอ
   const chestCloseBtn = () => { try { return [...document.querySelectorAll('button')].find((b) => !isBotUI(b) && b.offsetParent && (b.textContent || '').trim() === 'ปิด' && /rounded-2xl/.test(b.className || '')) || null; } catch { return null; } };
   function closeChestDialog() { const b = chestCloseBtn(); if (b) { fireClick(b); return true; } return false; }
-  const chestMsg = () => { try { return (document.body.innerText || ''); } catch { return ''; } };   // อ่านข้อความหน้าจอ (คูลดาวน์/หมดอายุ/ลิมิต โผล่ตรงนี้)
+  // อ่านข้อความ "ของเกม" เท่านั้น (คูลดาวน์/หมดอายุ/ลิมิต) — 🐛 v6.221: ตัด UI บอทออก
+  //   เดิมอ่านทั้ง body.innerText → log panel ของบอทมีคำ "หายไปแล้ว/คูลดาวน์/เปิดหีบ" (จาก event เก่า) → match ตัวเอง = จำแนกผิด
+  const chestMsg = () => {
+    try {
+      let t = '';
+      for (const el of document.querySelectorAll('body *')) {
+        if (el.children.length || el.closest('[data-tkbot]')) continue;   // เอาเฉพาะ leaf ที่ไม่ใช่ UI บอท
+        const s = el.textContent; if (s && s.trim()) t += s + '\n';
+      }
+      return t;
+    } catch { try { return document.body.innerText || ''; } catch { return ''; } }
+  };
   // หีบที่ "ยังเปิดได้" ในแมพนี้ (ตัดที่เปิดแล้ว/เพิ่งลองไม่สำเร็จ) · ครบลิมิตวัน = ว่างเสมอ
   function findChests() {
     try {
@@ -4960,7 +4974,7 @@
       await sleep(350);
     }
     // เข้าใกล้พิกัดแล้วแต่เกมยังไม่จับ "ใกล้หีบ" → ขยับชิดอีกนิดด้วย WASD
-    if (nearChestId() !== c.id && bossMapId() === mapId) await bossWalkTo(c.x, c.y, { thresh: 14, maxMs: 8000 });
+    if (nearChestId() !== c.id && bossMapId() === mapId) await bossWalkTo(c.x, c.y, { thresh: 14, maxMs: 8000, anyMode: true });
     if (nearChestId() !== c.id) { chestEvent(`⚠️ เข้าใกล้หีบ #${chestShort(c.id)} ไม่ได้ (เกมไม่ขึ้น "ใกล้หีบ")`); return 'unreachable'; }
     // เปิด: กด E (เกมผูก E กับ "เปิดหีบ") + เผื่อคลิกปุ่ม DOM · ยืนยันจาก openedChests
     //   เกมบังคับ "คูลดาวน์ระหว่างเปิดหีบ" (เพิ่งเปิดไป รอสักครู่) → รอแล้วลองใหม่ ไม่ทิ้งใบนี้ทันที
@@ -5016,6 +5030,7 @@
       // กลับจุดตกปลาเดิม เพื่อให้ระบบตกปลาปกติเหวี่ยงต่อได้ทันที (ไม่งั้นอาจไปยืนบนบก)
       try { const fz = bossFishingZone(); if (fz && bossMapId() === home && gameWalker()) gameWalker().navigate({ x: fz.x, y: fz.y + 120, mapId: home }); } catch {}
       if (opened) chestEvent(`🎁 จบทริป — เปิดได้ ${opened} ใบ กลับไปตกปลาต่อ`);
+      lastChestRunAt = now();   // 🐛 v6.221: รีเซ็ตตอน "จบ" ด้วย — ทริปยาว (หลายใบ) จะได้ให้ safety-net ปิด dialog ค้าง 60 วิ นับจากจบจริง
       orchestrating = false; lastCast = now(); pendingCast = 0;
     }
   }
@@ -5023,7 +5038,9 @@
   // 🎣 v6.219: เดินกลับ "ริมบ่อ" ถ้าตัวละครไม่ได้อยู่ใกล้บ่อ (scene.nearPond=false)
   //   ที่มา (ผู้ใช้เจอ v6.218): รีโหลดหน้า/อัปเดตสคริปต์ → ตัวเกิดที่จุด spawn (ไกลบ่อ) → ไม่มี orb "ตกปลา (F)" → บอทยืนนิ่ง
   //   เดิมบอทถือว่า "อยู่ริมบ่อแล้วเสมอ" — พังทันทีถ้าตัวไปโผล่ที่อื่น (spawn/เก็บหีบ/กลับจากบอส) · ครอบทุกกรณีที่นี่จุดเดียว
-  const sceneNearPond = () => { try { const s = getPhaserScene(); return s ? !!s.nearPond : null; } catch { return null; } };
+  // 🐛 v6.221: คืน true/false เฉพาะเมื่อ nearPond เป็น boolean จริง — ถ้า field หาย/undefined (ช่วง transition/เกมเปลี่ยนชื่อ) = null
+  //   เดิม !!s.nearPond ยุบ undefined→false → walkToPond ทำงานทุกเฟรมช่วงโหลด (แย่งงาน idle อื่น) · null = "ไม่รู้ อย่ายุ่ง"
+  const sceneNearPond = () => { try { const v = getPhaserScene()?.nearPond; return typeof v === 'boolean' ? v : null; } catch { return null; } };
   let lastPondWalk = 0, lastPondSay = 0, pondWalkStart = 0;
   function walkToPondIfNeeded() {
     if (bossMapId() === BOSS_MAP || mythicActive()) { pondWalkStart = 0; return false; }   // ถ้ำบอสไม่มีบ่อ · ล่าปลาเทพคุมตำแหน่งเอง
@@ -7985,9 +8002,12 @@ ${esc(reason)}
     if (!resume) return;
     // 🔄 v6.147: ไม่ล้างธงที่นี่แล้ว — persistEnabled คุมธงตามสถานะเปิด/ปิด (ล้างเฉพาะตอนปิดเอง) · ถ้า resume นี้ไม่สำเร็จ (เกมไม่พร้อม) = รอบหน้าลองใหม่
     let tries = 0;
+    // 🐛 v6.221: "โลกเกมพร้อม" แม้ไม่ได้อยู่ริมบ่อ (player+แมพโหลดแล้ว ไม่ transition) — กันเคส spawn ไกลบ่อหลังรีโหลด
+    //   เดิมรอเฉพาะ orb "ตกปลา (F)" (โผล่เมื่อใกล้บ่อ) → spawn ไกล = orb ไม่มา = resume ไม่ติด → บอทค้าง disabled + เตือน "ต้องล็อกอิน" ผิดๆ
+    const worldReady = () => { try { const s = getPhaserScene(); return !!(s && s.player && bossMapId() && !s.transitioning && bossPlayerXY()); } catch { return false; } };
     const iv = setInterval(() => {
       tries++;
-      if (qBtn('ตกปลา (F)')) {
+      if (qBtn('ตกปลา (F)') || (tries >= 3 && worldReady())) {   // ให้ orb (near-pond) มาก่อน 3 วิ ไม่งั้น resume จากโลกพร้อม แล้วให้ walkToPond เดินเข้าบ่อเอง
         clearInterval(iv);
         // อ่านค่าพักที่จำไว้ "ก่อน" toggle (toggle จะล้างทิ้ง) — ใช้เวลาจริง Date.now
         let savedEnd = 0, savedLabel = 'พักยาว';
