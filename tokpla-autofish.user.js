@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.216
+// @version      6.217
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.216';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.217';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4874,6 +4874,11 @@
   const nearChestId = () => { try { return getPhaserScene()?.nearChestId || null; } catch { return null; } };
   const chestOpened = (id) => { try { const o = getPhaserScene()?.openedChests; return o instanceof Set ? o.has(id) : false; } catch { return false; } };
   const chestOpenBtn = () => { try { return [...document.querySelectorAll('button')].find((b) => !isBotUI(b) && b.offsetParent && /เปิดหีบ/.test(b.textContent || '')) || null; } catch { return null; } };
+  // 🐛 v6.217: หน้าต่างหีบ (รางวัล/คูลดาวน์/ผิดพลาด) มีปุ่ม "ปิด" แบบเต็มความกว้าง (rounded-2xl) และ **ไม่ปิดเอง**
+  //   บั๊ก v6.216: เปิดหีบแล้วหน้าต่างค้างบังจอ → ตกปลาต่อไม่ได้ (isFishing=false ค้าง) · ต้องปิดให้ได้เสมอ
+  const chestCloseBtn = () => { try { return [...document.querySelectorAll('button')].find((b) => !isBotUI(b) && b.offsetParent && (b.textContent || '').trim() === 'ปิด' && /rounded-2xl/.test(b.className || '')) || null; } catch { return null; } };
+  function closeChestDialog() { const b = chestCloseBtn(); if (b) { fireClick(b); return true; } return false; }
+  const chestMsg = () => { try { return (document.body.innerText || ''); } catch { return ''; } };   // อ่านข้อความหน้าจอ (คูลดาวน์/หมดอายุ/ลิมิต โผล่ตรงนี้)
   // หีบที่ "ยังเปิดได้" ในแมพนี้ (ตัดที่เปิดแล้ว/เพิ่งลองไม่สำเร็จ) · ครบลิมิตวัน = ว่างเสมอ
   function findChests() {
     try {
@@ -4900,31 +4905,44 @@
     if (isOn('bossHunt')) { const bt = bossTimerMin(); if (bt != null && bt <= clamp(cfg.bossLeadMin, 1, 60) + 5) return false; }
     return findChests().length > 0;
   }
-  // เดินไปเปิดหีบใบเดียว — คืน true=เปิดสำเร็จ · false=เข้าไม่ถึง/เปิดไม่ได้ (ให้ผู้เรียก mark skip)
+  // เดินไปเปิดหีบใบเดียว — คืน 'opened' | 'blocked' (หมดอายุ/ลิมิต) | 'cooldown' | 'unreachable' | 'fail'
+  //   ⚠️ v6.217: ปิดหน้าต่างหีบ "ทุกครั้ง" ก่อน return (รางวัล/คูลดาวน์ค้าง = บังจอ ตกปลาต่อไม่ได้)
   async function grabOneChest(c, mapId) {
     chestEvent(`🚶 เดินไปหีบ #${chestShort(c.id)} ที่ (${c.x},${c.y})`);
     const aw = gameWalker();
     const t0 = now(), maxMs = 30000; let lastNav = 0;
     while (enabled && isOn('grabChest') && now() - t0 < maxMs) {
-      if (bossMapId() !== mapId) { chestEvent('↩️ แมพเปลี่ยนระหว่างเดินไปหีบ — ยกเลิกใบนี้'); return false; }
+      if (bossMapId() !== mapId) { chestEvent('↩️ แมพเปลี่ยนระหว่างเดินไปหีบ — ยกเลิกใบนี้'); return 'unreachable'; }
       if (nearChestId() === c.id) break;                       // เกมยืนยัน "ใกล้หีบ" แล้ว
       if (aw && !aw.walking && now() - lastNav > 2500) { lastNav = now(); try { aw.navigate({ x: c.x, y: c.y, mapId }); } catch {} }
       await sleep(350);
     }
     // เข้าใกล้พิกัดแล้วแต่เกมยังไม่จับ "ใกล้หีบ" → ขยับชิดอีกนิดด้วย WASD
     if (nearChestId() !== c.id && bossMapId() === mapId) await bossWalkTo(c.x, c.y, { thresh: 14, maxMs: 8000 });
-    if (nearChestId() !== c.id) { chestEvent(`⚠️ เข้าใกล้หีบ #${chestShort(c.id)} ไม่ได้ (เกมไม่ขึ้น "ใกล้หีบ")`); return false; }
+    if (nearChestId() !== c.id) { chestEvent(`⚠️ เข้าใกล้หีบ #${chestShort(c.id)} ไม่ได้ (เกมไม่ขึ้น "ใกล้หีบ")`); return 'unreachable'; }
     // เปิด: กด E (เกมผูก E กับ "เปิดหีบ") + เผื่อคลิกปุ่ม DOM · ยืนยันจาก openedChests
-    for (let k = 0; k < 3 && !chestOpened(c.id); k++) {
+    //   เกมบังคับ "คูลดาวน์ระหว่างเปิดหีบ" (เพิ่งเปิดไป รอสักครู่) → รอแล้วลองใหม่ ไม่ทิ้งใบนี้ทันที
+    let result = 'fail';
+    for (let k = 0; k < 5 && !chestOpened(c.id); k++) {
       gameHotkey('KeyE', 69);
       await sleep(400);
-      const btn = chestOpenBtn(); if (btn && !chestOpened(c.id)) { fireClick(btn); }
-      if (await waitFor(() => chestOpened(c.id) || chestDailyDone(), 2500, 200)) break;
-      const w = warnText();   // เกมบอกเหตุถ้าเปิดไม่ได้ (หมดอายุ/เปิดแล้ว/ลิมิต/คูลดาวน์/คนละแมพ)
-      if (w && /หายไปแล้ว|เปิดไปแล้ว|วันนี้|คนละแมพ|สักครู่|คูลดาวน์/.test(w)) { chestEvent(`ℹ️ ${w.replace(/\s+/g, ' ').trim().slice(0, 70)}`); break; }
+      const btn = chestOpenBtn(); if (btn && !chestOpened(c.id)) fireClick(btn);
+      if (await waitFor(() => chestOpened(c.id), 1800, 200)) break;
+      const msg = chestMsg();
+      if (/เพิ่งเปิดหีบ|รอสักครู่|คูลดาวน์/.test(msg)) {           // คูลดาวน์ระหว่างใบ — ปิดกล่อง รอ แล้วลองใหม่
+        closeChestDialog(); result = 'cooldown';
+        if (k < 4) { if (k === 0) chestEvent('⏳ คูลดาวน์ระหว่างเปิดหีบ — รอแล้วลองใหม่'); await sleep(5000); }
+        continue;
+      }
+      if (/หายไปแล้ว|เปิดไปแล้ว|คนละแมพ|เปิดครบ|เปิดหีบวันนี้/.test(msg)) {   // เปิดไม่ได้แน่ๆ — ปิดกล่อง เลิกใบนี้
+        closeChestDialog();
+        const line = (msg.match(/[^\n]*(หีบ|รางวัล|วันนี้)[^\n]*/) || [''])[0].replace(/\s+/g, ' ').trim().slice(0, 60);
+        chestEvent(`ℹ️ เปิดไม่ได้: ${line}`); result = 'blocked'; break;
+      }
     }
-    if (chestOpened(c.id)) { chestEvent(`✅ เปิดหีบ #${chestShort(c.id)} สำเร็จ`); if (isOn('tgOn')) void tgSend('🎁 เปิดหีบสมบัติสำเร็จ'); return true; }
-    return false;
+    closeChestDialog();   // 🛡️ ปิดหน้าต่างรางวัล/ค้างเสมอ (กันบังจอ — บั๊ก v6.216)
+    if (chestOpened(c.id)) { chestEvent(`✅ เปิดหีบ #${chestShort(c.id)} สำเร็จ`); if (isOn('tgOn')) void tgSend('🎁 เปิดหีบสมบัติสำเร็จ'); return 'opened'; }
+    return result;
   }
   // orchestrator เก็บหีบ — เก็บทุกใบที่เปิดได้ในแมพนี้แล้วปล่อยให้ตกปลาต่อ (ครอบ orchestrating หยุดฟาร์มชั่วคราว)
   async function runChestGrab() {
@@ -4933,6 +4951,7 @@
     if (chestDailyDone() || !findChests().length) return;
     orchestrating = true;
     const home = bossMapId();
+    let opened = 0;
     try {
       for (let guard = 0; guard < 6 && enabled && isOn('grabChest'); guard++) {
         if (chestDailyDone()) { chestEvent('🎁 เปิดครบลิมิตวันนี้แล้ว — พักระบบหีบ'); break; }
@@ -4940,14 +4959,19 @@
         const p = bossPlayerXY() || { x: 0, y: 0 };
         chests.sort((a, b) => Math.hypot(a.x - p.x, a.y - p.y) - Math.hypot(b.x - p.x, b.y - p.y));
         const c = chests[0];
-        const ok = await grabOneChest(c, home);
-        if (!ok) chestSkip.set(c.id, now());
+        const r = await grabOneChest(c, home);
+        if (r === 'opened') { opened++; continue; }
+        // คูลดาวน์ยังไม่หายหลังรอ → เลิกทริปนี้ (รอบเช็คหน้ามาเก็บใบที่เหลือ) · พักใบนี้สั้นๆ
+        if (r === 'cooldown') { chestSkip.set(c.id, now() - 240000); chestEvent('⏳ ยังติดคูลดาวน์ — กลับไปตกก่อน เดี๋ยวรอบหน้ามาเก็บใบที่เหลือ'); break; }
+        chestSkip.set(c.id, now());   // unreachable/blocked/fail → พัก 5 นาที
       }
     } catch (e) { logErr('runChestGrab', e); }
     finally {
       bossReleaseAll();   // ปล่อยปุ่มทิศที่อาจกดค้างจาก bossWalkTo (กันตัวเดินเองต่อ)
+      closeChestDialog();   // 🛡️ กันหน้าต่างหีบค้างบังจอเป็นครั้งสุดท้าย (บั๊ก v6.216 — ตกปลาต่อไม่ได้)
       // กลับจุดตกปลาเดิม เพื่อให้ระบบตกปลาปกติเหวี่ยงต่อได้ทันที (ไม่งั้นอาจไปยืนบนบก)
       try { const fz = bossFishingZone(); if (fz && bossMapId() === home && gameWalker()) gameWalker().navigate({ x: fz.x, y: fz.y + 120, mapId: home }); } catch {}
+      if (opened) chestEvent(`🎁 จบทริป — เปิดได้ ${opened} ใบ กลับไปตกปลาต่อ`);
       orchestrating = false; lastCast = now(); pendingCast = 0;
     }
   }
@@ -5903,6 +5927,9 @@ ${esc(reason)}
         // 🏪 v6.150: ระบบ NPC เมืองประมง — ถึงเกณฑ์ปลา (ระดับ+จำนวน) → ไปฝากลุงคลัง/แลกยายแก่น แล้วกลับ (self-throttle เปิดกระเป๋านับทุก 2 นาที)
         void npcErrandCheck();
 
+        // 🛡️ v6.217: กันหน้าต่างหีบ (รางวัล/คูลดาวน์) ค้างบังจอหลังจบทริป → ตกปลาต่อไม่ได้ (บั๊ก v6.216)
+        //   จำกัดเฉพาะ ~60 วิ หลังเพิ่งไปเก็บหีบ (กันเผลอปิด dialog อื่นที่บังเอิญมีปุ่ม "ปิด" เหมือนกัน)
+        if (isOn('grabChest') && !orchestrating && now() - lastChestRunAt < 60000 && chestCloseBtn()) { closeChestDialog(); return requestAnimationFrame(tick); }
         // 🎁 v6.216: เก็บหีบสมบัติที่โผล่ในแมพเป็นระยะ (opt-in) — ลำดับต่ำสุด (หลังบอส/เมือง) · self-throttle chestCheckMin นาที
         if (chestGrabDue()) { void runChestGrab(); return requestAnimationFrame(tick); }
 
