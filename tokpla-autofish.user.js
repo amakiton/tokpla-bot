@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.209
+// @version      6.210
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.209';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.210';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2218,8 +2218,15 @@
   }
   function parseReward(txt) {
     const out = { coins: 0, items: [] };
-    const c = /([\d,]+)\s*🪙/.exec(txt);
-    if (c) out.coins = parseInt(c[1].replace(/,/g, ''), 10) || 0;
+    // 🪙 v6.210 (เจอจากข้อมูลจริง): ข้อความรางวัลมี 🪙 หลายตัว — "ของรางวัล2🪙เหรียญ 996 🪙"
+    //   parser เดิมจับตัวแรก (2 = จำนวนชนิดรางวัล) แทนเหรียญจริง (996) → บันทึกเหรียญผิด
+    //   แก้: เชื่อ "เหรียญ N" ก่อน · ไม่มีก็เอาเลข 🪙 ที่ "มากสุด" (เหรียญรางวัลมักใหญ่กว่าเลข label)
+    const cn = /เหรียญ\s*([\d,]+)/.exec(txt);
+    if (cn) out.coins = parseInt(cn[1].replace(/,/g, ''), 10) || 0;
+    else {
+      const all = [...txt.matchAll(/([\d,]+)\s*🪙/g)].map((m) => parseInt(m[1].replace(/,/g, ''), 10) || 0);
+      if (all.length) out.coins = Math.max(...all);
+    }
     // จับเฉพาะ "คำที่ติดกับ ×" — ห้ามกินคำนำหน้า (เทสต์เจอ: 'ของรางวัล หินออร์บ×1' เคยได้ชื่อเป็น 'ของรางวัล หินออร์บ')
     const re = /([ก-๙A-Za-z]{2,20})\s*[×x]\s*(\d+)/g;
     let m;
@@ -2269,10 +2276,11 @@
         gameEscape();   // v6.165: ใช้ "ปิดหน้าต่างทั้งหมด" ทางการแทนการยิง Escape เองแบบเดิม
       }
       if (claimed) {
-        // 🎁 v6.206: เหรียญที่ parse ไม่ได้ → ใช้ "ส่วนต่างเหรียญบน HUD" แทน (กันรูปแบบข้อความที่เรายังไม่รู้จัก)
+        // 🎁 v6.206/6.210: "ส่วนต่างเหรียญบน HUD" = ค่าจริงที่สุด (ground truth) — ใช้เมื่อมากกว่าที่ parse ได้
+        //   (parse อาจจับเลขผิดตัวจากข้อความหลาย 🪙 · ส่วนต่าง HUD วัดเหรียญที่เข้าจริง)
         await sleep(500);
         const coinAfter = coinsNow();
-        if (!got.coins && coinBefore != null && coinAfter != null && coinAfter > coinBefore) got.coins = coinAfter - coinBefore;
+        if (coinBefore != null && coinAfter != null && coinAfter - coinBefore > got.coins) got.coins = coinAfter - coinBefore;
         const items = [...new Set(got.items)];
         const detail = [got.coins ? `${got.coins.toLocaleString()} 🪙` : null, items.length ? items.join(' + ') : null]
           .filter(Boolean).join(' · ') || '(อ่านรายละเอียดไม่ได้)';
