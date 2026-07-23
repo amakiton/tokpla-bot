@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.214
+// @version      6.215
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.214';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.215';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1673,7 +1673,22 @@
   let bossPredictSayAt = 0;
   function bossTimerMin() {
     const dom = bossTimerDom();
-    if (dom != null) { setBossNext(Date.now() + dom * 60000); return dom; }   // อ่าน DOM ได้ = ความจริง · sync ตัวทำนายไว้
+    if (dom != null && dom > 0) { setBossNext(Date.now() + dom * 60000); return dom; }   // ตัวนับจริง = ความจริง · sync ตัวทำนาย
+    // 🐛 v6.215 (ผู้ใช้เจอสด 23:22): ป้าย "ถึงรอบบอสแล้ว!" โชว์ทั้งที่เวลาบอสจริงยังอีก 11 ชม. (เกมเพี้ยน)
+    //   → bossTimerDom คืน 0 (armed) → บอทไปเก้อทุก ~10 นาที · ต้อง cross-check กับ "เวลาบอสที่รู้จริง" (bossNextMs)
+    if (dom === 0) {
+      const lead = clamp(cfg.bossLeadMin, 1, 60);
+      const rawGap = bossNextMs ? (bossNextMs - Date.now()) / 60000 : 0;   // ช่องว่างจริงถึงบอส (ไม่ roll)
+      // เชื่อป้าย "บอสมาแล้ว" เฉพาะเมื่อเวลาจริงใกล้ตอนนี้ (บอสเพิ่งขึ้น -6 ถึง +lead+2 นาที) หรือยังไม่มีฐานให้เทียบ
+      if (!bossNextMs || (rawGap >= -6 && rawGap <= lead + 2)) return 0;
+      // ป้ายแย้งเวลาจริง (บอสยังอีกไกล) = ป้ายค้าง/เพี้ยน → ไม่เชื่อ ใช้ตัวทำนายแทน
+      if (now() - bossPredictSayAt > 600000) {
+        bossPredictSayAt = now();
+        logInfo(`🔮 ป้าย "ถึงรอบบอส" โชว์ทั้งที่เวลาบอสจริงยังอีก ~${Math.round(rawGap)} นาที (เกมเพี้ยน) → ไม่เชื่อป้าย ใช้ตัวทำนาย`);
+      }
+      return bossPredictNextMin();
+    }
+    // dom == null (ไม่มีทั้งตัวนับและป้าย) → ทำนาย
     const pred = bossPredictNextMin();
     if (pred != null && now() - bossPredictSayAt > 600000) {   // log ทุก 10 นาที กันสแปม
       bossPredictSayAt = now();
