@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.223
+// @version      6.224
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.223';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.224';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -5105,20 +5105,42 @@
   // 🐛 v6.221: คืน true/false เฉพาะเมื่อ nearPond เป็น boolean จริง — ถ้า field หาย/undefined (ช่วง transition/เกมเปลี่ยนชื่อ) = null
   //   เดิม !!s.nearPond ยุบ undefined→false → walkToPond ทำงานทุกเฟรมช่วงโหลด (แย่งงาน idle อื่น) · null = "ไม่รู้ อย่ายุ่ง"
   const sceneNearPond = () => { try { const v = getPhaserScene()?.nearPond; return typeof v === 'boolean' ? v : null; } catch { return null; } };
+  // 🗺️ v6.224: จำ "แมพที่เคยตกปลา" ไว้ — ใช้เดินกลับเมื่อตัวไปติดอยู่แมพที่ไม่มีบ่อ (เช่น fisher_town หลังทำธุระ/รีโหลด)
+  const FISH_MAP_KEY = 'tokpla_last_fish_map';
+  const saveFishMap = (m) => { try { if (m && m !== BOSS_MAP && m !== 'fisher_town') W.localStorage.setItem(FISH_MAP_KEY, m); } catch {} };
+  const lastFishMap = () => { try { return W.localStorage.getItem(FISH_MAP_KEY) || cfg.bossHome || 'lotus_marsh'; } catch { return cfg.bossHome || 'lotus_marsh'; } };
   let lastPondWalk = 0, lastPondSay = 0, pondWalkStart = 0;
   function walkToPondIfNeeded() {
     if (bossMapId() === BOSS_MAP || mythicActive()) { pondWalkStart = 0; return false; }   // ถ้ำบอสไม่มีบ่อ · ล่าปลาเทพคุมตำแหน่งเอง
-    if (sceneNearPond() !== false) { pondWalkStart = 0; return false; }   // ถึงบ่อแล้ว/อ่านไม่ได้ = เลิก (แตะเฉพาะ "ไกลบ่อแน่ๆ")
-    const fz = bossFishingZone(); const aw = gameWalker();
-    if (!fz || !aw) return false;                                   // แมพนี้ไม่มีโซนตกปลา/ไม่มี pathfinder
+    const near = sceneNearPond();
+    if (near === null) { pondWalkStart = 0; return false; }   // อ่านไม่ได้ (กำลังโหลด/transition) = ไม่ยุ่ง
+    const aw = gameWalker(); if (!aw) return false;
+    const curMap = bossMapId();
+    const fz = bossFishingZone();
+    if (near === true) { pondWalkStart = 0; saveFishMap(curMap); return false; }   // อยู่ริมบ่อแล้ว — จำแมพนี้เป็น "แมพตกปลา"
+    // near === false: ไม่ได้อยู่ริมบ่อ
+    if (fz) {
+      // แมพนี้ "มีบ่อ" แต่ตัวอยู่ไกล → เดินเข้าบ่อ (หลังรีโหลด/เก็บหีบ/กลับจากบอส)
+      if (!pondWalkStart) pondWalkStart = now();
+      // 🛡️ v6.220: เดินนานเกิน 45 วิ ยังไม่ถึงบ่อ (A* ไม่เจอ/ติดกำแพง) → ปล่อยตรรกะเดิม (เตือน→รีโหลด) จัดการ
+      if (now() - pondWalkStart > 45000) return false;
+      if (now() - lastPondWalk < 4000) return true;                   // กำลังเดินอยู่ อย่าสั่ง navigate ซ้ำถี่
+      lastPondWalk = now();
+      try { aw.navigate({ x: fz.x, y: fz.y + 120, mapId: curMap }); } catch {}
+      if (now() - lastPondSay > 30000) { lastPondSay = now(); logInfo('🎣 ตัวละครไม่ได้อยู่ริมบ่อ (หลังรีโหลด/เก็บหีบ/กลับจากบอส) → เดินกลับบ่อเอง'); }
+      return true;
+    }
+    // 🗺️ v6.224: แมพนี้ "ไม่มีบ่อ" (fisher_town ฯลฯ) — ตัวติดเกาะ (เจอจริง: ทำธุระเมือง/รีโหลดแล้วค้างในเมือง ตกปลาไม่ได้เลย)
+    //   → เดินข้ามแมพกลับ "แมพที่เคยตก" · ไม่งั้นบอทยืนขึ้น "ปุ่มตกปลากดไม่ได้" ไปเรื่อยๆ ไม่มีวันหลุด
+    const home = lastFishMap();
+    if (!home || home === curMap) return false;   // ไม่รู้จะไปไหน = ปล่อย (กันวน)
     if (!pondWalkStart) pondWalkStart = now();
-    // 🛡️ v6.220: เดินนานเกิน 45 วิ ยังไม่ถึงบ่อ (หา A* ไม่เจอ/ติดกำแพง) → ปล่อยตรรกะเดิม (เตือน→รีโหลด) จัดการ
-    //   กัน "วนเดินไม่จบ" มาแทน safety-net รีโหลด (ถ้าค้าง early-return ตรงนี้ตลอด บอทจะไม่มีวันรีโหลดหลุด)
-    if (now() - pondWalkStart > 45000) return false;
-    if (now() - lastPondWalk < 4000) return true;                   // กำลังเดินอยู่ อย่าสั่ง navigate ซ้ำถี่
+    if (now() - pondWalkStart > 120000) { pondWalkStart = 0; return false; }   // ข้ามหลายแมพให้เวลา 2 นาที
+    if (now() - lastPondWalk < 4000) return true;
     lastPondWalk = now();
-    try { aw.navigate({ x: fz.x, y: fz.y + 120, mapId: bossMapId() }); } catch {}
-    if (now() - lastPondSay > 30000) { lastPondSay = now(); logInfo('🎣 ตัวละครไม่ได้อยู่ริมบ่อ (หลังรีโหลด/เก็บหีบ/กลับจากบอส) → เดินกลับบ่อเอง'); }
+    const t = BOSS_NAV_TARGET[home] || { x: 700, y: 500 };
+    try { aw.navigate({ x: t.x, y: t.y, mapId: home }); } catch {}
+    if (now() - lastPondSay > 20000) { lastPondSay = now(); logInfo(`🎣 ติดอยู่แมพที่ไม่มีบ่อ (${curMap}) → เดินข้ามแมพกลับไปตกปลาที่ ${home}`); }
     return true;
   }
 
