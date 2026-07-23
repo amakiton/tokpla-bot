@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.215
+// @version      6.216
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.215';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.216';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -189,6 +189,10 @@
     advExploreHours: 6,          // สำรวจทุกกี่ชั่วโมง
     advExploreCasts: 30,         // สำรวจครั้งละกี่ครั้ง (ยิ่งมากยิ่งแม่น แต่ยิ่งแพง)
     advExploreMaxCost: 3000,     // งบต่อรอบสำรวจ (🪙) — ประเมินจาก (กำไรขั้นที่ดีสุด − ขั้นที่จะลอง) × จำนวนครั้ง · เกินงบ = ข้ามขั้นนั้น
+
+    // 🎁 v6.216: เก็บหีบสมบัติที่โผล่ในแมพเป็นระยะ (opt-in — ต้องเดินออกจากจุดตกปลา · บอส/เมือง/ล่าปลาเทพ สำคัญกว่า)
+    grabChest: false,            // เปิด = เจอหีบในแมพปัจจุบัน → เดินไปเปิด (กด E) แล้วกลับมาตกต่อ · มีลิมิตต่อวันของเกมเอง (chestDailyComplete)
+    chestCheckMin: 3,            // เช็คหาหีบทุกกี่นาที (ถี่ไป = เดินบ่อยเสียเวลาตก · ห่างไป = หีบอาจหมดอายุก่อน)
     buyPacks: 1,                 // ซื้อกี่แพ็ค (แพ็คละ 100 ชิ้น)
     forceBait: false,            // บังคับสลับไปใช้เหยื่อระดับที่ตั้งไว้
     forceRod: false,             // บังคับสลับไปใช้เบ็ดขั้นที่ตั้งไว้
@@ -996,6 +1000,26 @@
         if (bossPhase !== 'idle' || orchestrating) { reply('👹 กำลังล่า/ทำงานอื่นอยู่'); break; }
         if (!enabled) toggle();
         reply('👹 สั่งออกล่าบอสเดี๋ยวนี้'); void runBossHunt(); break;
+      }
+      case 'chest': case 'chests': {   // 🎁 หีบสมบัติ — สถานะ/สั่งเก็บเดี๋ยวนี้
+        const a = (args[0] || '').toLowerCase();
+        if (a === 'on' || a === 'off') {
+          cfg.grabChest = a === 'on'; sessionOff.delete('grabChest'); saveCfg(); syncPanel();
+          reply(`🎁 เก็บหีบสมบัติ: <b>${a === 'on' ? 'เปิด' : 'ปิด'}</b>`); break;
+        }
+        if (a === 'now' || a === 'go') {
+          if (!isOn('grabChest')) { reply('🎁 เปิดระบบเก็บหีบก่อน (/chest on)'); break; }
+          if (orchestrating || busy || bossPhase !== 'idle') { reply('🎁 กำลังทำงานอื่นอยู่ ลองใหม่อีกครั้ง'); break; }
+          if (chestDailyDone()) { reply('🎁 เปิดครบลิมิตวันนี้แล้ว'); break; }
+          const n = findChests().length;
+          if (!n) { reply('🎁 ไม่พบหีบที่ยังเปิดได้ในแมพนี้'); break; }
+          lastChestCheckAt = now(); reply(`🎁 สั่งเก็บหีบเดี๋ยวนี้ (พบ ${n} ใบ)`); void runChestGrab(); break;
+        }
+        const open = findChests().length, done = chestDailyDone();
+        reply(`🎁 <b>สถานะหีบสมบัติ</b>\nระบบ: ${isOn('grabChest') ? 'เปิด' : 'ปิด'} · เช็คทุก ${clamp(cfg.chestCheckMin || 3, 1, 120)} นาที\n` +
+          `แมพตอนนี้: ${esc(bossMapId() || '?')} · หีบที่ยังเปิดได้: ${open} ใบ${done ? ' · ⛔ ครบลิมิตวันนี้' : ''}\n` +
+          `<code>${esc(chestEventsText())}</code>`);
+        break;
       }
       case 'mythic': case 'myth': {   // 🌈 โหมดล่าปลาเทพ — สถานะ/เปิด/ปิด
         const a = (args[0] || '').toLowerCase();
@@ -4831,6 +4855,103 @@
     if (exploreLeft <= 0) exploreEnd(exploreTier, true);
   }
 
+  // ============================================================================
+  // 🎁 v6.216: ระบบเก็บหีบสมบัติ — เดินไปเปิดหีบที่โผล่ในแมพเป็นระยะ (opt-in grabChest)
+  //   ยืนยันสดกับ Phaser scene (อ่านผ่าน getPhaserScene เหมือน player/raidBoss):
+  //     • scene.chests = [{id:"mapId:window:idx", x, y, obj}] — รายการหีบในแมพปัจจุบัน
+  //     • scene.nearChestId = id ของหีบที่ "ยืนใกล้พอจะเปิด" (เกมตั้งเองจากระยะ) · null = ไม่ใกล้ใบไหน
+  //     • scene.openedChests = Set(id) หีบที่เปิดไปแล้ว (persist ข้าม window) → ตัดออกไม่เดินซ้ำ
+  //     • scene.chestDailyComplete = true เมื่อเปิดครบลิมิตวันนี้ → หยุดทั้งระบบ
+  //   เปิด: เดินเข้าใกล้ (autoWalker) จน nearChestId===id แล้วกด E (เกมผูก "เปิดหีบ (E)") · เผื่อคลิกปุ่ม DOM
+  // ============================================================================
+  const CHEST_EV_KEY = 'tokpla_chest_ev';
+  const chestEvent = (m) => pushEvent(CHEST_EV_KEY, m, 60);
+  const chestEventsText = () => eventsText(CHEST_EV_KEY, '(ยังไม่มีเหตุการณ์หีบสมบัติ)');
+  let lastChestCheckAt = NEVER, lastChestRunAt = NEVER;
+  const chestSkip = new Map();   // id → เวลาที่ลองเปิดแล้วไม่สำเร็จ (กันวนใบเดิม 5 นาที)
+  const chestShort = (id) => String(id || '').split(':').pop();
+  const chestDailyDone = () => { try { return !!getPhaserScene()?.chestDailyComplete; } catch { return false; } };
+  const nearChestId = () => { try { return getPhaserScene()?.nearChestId || null; } catch { return null; } };
+  const chestOpened = (id) => { try { const o = getPhaserScene()?.openedChests; return o instanceof Set ? o.has(id) : false; } catch { return false; } };
+  const chestOpenBtn = () => { try { return [...document.querySelectorAll('button')].find((b) => !isBotUI(b) && b.offsetParent && /เปิดหีบ/.test(b.textContent || '')) || null; } catch { return null; } };
+  // หีบที่ "ยังเปิดได้" ในแมพนี้ (ตัดที่เปิดแล้ว/เพิ่งลองไม่สำเร็จ) · ครบลิมิตวัน = ว่างเสมอ
+  function findChests() {
+    try {
+      const s = getPhaserScene(); if (!s || !Array.isArray(s.chests) || s.chestDailyComplete) return [];
+      const opened = s.openedChests instanceof Set ? s.openedChests : null;
+      const out = [];
+      for (const ch of s.chests) {
+        if (!ch || typeof ch.x !== 'number' || typeof ch.y !== 'number' || !ch.id) continue;
+        if (opened && opened.has(ch.id)) continue;
+        const sk = chestSkip.get(ch.id); if (sk && now() - sk < 300000) continue;
+        out.push({ id: ch.id, x: Math.round(ch.x), y: Math.round(ch.y) });
+      }
+      return out;
+    } catch { return []; }
+  }
+  // ถึงรอบเช็คหีบไหม (ลำดับต่ำ — หลังบอส/เมือง/ล่าปลาเทพ) · self-throttle chestCheckMin นาที
+  function chestGrabDue() {
+    if (!isOn('grabChest')) return false;
+    if (orchestrating || busy || bossPhase !== 'idle' || mythicActive() || testRunning || energyResting || paused) return false;
+    if (now() - lastChestCheckAt < clamp(cfg.chestCheckMin || 3, 1, 120) * 60000) return false;
+    lastChestCheckAt = now();
+    if (chestDailyDone()) return false;
+    // ใกล้เวลาบอส = อย่าเดินไกลไปเก็บหีบ (บอสสำคัญกว่า) — เว้นระยะ lead + 5 นาที
+    if (isOn('bossHunt')) { const bt = bossTimerMin(); if (bt != null && bt <= clamp(cfg.bossLeadMin, 1, 60) + 5) return false; }
+    return findChests().length > 0;
+  }
+  // เดินไปเปิดหีบใบเดียว — คืน true=เปิดสำเร็จ · false=เข้าไม่ถึง/เปิดไม่ได้ (ให้ผู้เรียก mark skip)
+  async function grabOneChest(c, mapId) {
+    chestEvent(`🚶 เดินไปหีบ #${chestShort(c.id)} ที่ (${c.x},${c.y})`);
+    const aw = gameWalker();
+    const t0 = now(), maxMs = 30000; let lastNav = 0;
+    while (enabled && isOn('grabChest') && now() - t0 < maxMs) {
+      if (bossMapId() !== mapId) { chestEvent('↩️ แมพเปลี่ยนระหว่างเดินไปหีบ — ยกเลิกใบนี้'); return false; }
+      if (nearChestId() === c.id) break;                       // เกมยืนยัน "ใกล้หีบ" แล้ว
+      if (aw && !aw.walking && now() - lastNav > 2500) { lastNav = now(); try { aw.navigate({ x: c.x, y: c.y, mapId }); } catch {} }
+      await sleep(350);
+    }
+    // เข้าใกล้พิกัดแล้วแต่เกมยังไม่จับ "ใกล้หีบ" → ขยับชิดอีกนิดด้วย WASD
+    if (nearChestId() !== c.id && bossMapId() === mapId) await bossWalkTo(c.x, c.y, { thresh: 14, maxMs: 8000 });
+    if (nearChestId() !== c.id) { chestEvent(`⚠️ เข้าใกล้หีบ #${chestShort(c.id)} ไม่ได้ (เกมไม่ขึ้น "ใกล้หีบ")`); return false; }
+    // เปิด: กด E (เกมผูก E กับ "เปิดหีบ") + เผื่อคลิกปุ่ม DOM · ยืนยันจาก openedChests
+    for (let k = 0; k < 3 && !chestOpened(c.id); k++) {
+      gameHotkey('KeyE', 69);
+      await sleep(400);
+      const btn = chestOpenBtn(); if (btn && !chestOpened(c.id)) { fireClick(btn); }
+      if (await waitFor(() => chestOpened(c.id) || chestDailyDone(), 2500, 200)) break;
+      const w = warnText();   // เกมบอกเหตุถ้าเปิดไม่ได้ (หมดอายุ/เปิดแล้ว/ลิมิต/คูลดาวน์/คนละแมพ)
+      if (w && /หายไปแล้ว|เปิดไปแล้ว|วันนี้|คนละแมพ|สักครู่|คูลดาวน์/.test(w)) { chestEvent(`ℹ️ ${w.replace(/\s+/g, ' ').trim().slice(0, 70)}`); break; }
+    }
+    if (chestOpened(c.id)) { chestEvent(`✅ เปิดหีบ #${chestShort(c.id)} สำเร็จ`); if (isOn('tgOn')) void tgSend('🎁 เปิดหีบสมบัติสำเร็จ'); return true; }
+    return false;
+  }
+  // orchestrator เก็บหีบ — เก็บทุกใบที่เปิดได้ในแมพนี้แล้วปล่อยให้ตกปลาต่อ (ครอบ orchestrating หยุดฟาร์มชั่วคราว)
+  async function runChestGrab() {
+    if (orchestrating || busy) return;
+    lastChestRunAt = now();
+    if (chestDailyDone() || !findChests().length) return;
+    orchestrating = true;
+    const home = bossMapId();
+    try {
+      for (let guard = 0; guard < 6 && enabled && isOn('grabChest'); guard++) {
+        if (chestDailyDone()) { chestEvent('🎁 เปิดครบลิมิตวันนี้แล้ว — พักระบบหีบ'); break; }
+        const chests = findChests(); if (!chests.length) break;
+        const p = bossPlayerXY() || { x: 0, y: 0 };
+        chests.sort((a, b) => Math.hypot(a.x - p.x, a.y - p.y) - Math.hypot(b.x - p.x, b.y - p.y));
+        const c = chests[0];
+        const ok = await grabOneChest(c, home);
+        if (!ok) chestSkip.set(c.id, now());
+      }
+    } catch (e) { logErr('runChestGrab', e); }
+    finally {
+      bossReleaseAll();   // ปล่อยปุ่มทิศที่อาจกดค้างจาก bossWalkTo (กันตัวเดินเองต่อ)
+      // กลับจุดตกปลาเดิม เพื่อให้ระบบตกปลาปกติเหวี่ยงต่อได้ทันที (ไม่งั้นอาจไปยืนบนบก)
+      try { const fz = bossFishingZone(); if (fz && bossMapId() === home && gameWalker()) gameWalker().navigate({ x: fz.x, y: fz.y + 120, mapId: home }); } catch {}
+      orchestrating = false; lastCast = now(); pendingCast = 0;
+    }
+  }
+
   // อ่าน "เพดานเหยื่อจริง" จากร้าน (ขั้นสูงสุดที่ปลดล็อกแล้ว) — กันทดสอบขั้นที่ยังล็อกอยู่ + แจ้งช่วงให้ตรง
   async function detectBaitCeil() {
     await waitFor(() => !busy && !orchestrating, 20000);   // รอคิวว่าง (เด้งเงียบ = เพดานผิดทั้งการทดสอบ)
@@ -5781,6 +5902,9 @@ ${esc(reason)}
         }
         // 🏪 v6.150: ระบบ NPC เมืองประมง — ถึงเกณฑ์ปลา (ระดับ+จำนวน) → ไปฝากลุงคลัง/แลกยายแก่น แล้วกลับ (self-throttle เปิดกระเป๋านับทุก 2 นาที)
         void npcErrandCheck();
+
+        // 🎁 v6.216: เก็บหีบสมบัติที่โผล่ในแมพเป็นระยะ (opt-in) — ลำดับต่ำสุด (หลังบอส/เมือง) · self-throttle chestCheckMin นาที
+        if (chestGrabDue()) { void runChestGrab(); return requestAnimationFrame(tick); }
 
         // 🌈 โหมดล่าปลาเทพ — no-loss gate + เรียนรู้ชื่อ↔id แมพ + ย้ายไปแมพสถิติดีสุด (บอสสำคัญกว่า จึงอยู่หลังเช็คบอส)
         if (mythicActive()) {
@@ -7009,6 +7133,34 @@ ${esc(reason)}
         showTextModal('🔬 เหตุการณ์สำรวจเหยื่อ', cur + exploreEventsText());
       });
       panel.appendChild(eb);
+    }
+
+    panel.appendChild(row(
+      '🎁 เก็บหีบสมบัติในแมพเป็นระยะ',
+      'เกมมีหีบสมบัติวางในแมพ (หีบไม้/หีบเงิน/สมบัติโจรสลัด) เดินไปกด E เพื่อเปิด — มีลิมิตต่อวัน · '
+      + 'เปิดแล้ว = ทุก N นาที บอทจะเช็คว่ามีหีบที่ยังไม่เปิดในแมพปัจจุบันไหม ถ้ามีจะเดินไปเปิดให้ครบ แล้วกลับมาตกต่อ · '
+      + 'ลำดับต่ำสุด: บอส/ธุระเมือง/ล่าปลาเทพ/ทดสอบเหยื่อ สำคัญกว่าเสมอ · ใกล้เวลาบอสจะไม่ออกไปเก็บ · '
+      + 'อ่านตำแหน่งหีบจากเกมจริง (scene.chests) + ข้ามใบที่เปิดแล้ว (openedChests) + หยุดเมื่อครบลิมิตวัน (chestDailyComplete)',
+      labeled('เปิด', checkbox('grabChest')),
+      labeled('เช็คทุกกี่นาที', numInput('chestCheckMin', 1, 120, 56)),
+    ));
+    {
+      const cb = document.createElement('button');
+      cb.setAttribute('data-tkbot', '1');
+      cb.textContent = '🎁 ดูไทม์ไลน์เก็บหีบ';
+      cb.style.cssText = 'padding:5px 10px;border-radius:7px;border:1px solid #4a5568;background:#2d3748;color:#e2e8f0;font-size:11px;cursor:pointer;margin:2px 3px 6px 0;';
+      cb.addEventListener('click', () => {
+        let cur = '';
+        try {
+          const s = getPhaserScene();
+          if (s) {
+            const open = findChests().length, done = !!s.chestDailyComplete;
+            cur = `แมพ: ${bossMapId() || '?'} · หีบที่ยังเปิดได้ตอนนี้: ${open} ใบ${done ? ' · ⛔ ครบลิมิตวันนี้แล้ว' : ''}\n\n`;
+          }
+        } catch {}
+        showTextModal('🎁 เหตุการณ์เก็บหีบสมบัติ', cur + chestEventsText());
+      });
+      panel.appendChild(cb);
     }
 
     panel.appendChild(row(
