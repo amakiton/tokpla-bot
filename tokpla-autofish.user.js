@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.210
+// @version      6.211
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.210';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.211';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -94,6 +94,7 @@
     bossHomeMap: '',             // แมพที่จะกลับไปฟาร์มต่อ (ว่าง = แมพที่อยู่ตอนเริ่มล่า)
     bossBaitTier: 2,             // 👹 เหยื่อ "จุดอ่อนบอส" ระหว่างตี (วิดีโอ: มัดอ้วนขั้น2/กุ้งฝอยขั้น4 = ดาเมจ x1.5) · 0 = ไม่สลับ
     bossStatKeep: 20,            // 📊 v6.195: เก็บสถิติล่าบอสกี่ "ครั้งล่าสุด" (ring buffer · 0 = ปิดการเก็บ)
+    bossIntervalMin: 180,        // 🔮 v6.211: บอสมาทุกกี่นาที (ข้อมูลจริง = 3 ชม.) — ใช้ทำนายรอบถัดไปตอนอ่านเวลาจาก DOM ไม่ได้
     rodSwitchOn: true,          // ⛔ v6.189: ปิดไว้ — พิสูจน์แล้วว่า G สลับได้แค่ "tier" ไม่ใช่ "ชิ้นเบ็ด" (CHANGELOG v6.188)
                                  //   เปิดมีประโยชน์กรณีเดียว: เบ็ดบอส/เบ็ดฟาร์มของคุณอยู่คนละ tier กันจริงๆ
     bossRodId: '',               // 🎣 v6.174: UUID "ชิ้นเบ็ด" ที่ใช้ตอนตีบอส (เช่นชิ้นที่ติดหินดาเมจบอส) · ว่าง = ไม่สลับ
@@ -1598,7 +1599,7 @@
     } catch { return null; }
   }
   let bossNowLabelSeen = false;   // v6.169: กัน log ซ้ำทุก 5 วิ ตอนป้าย "ถึงรอบบอสแล้ว" ค้างอยู่
-  function bossTimerMin() {
+  function bossTimerDom() {
     let sawNowLabel = false;   // v6.173: เจอป้าย "ถึงรอบบอสแล้ว" ไหม — ตัดสินใจทีหลัง (ตัวนับถอยหลังต้องชนะก่อน)
     try {
       const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
@@ -1640,6 +1641,36 @@
     }
     bossNowLabelSeen = false;
     return null;
+  }
+
+  // 🔮 v6.211 (ผู้ใช้เจอสด 10:30): เกมบางจังหวะโชว์แค่ป้าย "ถึงรอบบอสแล้ว!" ที่ค้าง — **ไม่มีตัวนับถอยหลังใน DOM เลย**
+  //   → บอทไม่มีสัญญาณ "อีก N นาที" ให้ออกก่อนเวลาตาม lead · เห็นบอสตอนโผล่แล้ว (0 lead) = ไปสาย พลาดบอส
+  //   ความจริง: บอสมา "ทุก 3 ชม.ตรง" (ข้อมูลจริง 13:31·16:31·19:31·22:31·10:30) → ทำนายรอบถัดไปได้
+  //   กลไก: จำเวลาบอสรอบถัดไป (bossNextMs) จากครั้งที่อ่าน DOM ได้ล่าสุด · พออ่าน DOM ไม่ได้ = เลื่อน bossNextMs
+  //         ไปทีละ interval จนเป็นอนาคต แล้วคืนเป็น "นาที" · ทำนายผิด = ขา v6.202 ส่งกลับบ้าน + re-sync ทันทีที่ถึงถ้ำ
+  const BOSS_NEXT_KEY = 'tokpla_boss_nextms';
+  let bossNextMs = 0;
+  try { bossNextMs = +W.localStorage.getItem(BOSS_NEXT_KEY) || 0; } catch {}
+  const setBossNext = (ms) => { bossNextMs = ms; try { W.localStorage.setItem(BOSS_NEXT_KEY, String(ms)); } catch {} };
+  function bossPredictNextMin() {
+    // seed จาก "ไฟต์บอสล่าสุดที่บันทึกไว้" ถ้ายังไม่เคยมีฐาน (เพิ่งอัปเดตเวอร์ชัน = ทำนายได้ทันที)
+    if (!bossNextMs) { try { const a = loadBossStats(); const last = a[a.length - 1]; if (last && last.ts) setBossNext(last.ts); } catch {} }
+    if (!bossNextMs) return null;
+    const iv = clamp(cfg.bossIntervalMin || 180, 10, 720) * 60000;
+    let target = bossNextMs;
+    while (target < Date.now() - 90000) target += iv;   // เลยรอบไปแล้ว → เลื่อนไปรอบถัดไป (−90วิ เผื่อบอสเพิ่งโผล่)
+    return Math.max(0, Math.round((target - Date.now()) / 60000));
+  }
+  let bossPredictSayAt = 0;
+  function bossTimerMin() {
+    const dom = bossTimerDom();
+    if (dom != null) { setBossNext(Date.now() + dom * 60000); return dom; }   // อ่าน DOM ได้ = ความจริง · sync ตัวทำนายไว้
+    const pred = bossPredictNextMin();
+    if (pred != null && now() - bossPredictSayAt > 600000) {   // log ทุก 10 นาที กันสแปม
+      bossPredictSayAt = now();
+      logInfo(`🔮 อ่านเวลาบอสจาก DOM ไม่ได้ (ป้ายค้าง/ไม่มีตัวนับ) → ทำนายจากรอบก่อน: อีก ~${pred} นาที (รอบทุก ${clamp(cfg.bossIntervalMin || 180, 10, 720)} นาที)`);
+    }
+    return pred;   // null ถ้ายังไม่เคยอ่าน DOM สำเร็จเลย (ไม่มีฐานให้ทำนาย)
   }
 
   // ---- เรียนรู้กราฟแมพ (persist) : map -> { targetMap: {x,y} } ----
@@ -6630,6 +6661,7 @@ ${esc(reason)}
       labeled('เปิด', checkbox('bossHunt', refreshBossBtn)),
       labeled('ไปก่อน (นาที)', numInput('bossLeadMin', 1, 60, 48)),
       labeled('รอสูงสุด (นาที)', numInput('bossMaxWaitMin', 1, 30, 48)),
+      labeled('บอสมาทุก (นาที)', numInput('bossIntervalMin', 10, 720, 52)),
     ));
 
     panel.appendChild(row(
