@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.211
+// @version      6.212
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.211';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.212';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4719,8 +4719,16 @@
   //   → ขั้นอื่นไม่มีข้อมูลใหม่เข้าเลย · เกมปรับสมดุล (% แรร์ / ราคาปลา / โต๊ะดรอป) เมื่อไร บอทไม่มีทางรู้
   //   วิธี: เป็นระยะ สลับไปตกขั้นที่ "ข้อมูลเก่าสุด" สั้นๆ (N ครั้ง) เพื่อรีเฟรชสถิติ แล้วกลับขั้นเดิม
   //   ⚖️ คุมต้นทุน: ประเมิน (กำไร/ครั้งของขั้นดีสุด − ของขั้นที่จะลอง) × จำนวนครั้ง · เกินงบ = ข้ามขั้นนั้น
-  let exploreTier = 0, exploreLeft = 0, lastExploreAt = NEVER;
+  let exploreTier = 0, exploreLeft = 0, lastExploreAt = NEVER, exploreMismatch = 0;
   try { const t = +W.localStorage.getItem('tokpla_bait_explore') || 0; if (t) lastExploreAt = now() - Math.min(Date.now() - t, 24 * 3600000); } catch {}
+  // 🔬 v6.212 (ผู้ใช้ขอ): เก็บ "ความคืบหน้าการสำรวจ" ข้ามรีโหลด — เดิมอยู่ใน memory ล้วน
+  //   → รีโหลด (Tampermonkey อัปเดต/RDP หลุด/เกมค้าง) กลางสำรวจ = หาย เก็บได้ไม่ครบ N (ผู้ใช้เจอ: ขั้น5=26 · ขั้น7=22 แทน 100)
+  const EXPLORE_PROG_KEY = 'tokpla_bait_explore_prog';
+  const saveExploreProg = () => { try { if (exploreTier) W.localStorage.setItem(EXPLORE_PROG_KEY, JSON.stringify({ tier: exploreTier, left: exploreLeft, at: Date.now() })); else W.localStorage.removeItem(EXPLORE_PROG_KEY); } catch {} };
+  try {   // กู้คืนตอนโหลด — ถ้าค้างไม่เกิน 12 ชม. (นานกว่านั้นถือว่าเก่าเกิน สภาพเกมอาจเปลี่ยน)
+    const d = JSON.parse(W.localStorage.getItem(EXPLORE_PROG_KEY) || 'null');
+    if (d && d.tier && d.left > 0 && Date.now() - (d.at || 0) < 12 * 3600000) { exploreTier = d.tier; exploreLeft = d.left; }
+  } catch {}
   // เวลาที่ "เก็บข้อมูลขั้นนี้ล่าสุด" (แมพปัจจุบัน) — ไม่มีข้อมูลเลย = เก่าสุด (ควรลองก่อน)
   function baitLastSeen(tier) {
     const list = profit.recs[tier] || [];
@@ -4752,24 +4760,37 @@
     lastExploreAt = now();
     try { W.localStorage.setItem('tokpla_bait_explore', String(Date.now())); } catch {}
     if (!p) { logInfo('🔬 ยังไม่มีขั้นเหยื่อที่คุ้มจะสำรวจรอบนี้ (ติดงบ/ถูกห้าม) — ข้าม'); return; }
-    exploreTier = p.tier; exploreLeft = p.casts;
+    exploreTier = p.tier; exploreLeft = p.casts; exploreMismatch = 0; saveExploreProg();
     const age = p.at ? `${Math.round((Date.now() - p.at) / 3600000)} ชม.ก่อน` : 'ไม่เคยเก็บในแมพนี้';
     say(`🔬 สำรวจขั้นเหยื่อ ${p.tier} จำนวน ${p.casts} ครั้ง (ข้อมูลล่าสุด: ${age} · ประเมินต้นทุน ~${Math.round(p.cost).toLocaleString()} 🪙) — เช็คว่าเกมเปลี่ยนค่าไหม แล้วจะกลับขั้น ${p.baseTier}`);
     if (isOn('tgOn')) void tgSend(`🔬 <b>สำรวจขั้นเหยื่อ</b> ขั้น ${p.tier} × ${p.casts} ครั้ง (ข้อมูลเก่า: ${esc(age)}) · กลับขั้น ${p.baseTier} เมื่อครบ`);
   }
-  function exploreTick(n) {   // เรียกทุกครั้งที่เหวี่ยงจริง
-    if (!exploreTier) return;
-    exploreLeft -= n;
-    if (exploreLeft > 0) return;
-    const done = exploreTier; exploreTier = 0; exploreLeft = 0;
-    // ⏱️ v6.208: เริ่มนับรอบถัดไป "ตอนสำรวจจบ" ไม่ใช่ตอนเริ่ม
-    //   เหตุ: ถ้าพลังหมดกลางทาง การสำรวจอาจกินเวลาหลายชั่วโมง (นั่งพักไม่นับครั้ง) → ถ้านับจากตอนเริ่ม
-    //   พอจบปุ๊บครบกำหนดพอดี = สำรวจรอบใหม่ต่อทันที ไม่ได้ฟาร์มเลย · นับจากตอนจบ = การันตีได้ฟาร์มเต็มช่วงทุกครั้ง
+  // จบการสำรวจ (ครบ N หรือยกเลิก) — เริ่มนับรอบถัดไป "ตอนจบ" (v6.208) การันตีได้ฟาร์มเต็มช่วง
+  function exploreEnd(tier, completed) {
+    exploreTier = 0; exploreLeft = 0; exploreMismatch = 0; saveExploreProg();
     lastExploreAt = now();
     try { W.localStorage.setItem('tokpla_bait_explore', String(Date.now())); } catch {}
-    const s = advTrimStat(done, cfg.advExploreCasts || 30);
-    say(`🔬 สำรวจขั้น ${done} ครบแล้ว — ${s ? `กำไร/ครั้งล่าสุด ${Math.round(s.score)} 🪙 (จาก ${s.n} ตัวอย่าง)` : 'เก็บตัวอย่างไม่พอ'} · ให้ Advisor ตัดสินต่อ`);
+    if (completed) {
+      const s = advTrimStat(tier, cfg.advExploreCasts || 30);
+      say(`🔬 สำรวจขั้น ${tier} ครบแล้ว — ${s ? `กำไร/ครั้งล่าสุด ${Math.round(s.score)} 🪙 (จาก ${s.n} ตัวอย่าง)` : 'เก็บตัวอย่างไม่พอ'} · ให้ Advisor ตัดสินต่อ`);
+    }
     try { advisorTick(true); } catch {}   // ให้ Advisor คิดใหม่ทันทีด้วยข้อมูลสด
+  }
+  // เรียกทุกครั้งที่เหวี่ยงจริง — v6.212: นับเฉพาะครั้งที่ "ตกด้วยขั้นสำรวจจริง" (ตกด้วยขั้นอื่น = ไม่นับ)
+  function exploreTick(firedTier) {
+    if (!exploreTier) return;
+    // ตกด้วยขั้นอื่น (ขั้นสำรวจใส่ไม่ได้/ของหมด/ถูกบล็อก) — ไม่นับ · ผิดขั้นติดกันนานพอ = ใส่ไม่ได้จริง → ยกเลิก
+    if (firedTier != null && firedTier !== exploreTier) {
+      if (++exploreMismatch >= 15) {
+        say(`🔬 ยกเลิกสำรวจขั้น ${exploreTier} — ใส่เหยื่อขั้นนี้ไม่ได้ (ของหมด/ถูกบล็อก ${exploreMismatch} ครั้ง) · จะไปขั้นอื่นรอบหน้า`);
+        exploreEnd(exploreTier, false);
+      }
+      return;
+    }
+    exploreMismatch = 0;
+    exploreLeft -= 1;
+    saveExploreProg();
+    if (exploreLeft <= 0) exploreEnd(exploreTier, true);
   }
 
   // อ่าน "เพดานเหยื่อจริง" จากร้าน (ขั้นสูงสุดที่ปลดล็อกแล้ว) — กันทดสอบขั้นที่ยังล็อกอยู่ + แจ้งช่วงให้ตรง
@@ -5520,7 +5541,7 @@ ${esc(reason)}
         failedCasts = 0;
         bagFullTries = 0;   // เหวี่ยงติดแล้ว = กระเป๋าไม่เต็มแล้ว
         casts++;
-        exploreTick(1);     // 🔬 v6.207: นับครั้งที่สำรวจ (ครบแล้วกลับขั้นเดิม + ให้ Advisor คิดใหม่)
+        exploreTick(currentBait()?.tier ?? lastKnownBaitTier);   // 🔬 v6.207/6.212: นับเฉพาะครั้งที่ตกด้วยขั้นสำรวจจริง
         pushCastCost();     // คาสต์เข้าน้ำจริง = ใช้เหยื่อ 1 ชิ้น (คิดต้นทุนที่นี่ ไม่ใช่ตอนอ่านผล)
         lastProgressAt = now();
         clearPersistedBreak();   // ตกได้ = ไม่ได้พักอยู่ ล้างพักที่จำไว้
