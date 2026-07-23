@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.221
+// @version      6.222
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.221';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.222';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -60,8 +60,31 @@
     { key: 'legendary', label: '🏅 ตำนาน',   color: '#f59e0b' },
     { key: 'mythic',    label: '🌈 เทพนิยาย', color: '#ec4899' },
   ];
-  const COLOR2RARITY = Object.fromEntries(RARITY.map((r) => [r.color, r.key]));
   const RARITY_LABEL = Object.fromEntries(RARITY.map((r) => [r.key, r.label]));
+
+  // 🎨 v6.222: แปลงสตริงสีใดๆ → [r,g,b] · รองรับ hex 3/6 หลัก · rgb()/rgba() · คั่นด้วย , หรือเว้นวรรค (Tailwind v3) · มี /alpha
+  //   ที่มา: เดิมจับคู่สีแบบ "ตรงเป๊ะ" (#9ca3af หรือ 'rgb(156, 163, 175)') → เกม render เป็นรูปแบบอื่น (space-separated/alpha) = อ่านไม่ออก
+  //   → ปลาระดับที่อ่านสีไม่ออกถูกถือว่า null = ไม่ขาย (ปลาธรรมดาค้างกระเป๋า "บางครั้ง")
+  function colorToRGB(str) {
+    if (!str) return null;
+    str = String(str).trim().toLowerCase();
+    let m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/.exec(str);
+    if (m) return [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)];
+    m = /^#([0-9a-f])([0-9a-f])([0-9a-f])\b/.exec(str);
+    if (m) return [17 * parseInt(m[1], 16), 17 * parseInt(m[2], 16), 17 * parseInt(m[3], 16)];
+    m = /rgba?\(([^)]+)\)/.exec(str);
+    if (m) { const n = m[1].split(/[\s,/]+/).map((x) => parseFloat(x)).filter((x) => !isNaN(x)); if (n.length >= 3) return [n[0], n[1], n[2]]; }
+    return null;
+  }
+  const RARITY_RGB = RARITY.map((r) => ({ key: r.key, c: colorToRGB(r.color) }));
+  // จับคู่สี → ระดับความหายาก (ใกล้สุดภายใน tolerance) · null = ไม่มีสี/ไม่ตรงพอ
+  //   ปลอดภัย: สีระหว่างระดับห่างกัน (ผลรวม 3 ช่อง) > 150 เสมอ → tolerance 90 ไม่มีทางข้ามไประดับข้างเคียง
+  function rarityFromColor(str) {
+    const rgb = colorToRGB(str); if (!rgb) return null;
+    let best = null, bestD = Infinity;
+    for (const r of RARITY_RGB) { const d = Math.abs(rgb[0] - r.c[0]) + Math.abs(rgb[1] - r.c[1]) + Math.abs(rgb[2] - r.c[2]); if (d < bestD) { bestD = d; best = r.key; } }
+    return bestD <= 90 ? best : null;
+  }
 
   // เหยื่อ/เบ็ด 8 ขั้น (แกะจาก BAIT_TIERS / ROD_TIERS) — ราคาเหยื่อคือต่อชิ้น ขายเป็นแพ็ค 100
   const BAIT_TIERS = [
@@ -3232,23 +3255,40 @@
   // ---- อ่านการ์ดของในกระเป๋า ----
   // v7: aria-label = "✨ ชื่อปลา ×3" และต่อท้าย " ล็อก N" เมื่อกลุ่มมีตัวที่ผู้เล่นล็อกไว้ (เกมกันไม่ให้ขาย)
   //     สีขอบระดับความหายากย้ายไปอยู่ที่ div ครอบ (.tk-inner ที่มี --tw-ring-color) ไม่ใช่ที่ตัวปุ่มแล้ว
+  // 🎨 v6.222: ระดับที่ "เคยบันทึกตอนจับ" (จาก popup ผลตกปลา — คนละ code path กับสีขอบกระเป๋า) → fallback เมื่ออ่านสีขอบไม่ได้
+  //   ปลอดภัย: ปลาชนิดเดียวกันมีระดับเดียวเสมอ (คอมเมนต์ sellPlan) → ใช้ระดับที่จำได้แทนได้ตรง
+  function recordedRarity(species) {
+    try {
+      for (const t of Object.keys(profit.recs || {})) {
+        const arr = profit.recs[t] || [];
+        for (let i = arr.length - 1; i >= 0; i--) { const c = arr[i]; if (c && c.fish === species && c.rarity && !c.junk) return c.rarity; }
+      }
+    } catch {}
+    return null;
+  }
   function readBag() {
     const cards = [];
     for (const b of document.querySelectorAll('button[aria-label]')) {
       const m = /^(✨\s)?(.+?)\s×(\d+)(?:\s+ล็อก\s+(\d+))?$/.exec(b.getAttribute('aria-label'));
       if (!m) continue;
-      const ring = b.closest('[style*="--tw-ring-color"]');   // สีขอบอยู่ที่ element ครอบ
-      const color = (ring?.style.getPropertyValue('--tw-ring-color') || '').trim().toLowerCase();
+      // 🎨 v6.222: สีขอบอาจตั้งผ่าน inline style หรือ class (computed) — ลองทั้งสอง แล้ว parse แบบทนทุกรูปแบบ
+      const ring = b.closest('[style*="--tw-ring-color"]') || b.closest('[class*="ring"]');
+      let color = (ring?.style.getPropertyValue('--tw-ring-color') || '').trim();
+      if (!color && ring) { try { color = getComputedStyle(ring).getPropertyValue('--tw-ring-color').trim(); } catch {} }
       const count = +m[3];
       const lockedCount = m[4] ? +m[4] : 0;
+      const species = m[2].trim();
+      // อ่านจากสีก่อน · อ่านไม่ออก → ใช้ระดับที่เคยจับได้ (แทน null=ไม่ขายทั้งที่เป็นปลาธรรมดา)
+      let rarity = rarityFromColor(color);
+      if (rarity == null) rarity = recordedRarity(species);
       cards.push({
         el: b,
-        species: m[2].trim(),
+        species,
         shiny: !!m[1],
         count,
         lockedCount,                     // ผู้เล่นล็อกไว้กี่ตัวในกลุ่มนี้ (เกมกันไม่ให้ขาย)
         sellable: count - lockedCount,   // ขายได้จริงกี่ตัว
-        rarity: COLOR2RARITY[color] || RGB2RARITY[color] || null,   // null = อ่านไม่ออก (ถือว่าล็อกไว้ก่อน)
+        rarity,                          // null = อ่านไม่ออก + ไม่เคยจับ (ยังถือว่าล็อกไว้ก่อน — ปลอดภัยกับปลาแพง)
       });
     }
     return cards;
@@ -3337,12 +3377,7 @@
     return true;
   }
 
-  // ---- อ่าน popup ปลาที่เพิ่งตกได้ (ก่อนกด "ตกต่อ!") ----
-  // ชิพระดับความหายากใช้ inline backgroundColor ซึ่ง DOM คืนค่าเป็น rgb() ไม่ใช่ hex
-  const RGB2RARITY = Object.fromEntries(RARITY.map((r) => {
-    const [, a, b, c] = /^#(\w{2})(\w{2})(\w{2})$/.exec(r.color);
-    return [`rgb(${parseInt(a, 16)}, ${parseInt(b, 16)}, ${parseInt(c, 16)})`, r.key];
-  }));
+  // ---- อ่าน popup ปลาที่เพิ่งตกได้ (ก่อนกด "ตกต่อ!") ---- (ใช้ rarityFromColor v6.222 · เดิมมี RGB2RARITY แบบตรงเป๊ะ ถอดแล้ว)
 
   function readCatch() {
     const cont = btnByText('ตกต่อ!');
@@ -3353,7 +3388,7 @@
 
     let rarity = null, shiny = false;
     for (const el of card.querySelectorAll('div[style*="background-color"]')) {
-      const key = RGB2RARITY[el.style.backgroundColor];
+      const key = rarityFromColor(el.style.backgroundColor);   // 🎨 v6.222: parse ทนทุกรูปแบบ (เดิม RGB2RARITY ตรงเป๊ะอย่างเดียว)
       if (key) { rarity = key; shiny = /SHINY/i.test(el.textContent); break; }
     }
     const text = card.innerText || card.textContent || '';
