@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.213
+// @version      6.214
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.213';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.214';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3535,16 +3535,22 @@
   //   (ตรวจสดจากแผงจริง: เบ็ดมังกรตำนาน 2 ชิ้น โบนัสปลา +35% เท่ากัน ต่างกันแค่หิน — 🍀 โชค +8% vs ⚔️ ดาเมจบอส +6%)
   //   รู้ค่าจริงแล้ว = เลือกด้วย "ข้อมูล" ไม่ต้องพึ่งการเดาจาก tie-break อย่างเดียว
   function rodDetail() {
+    // 🐟 v6.214 (ผู้ใช้ได้เบ็ดดรอปบอส "เจ้าดุกนรก"): เบ็ดบางคันมี "ดาเมจบอสในตัว" จากคำโปรย ("ตีบอสแรงขึ้น 15%")
+    //   แยกจาก "หินดาเมจบอส +12%" ที่ติดเพิ่ม → ดาเมจบอสรวม = ในตัว + หิน (ดุกนรก = 15+12 = 27%)
+    //   เดิมอ่านแค่หิน (12) → ยังเลือกดุกนรกถูก (12>6) แต่ค่าที่โชว์ไม่ครบ · อ่านครบ = แม่นยำ+log ชัด+เผื่อเบ็ดบอสในอนาคต
     const d = { boss: null, fish: null, luck: null, crit: null };
+    let bossStone = null, bossBase = null;
     for (const e of document.querySelectorAll('div,span,p')) {
       if (isBotUI(e) || !e.offsetParent || e.children.length) continue;
       const t = (e.textContent || '').replace(/\s+/g, ' ').trim();
-      if (t.length > 60) continue;
-      let m = /ดาเมจบอส\s*\+?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) d.boss = parseFloat(m[1]);
+      if (t.length > 70) continue;
+      let m = /ดาเมจบอส\s*\+?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) bossStone = parseFloat(m[1]);
+      m = /ตีบอส[^0-9%]{0,15}?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) bossBase = parseFloat(m[1]);   // ดาเมจบอสในตัวเบ็ด (คำโปรย)
       m = /โบนัสปลา\s*\+?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) d.fish = parseFloat(m[1]);
       m = /โชคปลาแรร์\s*\+?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) d.luck = parseFloat(m[1]);
       m = /คริติคอล\s*\+?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) d.crit = parseFloat(m[1]);
     }
+    if (bossStone != null || bossBase != null) d.boss = (bossStone || 0) + (bossBase || 0);
     return d;
   }
 
