@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.236
+// @version      6.237
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.236';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.237';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -326,7 +326,18 @@
   let pauseUntil = 0;     // พักรอพลัง ⚡ ถึงเวลาไหน
   let awayAt = 0;         // ปุ่มตกปลาถูกปิด (ยืนไกลบ่อ) ตั้งแต่เมื่อไร
   let bagFullTries = 0;   // เจอกระเป๋าเต็มแล้วขายไม่ออกกี่ครั้งติด
-  let storageFullUntil = 0;   // 🏬 v6.223: คลังลุงคลังเต็ม → พักระบบฝากถึงเวลานี้ (กันวนไปเมืองฝากไม่ได้ไม่จบ)
+  // 🏬 v6.223: คลังลุงคลังเต็ม → พักระบบฝากถึงเวลานี้ (กันวนไปเมืองฝากไม่ได้ไม่จบ)
+  // 🐛 v6.237: เก็บเป็น **เวลานาฬิกา (Date.now)** + persist ลง localStorage
+  //   เดิมเป็นตัวแปรในหน่วยความจำอิง performance.now() → **รีโหลดทีไรการพัก 30 นาทีหายหมด**
+  //   ผลจริงที่ผู้ใช้เจอ: บอทวนไปเมืองซ้ำ 23:08 · 23:11 · 23:13 · 23:20 · 23:21 · 23:23 (ทั้งที่สั่งพัก 30 นาทีไปแล้ว)
+  const SFULL_KEY = 'tokpla_storage_full_until';
+  let storageFullUntil = 0;
+  try { const t = +(W.localStorage.getItem(SFULL_KEY) || 0); if (t > Date.now()) storageFullUntil = t; } catch {}
+  const setStorageFull = (mins) => {
+    storageFullUntil = Date.now() + mins * 60000;
+    try { W.localStorage.setItem(SFULL_KEY, String(storageFullUntil)); } catch {}
+  };
+  const storagePaused = () => Date.now() < storageFullUntil;
   let forceRodStoodDown = false;   // 🎣 v6.228: แจ้งครั้งเดียวว่า forceRod หลีกทางให้ rodSwitchOn แล้ว
   let catchNotified = false;   // แจ้ง popup ปลาตัวนี้ไปแล้วหรือยัง (popup เดียวอยู่หลายเฟรม)
   let pauseNotified = false;   // แจ้งเรื่องพักพลังไปแล้วหรือยัง
@@ -2914,6 +2925,22 @@
     if (e.children.length > 3) return false;                       // เอาเฉพาะ node ใกล้ใบ กันจับ container ยักษ์
     return re.test(e.textContent || '');
   });
+  // 🏬 v6.237: เหมือน gameTextVisible แต่คืน "ผลการจับ" เพื่อดึงตัวเลขออกมาได้ (เช่นจำนวนช่องว่างของคลัง)
+  const gameTextMatch = (re) => {
+    for (const e of document.querySelectorAll('h1,h2,h3,h4,div,span,p')) {
+      if (isBotUI(e) || e.offsetParent === null) continue;
+      if (e.children.length > 3) continue;
+      const m = re.exec(e.textContent || '');
+      if (m) return m;
+    }
+    return null;
+  };
+  // จำนวนช่องว่างจริงของคลัง จากบรรทัด "คลังว่างอีก N ช่อง" — **แหล่งความจริงเดียวที่เชื่อได้**
+  //   (ข้อความอื่นหลอกได้: "คลังเต็มขั้นสูงสุดแล้ว 🏆" = อัปเกรดคลังสุดระดับ ไม่ใช่ของเต็ม)
+  const storageFreeSlots = () => {
+    const m = gameTextMatch(/คลังว่างอีก\s*([\d,]+)\s*ช่อง/);
+    return m ? parseInt(m[1].replace(/,/g, ''), 10) : null;
+  };
   const npcDismissCatchPopup = () => { const c = [...document.querySelectorAll('button')].find((b) => /^ตกต่อ/.test((b.textContent || '').trim())); if (c) fireClick(c); };   // ปิด popup ผลตกปลาที่ค้างบัง
   // 🧪 ยายแก่น (v6.151 ยืนยันสด): คลิกแถวปลา (เลือก) → กด "สกัดเลย!" → ได้แก่น · ทีละตัวจนไม่มีปลาเข้าเกณฑ์ (rare+/ตาม config)
   async function npcDoEssence() {
@@ -2982,7 +3009,14 @@
       if (!card) break;
       fireClick(card.el); await sleep(400);                  // เปิด popup เลือกจำนวน
       // 🏬 v6.223: เกมขึ้นข้อความ "คลังเต็ม" (ผู้ใช้เจอจริง: ของเต็ม บอทมีปัญหาทันที) → เลิกทันที ไม่วนเปล่า
-      if (gameTextVisible(/คลัง[^]{0,6}เต็ม|เต็มแล้ว|พื้นที่[^]{0,6}เต็ม|เก็บเต็ม|ช่อง[^]{0,6}เต็ม/)) { storageFull = true; npcCloseQtyPopup(); break; }
+      // 🐛 v6.237 (ผู้ใช้เจอสด "บอทบอกคลังเต็ม แต่เปิดดูไม่เต็ม"): regex เดิมจับคำว่า "คลังเต็ม"
+      //   ในประโยค **"คลังเต็มขั้นสูงสุดแล้ว 🏆"** ซึ่งแปลว่า *อัปเกรดคลังถึงระดับสูงสุด* ไม่ใช่ของเต็ม
+      //   → ประกาศเต็มตั้งแต่รอบแรกทุกครั้ง (ฝาก 0 ใบ) ทั้งที่บรรทัดข้างๆ เขียนว่า "คลังว่างอีก 308 ช่อง"
+      //   ตอนนี้: **เชื่อตัวเลขช่องว่างก่อนเสมอ** · ใช้ข้อความเป็นทางสำรองเท่านั้น + กันประโยคอัปเกรดด้วย (?!ขั้น)
+      const freeSlots = storageFreeSlots();
+      const fullByText = freeSlots === null
+        && gameTextVisible(/คลัง[^]{0,6}เต็ม(?!ขั้น)|พื้นที่[^]{0,6}เต็ม|เก็บเต็ม|ช่อง[^]{0,6}เต็ม/);
+      if ((freeSlots !== null && freeSlots <= 0) || fullByText) { storageFull = true; npcCloseQtyPopup(); break; }
       // ⚠️ v6.166 (เจอสด): คลังจำกัด "เลือกทีละไม่เกิน 100 ตัว" — กอง >100 ถ้ากด "ทั้งหมด" ปุ่ม "ฝาก →" จะกดไม่ได้
       //   ผลเดิม: บอทวนเปล่าครบ 40 รอบแล้วเลิก โดยไม่ได้ฝากอะไรเลย (กระเป๋าเต็มต่อ → หยุดบอท)
       //   แก้: กอง >100 กด "ครึ่ง" แทน (≤100 เสมอสำหรับกอง ≤200 · กองใหญ่กว่านั้นรอบถัดไปจะเล็กลงเรื่อยๆ จนฝากหมด)
@@ -2995,11 +3029,22 @@
       const dep = [...document.querySelectorAll('button')].find((b) => /ฝาก\s*→/.test(b.textContent || '') && npcVisible(b) && !b.disabled);
       // 🏬 v6.223: เลือกจำนวน ≤100 แล้วยังกด "ฝาก →" ไม่ได้ = คลังเต็ม (ไม่ใช่ปัญหากอง >100 ที่ ครึ่ง แก้แล้ว)
       //   เดิม continue เฉยๆ → ปลาใบเดิมถูกเลือกซ้ำทุกรอบ = วน 40 รอบเปล่า → กลับไปกระเป๋าเต็ม → วนไปเมืองไม่จบ
-      if (!dep) { npcCloseQtyPopup(); await sleep(250); if (++fullSig >= 3) { storageFull = true; break; } continue; }
+      // 🐛 v6.237: กด "ฝาก →" ไม่ได้ 3 ใบติด จะสรุปว่า "คลังเต็ม" ได้เฉพาะเมื่อ**ช่องว่างหมดจริง**
+      //   ไม่งั้นสาเหตุอื่น (ปุ่มยังไม่เรนเดอร์ / ปลาถูกล็อก / popup ซ้อน) จะถูกแปะป้ายผิดแล้วพักระบบฝากฟรีๆ 30 นาที
+      if (!dep) {
+        npcCloseQtyPopup(); await sleep(250);
+        if (++fullSig >= 3) {
+          const fr = storageFreeSlots();
+          if (fr === null || fr <= 0) { storageFull = true; break; }
+          say(`🏬 กด "ฝาก →" ไม่ได้ 3 ใบติด แต่คลังยังว่าง ${fr} ช่อง — ไม่ใช่คลังเต็ม ข้ามรอบนี้ไปก่อน`);
+          break;
+        }
+        continue;
+      }
       fireClick(dep); done++; fullSig = 0; await sleep(800);              // ฝากได้ = รีเซ็ตตัวนับเต็ม
       }
       if (storageFull) {
-        storageFullUntil = now() + 30 * 60000;   // พักระบบฝาก 30 นาที (กันวนไปเมืองฝากไม่ได้)
+        setStorageFull(30);   // พักระบบฝาก 30 นาที (v6.237: อยู่ข้ามรีโหลด — เดิมหายทุกครั้งที่รีโหลด = วนไปเมืองซ้ำ)
         say(`🏬 คลังลุงคลังเต็ม — ฝากได้ ${done} ใบแล้วเต็ม · พักระบบฝาก 30 นาที (ขยายคลัง / ปรับ "ระดับที่ฝาก" ให้แคบลง / เปิดแลกยายแก่น / หรือปิดฝาก)`);
         if (isOn('tgOn')) void tgSend(`⚠️ <b>คลังลุงคลังเต็ม</b> — บอทฝากปลาไม่ได้อีก (ฝากรอบนี้ ${done} ใบ) · พักระบบฝาก 30 นาที\nแนะนำ: ขยายคลัง หรือปรับ "ระดับที่ฝาก" ให้แคบลง หรือเปิดแลกยายแก่น เพื่อให้บอทระบายปลาต่อได้`);
       } else if (!done) say('🏬 เปิดคลังได้แต่ไม่มีปลาเข้าเกณฑ์ให้ฝาก');
@@ -3012,13 +3057,17 @@
     if (orchestrating || busy) return;
     orchestrating = true;
     // 🛡️ v6.160: fallback แมพบ้าน — ถ้า bossMapId() คืน null (scene งอแง) จะได้ไม่ค้างที่ fisher_town (แมพกับดักเดิน) เพราะ home=null ทำให้ข้ามการเดินกลับ
-    const home = bossMapId() || cfg.bossHome || 'sea_dock';
+    // 🐛 v6.237: เดิม home = แมพปัจจุบัน — ถ้าทริปนี้ "เริ่มตอนยังอยู่ในเมืองประมง" (ทริปก่อนค้าง/รีโหลดกลางทาง)
+    //   home จะเป็น fisher_town → บรรทัดเดินกลับข้ามตัวเอง (`home !== 'fisher_town'`) = **ไม่เดินกลับเลย ค้างในเมืองที่ไม่มีบ่อ**
+    //   เจอจริงใน log: 23:23:34 → บ่อตกปลา แล้วเด้งกลับ → เมืองชาวประมง แล้วขึ้น "ปุ่มตกปลากดไม่ได้" รัวๆ
+    const here = bossMapId();
+    const home = (here && here !== 'fisher_town') ? here : (lastFishMap() || cfg.bossHome || 'village');
     try {
       // 🔗 B (v6.155): มาเมืองทีเดียว = ทำ "ทุกบริการที่เปิด" เลย (ไม่ต้องรอ threshold แยกของแต่ละอัน) —
       //   เช่น trip นี้ถูก trigger เพราะแก่นครบ → ฝาก legendary ที่มี + สุ่มหิน ไปเลยในคราวเดียว (แม้ legendary ยังไม่ครบ min)
       //   npcDo* คืน 0 เองถ้าไม่มีอะไรทำ → เรียกได้ปลอดภัยเมื่อเปิด
       gameEscape();   // ⎋ v6.165: ล้างหน้าต่างค้างก่อนออกเดินทาง (dialog บังอยู่ = คลิก NPC/เดินไม่ได้)
-      const storageOk = isOn('npcStorageOn') && now() >= storageFullUntil;   // 🏬 v6.223: คลังเต็มอยู่ = ข้ามฝาก (ไม่เสียเที่ยว)
+      const storageOk = isOn('npcStorageOn') && !storagePaused();   // 🏬 v6.223: คลังเต็มอยู่ = ข้ามฝาก (ไม่เสียเที่ยว)
       const plan = [isOn('npcEssenceOn') && 'แลกแก่น', storageOk && 'ฝากของ'].filter(Boolean).join(' + ') || '(คลังเต็ม — ข้ามฝาก)';   // v6.178: ตัดสุ่มหิน
       say(`🏪 ไปทำธุระเมืองประมง (ทีเดียวครบ): ${plan}`);
       if (!(await bossGameNavTo('fisher_town', 90000, true))) { say('🏪 ไปเมืองประมงไม่สำเร็จ'); return; }
@@ -3050,7 +3099,7 @@
     lastNpcCheckAt = now();
     const c = await npcCountBag();
     const essenceDue = isOn('npcEssenceOn') && c.essence >= clamp(cfg.npcEssenceMin, 1, 300);
-    const storageDue = isOn('npcStorageOn') && now() >= storageFullUntil    // 🏬 v6.223: คลังเต็มอยู่ = ไม่ทริกทริปฝาก (กันวนไปเมืองฝากไม่ได้)
+    const storageDue = isOn('npcStorageOn') && !storagePaused()    // 🏬 v6.223: คลังเต็มอยู่ = ไม่ทริกทริปฝาก (กันวนไปเมืองฝากไม่ได้)
       && (c.storage >= clamp(cfg.npcStorageMin, 1, 300)
       || (cfg.npcStorageBagPct > 0 && c.bagPct >= cfg.npcStorageBagPct && c.storage > 0));   // 🛡️ C: กระเป๋าเต็มถึง% + มีปลาเข้าเกณฑ์
     if (essenceDue || storageDue) return void runTownErrands({ essence: essenceDue, storage: storageDue });
@@ -5558,8 +5607,11 @@
     }
     // 🗺️ v6.224: แมพนี้ "ไม่มีบ่อ" (fisher_town ฯลฯ) — ตัวติดเกาะ (เจอจริง: ทำธุระเมือง/รีโหลดแล้วค้างในเมือง ตกปลาไม่ได้เลย)
     //   → เดินข้ามแมพกลับ "แมพที่เคยตก" · ไม่งั้นบอทยืนขึ้น "ปุ่มตกปลากดไม่ได้" ไปเรื่อยๆ ไม่มีวันหลุด
-    // 🌈 v6.231: เฉพาะ "ข้ามแมพ" เท่านั้นที่หลีกให้โหมดล่าปลาเทพ (มันมีตรรกะเลือกแมพเป้าของตัวเอง — เดินแย่งกันจะตีกัน)
-    if (mythicActive()) { pondWalkStart = 0; return false; }
+    // 🌈 v6.231: ปกติ "ข้ามแมพ" หลีกให้โหมดล่าปลาเทพ (มันมีตรรกะเลือกแมพเป้าของตัวเอง — เดินแย่งกันจะตีกัน)
+    // 🐛 v6.237: **แต่ห้ามหลีกตอนติดเกาะ** — `runMythicMove` มีคูลดาวน์ 30 นาที
+    //   ติดอยู่แมพที่ "ไม่มีบ่อเลย" (fisher_town) = ตกปลาไม่ได้สักตัวจนกว่าคูลดาวน์จะหมด (เจอจริงคืนนี้)
+    //   นี่คือกับดักเดิมของ v6.231/6.232 อีกครั้ง: หลีกให้โหมดพิเศษ ทั้งที่โหมดนั้นมากู้ช้าเกินไป
+    //   ตรงนี้เข้าเงื่อนไข "แมพไม่มีบ่อ" แล้ว (fz เป็น null) = สถานการณ์ฉุกเฉิน ไม่ใช่การแย่งเลือกแมพ → ลุยเลย
     const home = lastFishMap();
     if (!home || home === curMap) return false;   // ไม่รู้จะไปไหน = ปล่อย (กันวน)
     if (!pondWalkStart) pondWalkStart = now();
@@ -6669,14 +6721,14 @@ ${esc(reason)}
               //   (ยิ่งถ้าตั้ง "ล็อก rare+ ไม่ขาย" + ปิดยายแก่น + ฝากเฉพาะ legendary = rare/epic ไม่มีทางระบายเลย)
               // 🏬 v6.223: ถ้า "คลังเต็ม" (storageFullUntil) = การไปฝากจะไม่ช่วย → อย่าวนไปเมืองไม่จบ (อาการที่ผู้ใช้เจอ: ของเต็มแล้วบอทมีปัญหาทันที)
               const canEssence = isOn('npcEssenceOn');
-              const canStorage = isOn('npcStorageOn') && now() >= storageFullUntil;
+              const canStorage = isOn('npcStorageOn') && !storagePaused();
               if ((canEssence || canStorage) && !orchestrating && !busy) {
                 bagFullTries = 0; lastNpcErrandAt = 0; lastNpcCheckAt = 0;   // ปลดคูลดาวน์ให้ไปเมืองได้ทันที
                 say('🎒 กระเป๋าเต็ม (ปลาล็อกอยู่) — ไประบายเข้าคลัง/แลกแก่นที่เมืองประมงก่อน');
                 // v6.169: เหตุการณ์ระดับ "เกือบหยุดบอท" ต้องแจ้ง TG (เดิมเงียบ — ผู้ใช้ไม่รู้ว่าเกือบตาย)
                 if (isOn('tgOn') && isOn('tgWarn')) void tgSend('⚠️ <b>กระเป๋าเต็ม + ปลาถูกล็อกขายไม่ได้</b> — บอทกำลังไประบายเข้าคลังลุงคลัง/ยายแก่นเอง · ถ้าเกิดบ่อย ให้เช็คว่า "ระดับที่ฝาก/แลก" ครอบคลุมระดับที่ล็อกไม่ขายหรือยัง');
                 void runTownErrands({ storage: canStorage, essence: canEssence });
-              } else if (isOn('npcStorageOn') && now() < storageFullUntil && !canEssence) {
+              } else if (isOn('npcStorageOn') && storagePaused() && !canEssence) {
                 // คลังเต็ม + ไม่มีทางระบายอื่น → หยุด + บอกให้ชัด (แทนวนไปเมืองฝากไม่ได้ไม่จบ)
                 stopBot('กระเป๋าเต็ม + คลังลุงคลังเต็ม 🔒 ปลาที่เหลือขายไม่ได้ (ถูกล็อก) — แก้ได้ด้วย: ขยายคลัง / ปรับ "ระดับที่ฝาก" ให้แคบลง / เปิดแลกยายแก่น / หรือปลดล็อกปลาบางระดับให้ขายได้');
               } else {
