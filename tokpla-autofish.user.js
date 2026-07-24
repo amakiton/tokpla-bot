@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.240
+// @version      6.241
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.240';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.241';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1111,6 +1111,10 @@
         if (a === 'on') { reply('🔬 โหมดวัดเกจถูกถอดออกแล้ว (v6.238) — มันตอบ "ดาเมจต่อมุม" ไม่ได้จริง และเปิดค้างไว้จะทำให้ A/B หยุดเก็บข้อมูล · ใช้ <code>/gaugeab on</code> แทน'); break; }
         if (a === 'reset') { gProbeRing = []; gProbeSave(); reply('🔬 ล้างผลวัดเกจเก่าแล้ว'); break; }
         reply(`<code>${esc(gaugeProbeReport())}</code>`);
+        break;
+      }
+      case 'reloads': {   // 📉 v6.241: หน้าโหลดใหม่บ่อยแค่ไหน + ใครสั่ง
+        reply(`<code>${esc(reloadReport())}</code>`);
         break;
       }
       case 'dmgtap': {   // 🎥 v6.239: ข้อมูลดักเลขดาเมจต่อครั้ง (อ่านอย่างเดียว เปิดตลอด)
@@ -3302,7 +3306,18 @@
   // ปรัชญา: เป็น "ชั้นนโยบาย" ครอบระบบเดิม (override ที่ targetBait/turboEff/enforceBait/ยา) — ไม่เขียน cfg ผู้ใช้เลย
   //   ความจริงเกม: แรร์สุ่มต่อการตก 1 ครั้ง (สูตรโชคครอบด้วยคะแนน timing ที่บอทได้เต็มอยู่แล้ว · เหยื่อช่วย +0.02-0.33 น้อยมาก)
   //   → "บังคับ" ให้ออกปลาเทพไม่ได้ ทำได้แค่: ตกถี่สุด (turbo) + ต้นทุนต่ำสุด (เหยื่อถูก) + แมพอัตราดีสุด + ยา 🍀/🐋
-  let mythicPotOff = false, mythicStrikes = 0, mythicNetPrev = null, mythicNetAt = 0, mythicStartAt = 0;
+  let mythicPotOff = false, mythicStrikes = 0, mythicNetPrev = null, mythicNetAt = 0;
+  // 🐛 v6.241: `mythicStartAt` ต้องเป็น **เวลานาฬิกา (Date.now)** และอยู่ข้ามรีโหลด
+  //   เดิมเป็น performance.now() ในหน่วยความจำ → เทียบกับ `r.at` (Date.now) ใน mythicRoundCount ไม่ได้เลย
+  //   (perf.now ≈ 30,000 · Date.now ≈ 1.78e12 → `r.at >= since` เป็นจริงเสมอ = นับปลาเทพ "ทั้งหมดที่เคยได้" ไม่ใช่รอบนี้)
+  //   ซ้ำร้าย รีโหลดทีไรก็เริ่มรอบใหม่ → สถิติรอบล่าปลาเทพไม่มีความหมาย (หน้าเกมรีโหลดเอง 21 ครั้ง/100 นาที)
+  const MYTHIC_START_KEY = 'tokpla_mythic_start';
+  let mythicStartAt = 0;
+  try { const v = +(W.localStorage.getItem(MYTHIC_START_KEY) || 0); if (v > 1e12) mythicStartAt = v; } catch {}
+  const setMythicStart = (ms) => {
+    mythicStartAt = ms;
+    try { ms ? W.localStorage.setItem(MYTHIC_START_KEY, String(ms)) : W.localStorage.removeItem(MYTHIC_START_KEY); } catch {}
+  };
   let lastMythicChk = 0, lastMythicMoveAt = 0, lastMapLearnAt = 0;
   function mythicActive() { return isOn('mythicHunt') && !testRunning; }
   const MYTHIC_RAR = new Set(['legendary', 'mythic']);
@@ -6691,7 +6706,7 @@ ${esc(reason)}
         // 🌈 โหมดล่าปลาเทพ — no-loss gate + เรียนรู้ชื่อ↔id แมพ + ย้ายไปแมพสถิติดีสุด (บอสสำคัญกว่า จึงอยู่หลังเช็คบอส)
         if (mythicActive()) {
           if (!mythicStartAt) {
-            mythicStartAt = now(); mythicNetPrev = null;
+            setMythicStart(Date.now()); mythicNetPrev = null;   // v6.241: เวลานาฬิกา + persist (รีโหลดแล้วรอบเดิมต่อ)
             say('🌈 เริ่มล่าปลาเทพ — เหยื่อถูกสุด + ตกถี่สุด + ยา + เลือกแมพจากสถิติจริง (ดู /mythic)');
             if (isOn('tgOn') && isOn('tgStart')) void tgSend('🌈 <b>เริ่มโหมดล่าปลาเทพ</b> — ตกถี่สุด + เลือกเหยื่อ/แมพจากสถิติจริง + กันขาดทุน (no-loss gate) · เช็ค /mythic');
           }
@@ -6699,7 +6714,7 @@ ${esc(reason)}
           mythicGateTick();
           const mv = mythicMoveDue();
           if (mv) { void runMythicMove(mv.id, mv.name); return requestAnimationFrame(tick); }
-        } else if (mythicStartAt) { mythicStartAt = 0; mythicNetPrev = null; mythicStrikes = 0; mythicPotOff = false; }
+        } else if (mythicStartAt) { setMythicStart(0); mythicNetPrev = null; mythicStrikes = 0; mythicPotOff = false; }
 
         const castBtn = qBtn('ตกปลา (F)');
 
@@ -7072,7 +7087,9 @@ ${esc(reason)}
     }
     const coin = earned > 0 ? ` · +${earned.toLocaleString()} 🪙` : '';
     // 🌈 ล่าปลาเทพอยู่ = บอกชัดบนป้ายหลัก (ผู้ใช้ต้องรู้ว่าโหมดไหนกำลังทำงาน — ไม่ใช่ฟาร์มปกติ)
-    if (mythicActive()) return `🌈 ล่าปลาเทพ — ${casts} ตัว${coin}${mythicPotOff ? ' · งดยา(กำไรลบ)' : ''}`;
+    // 🐛 v6.241: เดิมเขียน "ล่าปลาเทพ — N ตัว" โดย N = **จำนวนการตกทั้งหมด** → อ่านแล้วนึกว่าได้ปลาเทพ N ตัว (ผู้ใช้เข้าใจผิดจริง)
+    //   ตอนนี้แยกให้ชัด: 🌈 = ปลาเทพที่ได้จริงในรอบนี้ (mythicRoundCount) · 🎣 = จำนวนครั้งที่ตก
+    if (mythicActive()) return `🌈 ล่าปลาเทพ ${mythicRoundCount()} ตัว · 🎣 ${casts} ครั้ง${coin}${mythicPotOff ? ' · งดยา(กำไรลบ)' : ''}`;
     // โหมด gameauto/off: ตัวนับ casts ของบอทไม่ขยับ (เกมเป็นคนตก/ไม่ตก) — แสดงสถานะโหมดแทน
     if (cfg.fishMode === 'off') return `🤖 บอท: เปิด (🚫 ไม่ตกปลา)${coin}`;
     if (cfg.fishMode === 'gameauto') {
@@ -8684,6 +8701,39 @@ ${esc(reason)}
   }
 
   // ================= กู้คืนเมื่อเด้งออก/ค้าง =================
+  // 📉 v6.241: จดทุกครั้งที่หน้าโหลดใหม่ + แยกว่า "บอทสั่งเอง" หรือ "เกม/เบราว์เซอร์รีโหลดเอง"
+  //   ที่มา: ผู้ใช้แจ้ง "บอทรวน" → ตรวจพบหน้าโหลดใหม่ **21 ครั้งใน 100 นาที** แต่ log บอทมีคำสั่งรีโหลดแค่ครั้งเดียว
+  //   = อีก 20 ครั้งมาจากนอกบอท (เกมเด้ง/เน็ตหลุด/แท็บถูกโหลดใหม่) · บอททนได้ (ตกปลาไม่สะดุด) แต่ทำสถิติรอบเพี้ยน
+  //   ต้องวัดให้เห็นก่อน ไม่ใช่เดา — เก็บ 60 ครั้งล่าสุด แล้วรายงานอัตราต่อชั่วโมง
+  const RELOAD_LOG_KEY = 'tokpla_reload_log';
+  function trackPageReload() {
+    try {
+      const arr = JSON.parse(W.localStorage.getItem(RELOAD_LOG_KEY) || '[]');
+      const byBot = Date.now() - +(W.localStorage.getItem('tokpla_bot_reload_at') || 0) < 15000;   // บอทเพิ่งสั่งเมื่อกี้
+      arr.push({ t: Date.now(), b: byBot ? 1 : 0 });
+      W.localStorage.setItem(RELOAD_LOG_KEY, JSON.stringify(arr.slice(-60)));
+      const hr = arr.filter((r) => Date.now() - r.t < 3600000);
+      const ext = hr.filter((r) => !r.b).length;
+      // เตือนเมื่อ "เกมรีโหลดเอง" ถี่ผิดปกติ — ครั้งเดียวต่อการโหลด กันสแปม
+      if (ext >= 6) logWarn(`📉 หน้าเกมโหลดใหม่เอง ${ext} ครั้งใน 1 ชม. (ไม่ใช่บอทสั่ง) — บอทตกต่อได้ แต่สถิติรอบจะขาดตอน · ดูรายละเอียด /reloads`);
+    } catch {}
+  }
+  function reloadReport() {
+    let arr = [];
+    try { arr = JSON.parse(W.localStorage.getItem(RELOAD_LOG_KEY) || '[]'); } catch {}
+    if (!arr.length) return '📉 ยังไม่มีบันทึกการโหลดหน้า (เริ่มเก็บตั้งแต่ v6.241)';
+    const T = (ms) => new Date(ms).toLocaleTimeString('th-TH');
+    const hr = arr.filter((r) => Date.now() - r.t < 3600000);
+    const gaps = arr.slice(1).map((r, i) => Math.round((r.t - arr[i].t) / 60000));
+    const med = gaps.length ? gaps.slice().sort((a, b) => a - b)[Math.floor(gaps.length / 2)] : null;
+    return [
+      `📉 การโหลดหน้าใหม่ (เก็บ ${arr.length} ครั้งล่าสุด)`,
+      `1 ชม.ล่าสุด: ${hr.length} ครั้ง — บอทสั่งเอง ${hr.filter((r) => r.b).length} · จากภายนอก ${hr.filter((r) => !r.b).length}`,
+      med != null ? `ห่างกันโดยเฉลี่ย (กลาง): ${med} นาที` : '',
+      `\n${arr.slice(-12).map((r) => `${T(r.t)} ${r.b ? '🤖 บอทสั่ง' : '⚠️ ภายนอก'}`).join('\n')}`,
+      `\nℹ️ "ภายนอก" = เกม/เบราว์เซอร์โหลดหน้าใหม่เอง (บอทไม่ได้สั่ง) · ถ้าถี่มาก ลองเช็คเน็ต/RAM ของ VPS หรือแท็บอื่นที่แย่งทรัพยากร`,
+    ].filter(Boolean).join('\n');
+  }
   // เกม persist session ไว้ (Supabase) → รีโหลดหน้า = กลับเข้าเกมได้เลย ไม่ต้องกรอกรหัส
   function doReload(reason) {
     let last = 0, cnt = 0;
@@ -8750,6 +8800,7 @@ ${esc(reason)}
       }
     } catch {}
     if (!resume) return;
+    trackPageReload();   // 📉 v6.241: จดว่าหน้าโหลดใหม่ — แยก "บอทสั่ง" กับ "เกม/เบราว์เซอร์รีโหลดเอง"
     // 🔄 v6.147: ไม่ล้างธงที่นี่แล้ว — persistEnabled คุมธงตามสถานะเปิด/ปิด (ล้างเฉพาะตอนปิดเอง) · ถ้า resume นี้ไม่สำเร็จ (เกมไม่พร้อม) = รอบหน้าลองใหม่
     let tries = 0;
     // 🐛 v6.221: "โลกเกมพร้อม" แม้ไม่ได้อยู่ริมบ่อ (player+แมพโหลดแล้ว ไม่ transition) — กันเคส spawn ไกลบ่อหลังรีโหลด
