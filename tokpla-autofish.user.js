@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.225
+// @version      6.226
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.225';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.226';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -140,6 +140,9 @@
     mythicWeight: true,          // ยา 🐋 ปลาตัวใหญ่ อัตโนมัติระหว่างล่า (ปลาหนักขายแพง +15% · อยู่ใต้ no-loss gate)
     mythicMap: '',               // แมพเป้าหมาย (ชื่อบน HUD) · ว่าง = เลือกอัตโนมัติจากสถิติ "มูลค่าปลาเทพ/ชม." ของจริง
     mythicCheckMin: 15,          // no-loss gate: เช็คกำไรสุทธิทุกกี่นาที (ติดลบ 1 รอบ→งดยา · 2 รอบติด→พักโหมด)
+    // 🕰️ v6.226: ถ่วงน้ำหนักข้อมูลใหม่ > เก่า — ครึ่งชีวิต (วัน) ของสถิติเหยื่อล่าปลาเทพ · 0 = ปิด (สะสมตลอดชีพแบบเดิม)
+    //   7 วัน = ข้อมูลเมื่อ 7 วันก่อนเหลือน้ำหนักครึ่งเดียว · 14 วัน = 1/4 → เกมปรับสมดุลเมื่อไร ระบบตามทันเอง
+    mythicStatHalfLife: 7,
     castMin: 95, castMax: 100,   // ช่วงคะแนนเกจตวัดที่ต้องการ (สุ่มในช่วงนี้) — ใช้เฉพาะโหมด bot
     reelMin: 95, reelMax: 100,   // ช่วงคะแนนมินิเกมดึงปลา — ใช้เฉพาะโหมด bot
     loop: true,                  // ตกต่อเนื่องไหม
@@ -1052,6 +1055,11 @@
           reply(`🌈 โหมดล่าปลาเทพ: <b>${a === 'on' ? 'เปิด' : 'ปิด'}</b>${a === 'on' ? ' — เหยื่อถูกสุด+ตกถี่สุด+ยา+เลือกแมพอัตโนมัติ · กันขาดทุนด้วย no-loss gate' : ''}`);
           break;
         }
+        if (a === 'reset') {   // ♻️ v6.226: ล้างสถิติเหยื่อล่าปลาเทพ เริ่มเรียนรู้ใหม่ (ใช้ตอนสงสัยว่าเกมปรับสมดุล)
+          mbReset('สั่งจาก Telegram');
+          reply('🌈 <b>ล้างสถิติเหยื่อล่าปลาเทพแล้ว</b> — จะไล่สำรวจใหม่ทุกขั้น (เริ่มจากขั้นถูกสุด รอบละ 150 ครั้ง จนครบ 300 ต่อขั้น)');
+          break;
+        }
         if (a === 'map') {   // /mythic map <ชื่อแมพ> · /mythic map auto = กลับอัตโนมัติ
           const nm = args.slice(1).join(' ').trim();
           if (!nm || /^auto$/i.test(nm)) { cfg.mythicMap = ''; saveCfg(); syncPanel(); reply('🌈 แมพเป้า: <b>อัตโนมัติ (ตามสถิติ)</b>'); break; }
@@ -1068,17 +1076,19 @@
         const val = lm.reduce((s, c) => s + (c.price || 0), 0);
         const sc = mythicMapScores().slice(0, 3).map((s) => `· ${esc(s.map)}: ${s.lmValHr.toLocaleString()}🪙/ชม. (${s.lmN} ตัวใน ${s.hr.toFixed(1)} ชม.)`);
         // 🧠 ตารางเรียนรู้เหยื่อ: ตัวอย่าง/ปลาเทพ/คะแนน (มูลค่าเทพ/cast − ส่วนต่างราคาเหยื่อ) ต่อขั้น
-        const st = mbLoad();
+        const st = mbTouchAll(mbLoad());   // 🕰️ v6.226: โชว์ค่าหลังถ่วงน้ำหนักตามอายุ (ตรงกับที่ใช้ตัดสินจริง)
         const mAuto = !(parseInt(cfg.mythicBait, 10) > 0);
+        const hlD = clamp(+cfg.mythicStatHalfLife || 0, 0, 365);
         const bl = Object.keys(st.tiers).sort((x, y) => x - y).map((tk) => {
           const s = st.tiers[tk], scv = mbScore(s, +tk);
-          const phase = s.c < MB_MIN_SAMPLE ? `สำรวจ ${s.c}/${MB_MIN_SAMPLE}` : `คะแนน ${scv == null ? '-' : scv.toFixed(1)}`;
-          return `· ขั้น ${tk}: ${s.c} ครั้ง · เทพ ${s.mn} ตัว (${s.c ? (s.mv / s.c).toFixed(1) : 0}🪙/cast) · ${phase}${+tk === st.cur && mAuto ? ' ← ใช้อยู่' : ''}`;
+          const phase = s.c < MB_MIN_SAMPLE ? `สำรวจ ${Math.round(s.c)}/${MB_MIN_SAMPLE}` : `คะแนน ${scv == null ? '-' : scv.toFixed(1)}`;
+          return `· ขั้น ${tk}: ${Math.round(s.c)} ครั้ง · เทพ ${Math.round(s.mn * 10) / 10} ตัว (${s.c ? (s.mv / s.c).toFixed(1) : 0}🪙/cast) · ${phase}${+tk === st.cur && mAuto ? ' ← ใช้อยู่' : ''}`;
         });
         reply(`🌈 <b>ล่าปลาเทพ</b> ${mythicActive() ? (mythicPotOff ? 'กำลังล่า (งดยา — กำไรเพิ่งติดลบ)' : 'กำลังล่า') : isOn('mythicHunt') ? 'เปิดไว้ (รอ — อาจติดทดสอบ/พักชั่วคราว)' : 'ปิด'}\n` +
           `${since ? `รอบนี้: เจอปลาเทพ ${lm.length} ตัว · มูลค่า ${val.toLocaleString()}🪙 · หนักสุด ${heavy} กก\n` : ''}` +
           `เหยื่อ: ${mAuto ? `🤖 ออโต้ → ขั้น ${st.cur || '?'} (เหลือ ${st.left} cast ในรอบนี้)` : `ล็อกขั้น ${parseInt(cfg.mythicBait, 10)}`}\n${bl.join('\n') || '(ยังไม่มีข้อมูล)'}\n` +
-          `แมพดีสุดตามสถิติ:\n${sc.join('\n') || '(ข้อมูลยังไม่พอ — ตกต่อไปก่อน เดี๋ยวรู้เอง)'}\nใช้: /mythic on|off · /mythic map ชื่อ|auto`);
+          `⏳ ถ่วงน้ำหนักข้อมูล: ${hlD > 0 ? `ครึ่งชีวิต ${hlD} วัน (ข้อมูลเก่าจางเอง → ขั้นที่ไม่ได้ใช้นานจะถูกดึงกลับไปสำรวจใหม่)` : 'ปิด (สะสมตลอดชีพ)'}\n` +
+          `แมพดีสุดตามสถิติ:\n${sc.join('\n') || '(ข้อมูลยังไม่พอ — ตกต่อไปก่อน เดี๋ยวรู้เอง)'}\nใช้: /mythic on|off · /mythic map ชื่อ|auto · /mythic reset (ล้างสถิติเหยื่อ เริ่มเรียนใหม่)`);
         break;
       }
       case 'statwin': case 'statuse': case 'bswin': case 'window': {   // ตั้งจำนวนรายการที่ใช้แสดงสถิติ
@@ -2881,6 +2891,33 @@
     return mbState;
   }
   function mbSave() { if (restoring) return; try { W.localStorage.setItem(MYTHIC_BAIT_KEY, JSON.stringify(mbState)); } catch {} }
+  // 🕰️ v6.226: ถ่วงน้ำหนัก "ข้อมูลใหม่ > ข้อมูลเก่า" ด้วย exponential decay (ครึ่งชีวิตเป็นวัน)
+  //   ทำไม: ตัวนับเดิม (c/mn/mv) บวกอย่างเดียว ไม่มีวันเก่าหลุด → เกมปรับสมดุล (% ดรอป/ราคาปลา) เมื่อไร
+  //   ข้อมูลเก่าจะกลบข้อมูลใหม่จนระบบไม่ขยับ (ของจริง: ขั้น 1 สะสม 11,077 ตัวอย่าง — ข้อมูลใหม่ 100 ครั้งแทบไม่มีผล)
+  //   🎯 ผลพลอยได้สำคัญ: ขั้นที่ "ไม่ได้ใช้นาน" ตัวอย่างจะหดต่ำกว่า MB_MIN_SAMPLE เอง → ถูกดึงกลับไป**สำรวจใหม่อัตโนมัติ**
+  //      = ระบบรีเฟรชตัวเองเป็นวงจร ไม่ต้องรอผู้ใช้สั่งรีเซ็ต
+  function mbTouch(s, nowMs) {
+    if (!s) return s;
+    const t = nowMs || Date.now();
+    if (!s.at) { s.at = t; return s; }          // ข้อมูลเก่าก่อน v6.226 = เริ่มนับอายุจากตอนนี้ (ไม่ย้อนหลังลบทิ้ง)
+    const hl = clamp(+cfg.mythicStatHalfLife || 0, 0, 365);
+    if (hl <= 0) { s.at = t; return s; }        // ปิด decay = พฤติกรรมเดิม (สะสมตลอดชีพ)
+    const days = (t - s.at) / 86400000;
+    if (days <= 0) return s;
+    const f = Math.pow(0.5, days / hl);
+    if (f > 0.999) return s;                    // ยังไม่ถึงเวลาต้องลด — ไม่อัปเดต at ให้เวลาสะสมต่อ (กันเขียนถี่/ปัดเศษเพี้ยน)
+    s.c = +(s.c * f).toFixed(2); s.mn = +(s.mn * f).toFixed(3); s.mv = +(s.mv * f).toFixed(1);
+    s.at = t;
+    return s;
+  }
+  // ลดค่าทุกขั้นมาที่ "เวลาเดียวกัน" ก่อนเปรียบเทียบ/แสดงผล — ไม่งั้นขั้นที่ไม่ได้ใช้จะไม่เคยถูกลดเลย = เทียบกันไม่ยุติธรรม
+  const mbTouchAll = (st) => { const t = Date.now(); for (const k of Object.keys(st.tiers || {})) mbTouch(st.tiers[k], t); return st; };
+  // ♻️ รีเซ็ตสถิติเหยื่อล่าปลาเทพ — เริ่มสำรวจใหม่ทุกขั้นตั้งแต่ต้น (seeded:true = ไม่ดึงประวัติเก่ากลับมา)
+  function mbReset(why) {
+    mbState = { tiers: {}, cur: 0, left: 0, seeded: true };
+    try { W.localStorage.setItem(MYTHIC_BAIT_KEY, JSON.stringify(mbState)); } catch {}
+    logInfo(`🌈 รีเซ็ตสถิติเหยื่อล่าปลาเทพแล้ว — จะไล่สำรวจใหม่ทุกขั้น (เริ่มจากขั้นถูกสุด)${why ? ` · ${why}` : ''}`);
+  }
   function mbSeed(st) {   // เครดิตประวัติจริงที่มีอยู่ให้ก่อน — ขั้นที่เคยตกเยอะไม่ต้องสำรวจซ้ำ
     // v6.132: merge แบบ max (ไม่ทับตัวนับสด/skipUntil) · หมายเหตุ: recs นับ "ติดปลา" ไม่ใช่เหวี่ยง แต่อัตราติด ~99% (11090/11199) เพี้ยน <1%
     for (const t of Object.keys(profit.recs || {})) {
@@ -2891,6 +2928,7 @@
         c: Math.max(cur.c || 0, list.length),
         mn: Math.max(cur.mn || 0, lm.length),
         mv: Math.max(cur.mv || 0, lm.reduce((a, r) => a + (r.price || 0), 0)),
+        at: cur.at || Date.now(),   // 🕰️ v6.226: คงอายุข้อมูลไว้ (ไม่มี = เริ่มนับจากตอน seed)
         ...(cur.skipUntil ? { skipUntil: cur.skipUntil } : {}),
       };
     }
@@ -2898,7 +2936,7 @@
   }
   const mbScore = (s, t) => s && s.c ? s.mv / s.c - (baitUnit(t) - baitUnit(1)) : null;
   function mbPick() {
-    const st = mbLoad();
+    const st = mbTouchAll(mbLoad());   // 🕰️ v6.226: ลดค่าตามอายุก่อนเทียบ — ขั้นที่ข้อมูลเก่าจะหล่นกลับไปสำรวจใหม่เอง
     const cands = []; for (let t = 1; t <= (baitCeil || 8); t++) cands.push(t);
     // v6.132: ข้ามขั้นที่เพิ่งซื้อไม่ไหว (skipUntil) + ขั้นที่เงินตอนนี้ไม่พอ 1 แพ็ค (กันเดินเข้าร้านเก้อ)
     //   ใช้ pool เดียวกันทุกสาขา (สำรวจ/ตัวเด่น/สุ่ม) — เดิมกรองแค่สาขาสำรวจ ตัวเด่น/สุ่มยังเลือกขั้นที่ skip ได้ = วนซื้อพลาดซ้ำ
@@ -2925,7 +2963,7 @@
   function mythicAutoTier() { const st = mbLoad(); return (st.cur && st.left > 0) ? st.cur : mbPick(); }
   // hook จาก pushCastCost/pushCatch — เก็บทุกโหมด (ข้อมูลคือข้อมูล ความแม่นเกจเท่ากันทุกโหมด bot)
   function mythicBaitOnCast(tier) {
-    const st = mbLoad(); const s = (st.tiers[tier] ||= { c: 0, mn: 0, mv: 0 });
+    const st = mbLoad(); const s = mbTouch(st.tiers[tier] ||= { c: 0, mn: 0, mv: 0 });   // ลดตามอายุก่อน แล้วค่อยบวกของใหม่ (ของใหม่จึงหนักกว่า)
     let roundEnded = false;
     s.c++; if (st.cur === tier && st.left > 0) { st.left--; roundEnded = st.left === 0; }
     // v6.132: เซฟเฉพาะทุก 20 cast หรือ "จบรอบพอดี" — เดิมเงื่อนไข st.left===0 ค้าง = เขียน localStorage ทุก cast (~500 ครั้ง/ชม.)
@@ -2933,7 +2971,7 @@
   }
   function mythicBaitOnCatch(tier, rarity, price) {
     if (!MYTHIC_RAR.has(rarity)) return;
-    const st = mbLoad(); const s = (st.tiers[tier] ||= { c: 0, mn: 0, mv: 0 });
+    const st = mbLoad(); const s = mbTouch(st.tiers[tier] ||= { c: 0, mn: 0, mv: 0 });
     s.mn++; s.mv += price || 0; mbSave();
     if (mythicActive()) say(`🌈 ได้ปลาเทพ! ${rarity} ${(price || 0).toLocaleString()}🪙 (เหยื่อขั้น ${tier})`);
   }
@@ -7194,7 +7232,24 @@ ${esc(reason)}
       labeled('🐋 ยาหนัก', checkbox('mythicWeight')),
       labeled('เช็คกำไรทุก (นาที)', numInput('mythicCheckMin', 5, 120, 48)),
       labeled('แมพเป้า', selectInput('mythicMap', [['', '🤖 อัตโนมัติ (ตามสถิติ)'], ...MYTHIC_MAPS.map(([n]) => [n, n])])),
+      labeled('⏳ ครึ่งชีวิตสถิติ (วัน · 0=ปิด)', numInput('mythicStatHalfLife', 0, 365, 48)),
     ));
+    {
+      const rb = document.createElement('button');
+      rb.setAttribute('data-tkbot', '1');
+      rb.textContent = '♻️ รีเซ็ตสถิติเหยื่อล่าปลาเทพ';
+      rb.title = 'ล้างค่าที่เรียนรู้ทั้งหมด แล้วเริ่มสำรวจใหม่ทุกขั้น — ใช้ตอนสงสัยว่าเกมปรับสมดุล (% ดรอป/ราคาปลา)';
+      rb.style.cssText = 'padding:5px 10px;border-radius:7px;border:1px solid #4a5568;background:#2d3748;color:#e2e8f0;font-size:11px;cursor:pointer;margin:2px 3px 6px 0;';
+      rb.addEventListener('click', () => {
+        const st = mbTouchAll(mbLoad());
+        const rows = Object.keys(st.tiers).sort((a, b) => a - b)
+          .map((t) => `ขั้น ${t}: ${Math.round(st.tiers[t].c)} ครั้ง · เทพ ${Math.round(st.tiers[t].mn * 10) / 10} ตัว`).join('\n') || '(ยังไม่มีข้อมูล)';
+        if (!W.confirm(`♻️ ล้างสถิติเหยื่อล่าปลาเทพทั้งหมด?\n\nข้อมูลที่จะหายไป (ค่าหลังถ่วงน้ำหนักแล้ว):\n${rows}\n\nหลังล้าง บอทจะไล่สำรวจใหม่ทุกขั้น (เริ่มจากขั้นถูกสุด รอบละ 150 ครั้ง จนครบ 300/ขั้น)\n\n⚠️ ย้อนกลับไม่ได้`)) return;
+        mbReset('กดจากแผงบอท');
+        showTextModal('♻️ รีเซ็ตแล้ว', 'ล้างสถิติเหยื่อล่าปลาเทพเรียบร้อย\n\nบอทจะเริ่มไล่สำรวจใหม่ทุกขั้นตั้งแต่ต้น (ขั้นถูกสุดก่อน)\nดูความคืบหน้าได้ที่ /mythic');
+      });
+      panel.appendChild(rb);
+    }
 
     // ---------- ⚡ พลังงาน & ของสิ้นเปลือง ----------
     sectionHead('⚡ พลังงาน & ของสิ้นเปลือง', false);
