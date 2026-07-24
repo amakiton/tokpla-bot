@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.224
+// @version      6.225
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.224';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.225';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -118,8 +118,8 @@
     bossBaitTier: 2,             // 👹 เหยื่อ "จุดอ่อนบอส" ระหว่างตี (วิดีโอ: มัดอ้วนขั้น2/กุ้งฝอยขั้น4 = ดาเมจ x1.5) · 0 = ไม่สลับ
     bossStatKeep: 20,            // 📊 v6.195: เก็บสถิติล่าบอสกี่ "ครั้งล่าสุด" (ring buffer · 0 = ปิดการเก็บ)
     bossIntervalMin: 180,        // 🔮 v6.211: บอสมาทุกกี่นาที (ข้อมูลจริง = 3 ชม.) — ใช้ทำนายรอบถัดไปตอนอ่านเวลาจาก DOM ไม่ได้
-    rodSwitchOn: true,          // ⛔ v6.189: ปิดไว้ — พิสูจน์แล้วว่า G สลับได้แค่ "tier" ไม่ใช่ "ชิ้นเบ็ด" (CHANGELOG v6.188)
-                                 //   เปิดมีประโยชน์กรณีเดียว: เบ็ดบอส/เบ็ดฟาร์มของคุณอยู่คนละ tier กันจริงๆ
+    rodSwitchOn: true,           // 🎣 v6.190+: สลับเบ็ด "ผ่านกระเป๋า" (เลือกชิ้นที่ดาเมจบอสสูงสุดตอนตีบอส · โบนัสปลาสูงสุดตอนฟาร์ม)
+                                 //   (คอมเมนต์เดิมบอก "ปิดไว้" เป็นของยุค v6.189 ที่ใช้ปุ่ม G ซึ่งสลับได้แค่ tier — เลิกใช้แล้ว)
     bossRodId: '',               // 🎣 v6.174: UUID "ชิ้นเบ็ด" ที่ใช้ตอนตีบอส (เช่นชิ้นที่ติดหินดาเมจบอส) · ว่าง = ไม่สลับ
     farmRodId: '',               // 🎣 v6.174: UUID "ชิ้นเบ็ด" ที่ใช้ตอนฟาร์มปกติ · ว่าง = กลับไปชิ้นเดิมก่อนเข้าไฟต์
 
@@ -3747,13 +3747,24 @@
     }
 
     const before = currentRodId();
-    const card = rodGroupCards()[best.i];
-    if (!card) { await closeBagUI(); return false; }
-    card.el.click(); await sleep(450);
+    // 🐛 v6.225 (ผู้ใช้เจอ "ไปล่าบอสแล้วไม่สลับเบ็ด ต้องกดเอง"): ลูปสแกนคลิกการ์ดทุกใบเรียงกัน →
+    //   **การ์ดใบสุดท้ายค้างเป็น "ใบที่เลือกอยู่"** · ถ้าเบ็ดที่ดีสุดคือใบสุดท้าย (เบ็ดบอส "ดุกนรก" อยู่ท้ายลิสต์พอดี)
+    //   การกดซ้ำ = **ปิดแผงรายละเอียด** → ปุ่ม "ใช้เบ็ดนี้" หายไป → เจอ 0 ปุ่ม → ยกเลิกทุกครั้ง
+    //   (ฝั่งฟาร์มเลือก "มังกร" ที่อยู่กลางลิสต์ จึงกดแล้วเปิดแผงได้ปกติ = ทำงานได้ตลอด — อธิบายอาการที่ไม่สมมาตร)
+    //   แก้: หาการ์ดจาก "ชื่อ+สีหิน" (ไม่ใช่ index ที่อาจเลื่อนตอน DOM รีเรนเดอร์) + กดซ้ำได้ถึง 3 ครั้ง
+    //        (กดครั้งแรกอาจเป็นการปิดแผง → กดอีกครั้งเปิดกลับ) แล้วค่อยตรวจปุ่ม
+    const findCard = () => rodGroupCards().find((c) => c.name === best.name && c.orb === best.orb) || rodGroupCards()[best.i];
+    if (!findCard()) { await closeBagUI(); return false; }
+    let btns = [];
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const card = findCard(); if (!card) break;
+      card.el.click(); await sleep(500);
+      btns = [...document.querySelectorAll('button')].filter((b) =>
+        b.offsetParent && !isBotUI(b) && (b.textContent || '').trim() === ROD_USE_TXT);
+      if (btns.length === 1) break;
+    }
     // ☠️ จุดอันตราย — ตรวจ 3 ชั้นก่อนกด
-    const btns = [...document.querySelectorAll('button')].filter((b) =>
-      b.offsetParent && !isBotUI(b) && (b.textContent || '').trim() === ROD_USE_TXT);
-    if (btns.length !== 1) { logWarn(`🎣 ยกเลิกการสลับเบ็ด — หาปุ่ม "${ROD_USE_TXT}" ได้ ${btns.length} ปุ่ม (ต้องเจอ 1 เท่านั้น)`); await closeBagUI(); return false; }
+    if (btns.length !== 1) { logWarn(`🎣 ยกเลิกการสลับเบ็ด — หาปุ่ม "${ROD_USE_TXT}" ได้ ${btns.length} ปุ่ม (ต้องเจอ 1 เท่านั้น) · เป้า: ${best.name}${best.orb ? `(${best.orb})` : ''} · ที่สแกน: ${brief}`); await closeBagUI(); return false; }
     if (/ขาย/.test(btns[0].textContent || '')) { logWarn('🎣 ยกเลิก — ปุ่มที่จะกดมีคำว่า "ขาย"'); await closeBagUI(); return false; }
     btns[0].click(); await sleep(700);
 
