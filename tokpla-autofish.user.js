@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.226
+// @version      6.227
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.226';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.227';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -447,7 +447,7 @@
     list.push(rec);
     const cap = Math.max(30, cfg.statKeep || 200);
     if (list.length > cap) list.splice(0, list.length - cap);   // ring buffer: เก็บเฉพาะ N รายการล่าสุด
-    mythicBaitOnCatch(tier, c.rarity, c.price);   // 🌈 ปลาเทพเข้าสถิติออโต้เลือกเหยื่อ (ข้างในกรองเฉพาะ legendary/mythic)
+    mythicBaitOnCatch(tier, c.rarity, c.price, !!buffs.luck);   // 🌈 ปลาเทพเข้าสถิติออโต้เลือกเหยื่อ (ข้างในกรองเฉพาะ legendary/mythic) · v6.227 ส่งสถานะยาโชคไปแยกนับ
     // ฝั่ง "ติดปลา": รายได้ +ราคาปลา · catches +1  (ต้นทุนเหยื่อ/casts คิดไปแล้วตอนเหวี่ยงติด — ดู pushCastCost)
     profit.life.revenue += c.price || 0;
     profit.life.catches += 1;
@@ -467,7 +467,8 @@
     const tier = currentBait()?.tier || lastKnownBaitTier || cfg.baitTier;
     if (!tier) return;
     castTier = tier;   // จำขั้นของ "การเหวี่ยงนี้" ไว้ให้ pushCatch ใช้ตอนผลปลาโชว์ (ปุ่มเหยื่อหายไปแล้ว)
-    mythicBaitOnCast(tier);   // 🌈 นับตัวอย่างให้ระบบออโต้เลือกเหยื่อล่าปลาเทพ (นับทุกโหมด — ข้อมูลสะสมเร็วกว่า)
+    // 🧪 v6.227: อ่านสถานะยาโชคตอนเหวี่ยง (ครั้งละ 1 ต่อ cast ~ทุก 10 วิ — ไม่หนัก) เพื่อแยกนับชุด "มียา/ไม่มียา"
+    mythicBaitOnCast(tier, !!readBuffs().luck);   // 🌈 นับตัวอย่างให้ระบบออโต้เลือกเหยื่อล่าปลาเทพ (นับทุกโหมด — ข้อมูลสะสมเร็วกว่า)
     profit.life.baitCost += baitUnit(tier);
     profit.life.casts += 1;
     sessBait += baitUnit(tier);
@@ -1080,14 +1081,17 @@
         const mAuto = !(parseInt(cfg.mythicBait, 10) > 0);
         const hlD = clamp(+cfg.mythicStatHalfLife || 0, 0, 365);
         const bl = Object.keys(st.tiers).sort((x, y) => x - y).map((tk) => {
-          const s = st.tiers[tk], scv = mbScore(s, +tk);
+          const s = st.tiers[tk], scv = mbScore(s, +tk), b = mbBasis(s);
           const phase = s.c < MB_MIN_SAMPLE ? `สำรวจ ${Math.round(s.c)}/${MB_MIN_SAMPLE}` : `คะแนน ${scv == null ? '-' : scv.toFixed(1)}`;
-          return `· ขั้น ${tk}: ${Math.round(s.c)} ครั้ง · เทพ ${Math.round(s.mn * 10) / 10} ตัว (${s.c ? (s.mv / s.c).toFixed(1) : 0}🪙/cast) · ${phase}${+tk === st.cur && mAuto ? ' ← ใช้อยู่' : ''}`;
+          const cov = s.c ? Math.round((s.lc || 0) / s.c * 100) : 0;   // 🧪 v6.227: ครอบคลุมยาโชคกี่ % (เห็นว่าข้อมูลเอนเพราะยาไหม)
+          return `· ขั้น ${tk}: ${Math.round(b.c)} ครั้ง · เทพ ${Math.round(b.mn * 10) / 10} ตัว (${b.c ? (b.mv / b.c).toFixed(1) : 0}🪙/cast) · ${phase}`
+            + ` · 🍀${cov}%${b.luckOnly ? ' [เทียบเฉพาะช่วงมียา]' : ''}${+tk === st.cur && mAuto ? ' ← ใช้อยู่' : ''}`;
         });
         reply(`🌈 <b>ล่าปลาเทพ</b> ${mythicActive() ? (mythicPotOff ? 'กำลังล่า (งดยา — กำไรเพิ่งติดลบ)' : 'กำลังล่า') : isOn('mythicHunt') ? 'เปิดไว้ (รอ — อาจติดทดสอบ/พักชั่วคราว)' : 'ปิด'}\n` +
           `${since ? `รอบนี้: เจอปลาเทพ ${lm.length} ตัว · มูลค่า ${val.toLocaleString()}🪙 · หนักสุด ${heavy} กก\n` : ''}` +
           `เหยื่อ: ${mAuto ? `🤖 ออโต้ → ขั้น ${st.cur || '?'} (เหลือ ${st.left} cast ในรอบนี้)` : `ล็อกขั้น ${parseInt(cfg.mythicBait, 10)}`}\n${bl.join('\n') || '(ยังไม่มีข้อมูล)'}\n` +
           `⏳ ถ่วงน้ำหนักข้อมูล: ${hlD > 0 ? `ครึ่งชีวิต ${hlD} วัน (ข้อมูลเก่าจางเอง → ขั้นที่ไม่ได้ใช้นานจะถูกดึงกลับไปสำรวจใหม่)` : 'ปิด (สะสมตลอดชีพ)'}\n` +
+          `🍀 % = สัดส่วนที่ตกตอนมียาโชค · ครบ ${MB_MIN_SAMPLE} ครั้งเมื่อไร จะเทียบ "เฉพาะช่วงมียา" ให้ยุติธรรม (ยา +8% แรร์ ทำให้ตัวเลขเอนได้)\n` +
           `แมพดีสุดตามสถิติ:\n${sc.join('\n') || '(ข้อมูลยังไม่พอ — ตกต่อไปก่อน เดี๋ยวรู้เอง)'}\nใช้: /mythic on|off · /mythic map ชื่อ|auto · /mythic reset (ล้างสถิติเหยื่อ เริ่มเรียนใหม่)`);
         break;
       }
@@ -2907,6 +2911,10 @@
     const f = Math.pow(0.5, days / hl);
     if (f > 0.999) return s;                    // ยังไม่ถึงเวลาต้องลด — ไม่อัปเดต at ให้เวลาสะสมต่อ (กันเขียนถี่/ปัดเศษเพี้ยน)
     s.c = +(s.c * f).toFixed(2); s.mn = +(s.mn * f).toFixed(3); s.mv = +(s.mv * f).toFixed(1);
+    // 🧪 v6.227: ชุดย่อย "ตอนมียาโชค 🍀" ต้องจางตามอายุด้วย (ไม่งั้นชุดย่อยจะโตกว่าชุดรวมเมื่อเวลาผ่านไป = เพี้ยน)
+    if (s.lc) s.lc = +(s.lc * f).toFixed(2);
+    if (s.lmn) s.lmn = +(s.lmn * f).toFixed(3);
+    if (s.lmv) s.lmv = +(s.lmv * f).toFixed(1);
     s.at = t;
     return s;
   }
@@ -2923,18 +2931,34 @@
     for (const t of Object.keys(profit.recs || {})) {
       const list = profit.recs[t] || []; if (!list.length) continue;
       const lm = list.filter((r) => MYTHIC_RAR.has(r.rarity));
+      // 🧪 v6.227: seed ชุดย่อย "ตอนมียาโชค" ได้เลย — recs บันทึก bl (buff luck) ต่อตัวอยู่แล้ว
+      const ll = list.filter((r) => r.bl), llm = ll.filter((r) => MYTHIC_RAR.has(r.rarity));
       const cur = st.tiers[t] || {};
       st.tiers[t] = {
         c: Math.max(cur.c || 0, list.length),
         mn: Math.max(cur.mn || 0, lm.length),
         mv: Math.max(cur.mv || 0, lm.reduce((a, r) => a + (r.price || 0), 0)),
+        lc: Math.max(cur.lc || 0, ll.length),
+        lmn: Math.max(cur.lmn || 0, llm.length),
+        lmv: Math.max(cur.lmv || 0, llm.reduce((a, r) => a + (r.price || 0), 0)),
         at: cur.at || Date.now(),   // 🕰️ v6.226: คงอายุข้อมูลไว้ (ไม่มี = เริ่มนับจากตอน seed)
         ...(cur.skipUntil ? { skipUntil: cur.skipUntil } : {}),
       };
     }
     st.seeded = true;
   }
-  const mbScore = (s, t) => s && s.c ? s.mv / s.c - (baitUnit(t) - baitUnit(1)) : null;
+  // 🧪 v6.227: เลือก "ฐานข้อมูลที่ใช้ตัดสิน" — ยา 🍀 โชคปลาแรร์ +8% ทำให้ตัวเลขเอนได้
+  //   ปัญหาที่เจอ: ยาอยู่ 30 นาที ≈ 150-200 cast · รอบสำรวจ = 150 cast → **รอบสำรวจ 1 รอบ ≈ ยา 1 ขวดพอดี**
+  //   → ขั้นที่บังเอิญสำรวจตอน "มียาทั้งรอบ" จะดูดีกว่าขั้นที่สำรวจตอน "ไม่มียาเลย" ทั้งที่เหยื่อไม่เกี่ยว
+  //   = อคติเป็นระบบ (systematic bias) ไม่ใช่ noise ที่เฉลี่ยแล้วหาย
+  //   วิธีแก้: เก็บชุดย่อย "ตอนมียาโชค" แยกไว้ · พอตัวอย่างพอ (≥300) ใช้ชุดนั้นเทียบล้วนๆ = apples-to-apples
+  //   ยังไม่พอ → ใช้ชุดรวมแบบเดิมไปก่อน (จังหวะเรียนรู้ไม่ช้าลงเลย)
+  function mbBasis(s) {
+    if (!s) return null;
+    if ((s.lc || 0) >= MB_MIN_SAMPLE) return { c: s.lc, mn: s.lmn || 0, mv: s.lmv || 0, luckOnly: true };
+    return { c: s.c || 0, mn: s.mn || 0, mv: s.mv || 0, luckOnly: false };
+  }
+  const mbScore = (s, t) => { const b = mbBasis(s); return b && b.c ? b.mv / b.c - (baitUnit(t) - baitUnit(1)) : null; };
   function mbPick() {
     const st = mbTouchAll(mbLoad());   // 🕰️ v6.226: ลดค่าตามอายุก่อนเทียบ — ขั้นที่ข้อมูลเก่าจะหล่นกลับไปสำรวจใหม่เอง
     const cands = []; for (let t = 1; t <= (baitCeil || 8); t++) cands.push(t);
@@ -2950,9 +2974,9 @@
     else {
       let bestSc = -Infinity; pick = pool[0];
       for (const t of pool) {
-        const s = st.tiers[t], sc = mbScore(s, t);
+        const s = st.tiers[t], sc = mbScore(s, t), b = mbBasis(s);
         if (sc == null) continue;
-        if (t > 1 && (s.mn || 0) < MB_MIN_MYTH) continue;   // ขั้นแพงต้องพิสูจน์ด้วยปลาเทพ ≥3 ตัว
+        if (t > 1 && (b.mn || 0) < MB_MIN_MYTH) continue;   // ขั้นแพงต้องพิสูจน์ด้วยปลาเทพ ≥3 ตัว (นับบนฐานเดียวกับคะแนน)
         if (sc > bestSc) { bestSc = sc; pick = t; }
       }
       if (Math.random() < 0.1) { const oth = pool.filter((t) => t !== pick); if (oth.length) pick = oth[randInt(0, oth.length - 1)]; }
@@ -2962,17 +2986,20 @@
   }
   function mythicAutoTier() { const st = mbLoad(); return (st.cur && st.left > 0) ? st.cur : mbPick(); }
   // hook จาก pushCastCost/pushCatch — เก็บทุกโหมด (ข้อมูลคือข้อมูล ความแม่นเกจเท่ากันทุกโหมด bot)
-  function mythicBaitOnCast(tier) {
+  function mythicBaitOnCast(tier, luckOn) {
     const st = mbLoad(); const s = mbTouch(st.tiers[tier] ||= { c: 0, mn: 0, mv: 0 });   // ลดตามอายุก่อน แล้วค่อยบวกของใหม่ (ของใหม่จึงหนักกว่า)
     let roundEnded = false;
-    s.c++; if (st.cur === tier && st.left > 0) { st.left--; roundEnded = st.left === 0; }
+    s.c++; if (luckOn) s.lc = (s.lc || 0) + 1;   // 🧪 v6.227: แยกนับ "ตอนมียาโชค" ไว้เทียบแบบ apples-to-apples
+    if (st.cur === tier && st.left > 0) { st.left--; roundEnded = st.left === 0; }
     // v6.132: เซฟเฉพาะทุก 20 cast หรือ "จบรอบพอดี" — เดิมเงื่อนไข st.left===0 ค้าง = เขียน localStorage ทุก cast (~500 ครั้ง/ชม.)
     if (s.c % 20 === 0 || roundEnded) mbSave();
   }
-  function mythicBaitOnCatch(tier, rarity, price) {
+  function mythicBaitOnCatch(tier, rarity, price, luckOn) {
     if (!MYTHIC_RAR.has(rarity)) return;
     const st = mbLoad(); const s = mbTouch(st.tiers[tier] ||= { c: 0, mn: 0, mv: 0 });
-    s.mn++; s.mv += price || 0; mbSave();
+    s.mn++; s.mv += price || 0;
+    if (luckOn) { s.lmn = (s.lmn || 0) + 1; s.lmv = (s.lmv || 0) + (price || 0); }   // 🧪 v6.227
+    mbSave();
     if (mythicActive()) say(`🌈 ได้ปลาเทพ! ${rarity} ${(price || 0).toLocaleString()}🪙 (เหยื่อขั้น ${tier})`);
   }
 
