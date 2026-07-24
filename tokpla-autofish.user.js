@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.232
+// @version      6.233
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.232';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.233';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4314,6 +4314,7 @@
 
   // ===== 🧪 ซื้อยาบัฟอัตโนมัติ (🐋 หนัก+15% · 🍀 โชค+8%) — ซื้อเมื่อบัฟหมด & รายได้ถึงเกณฑ์คุ้ม =====
   let potionFailUntil = loadFailUntil('tokpla_potion_failuntil'), lastPotionCheck = 0, lastPotionEnergySayAt = 0, lastPotionCphSayAt = 0;   // v6.179: persist ข้ามรีโหลด
+  let potionEnergyDeadlockSaid = false;   // ⚠️ v6.233: เตือน "ค่าพลัง vs เกณฑ์ยา ขัดกันจนยาไม่ได้ใช้" ครั้งเดียวต่อ session
   // ขั้นเหยื่อที่ "อนุญาตให้ต่อยา" (จาก cfg.potionBaitTiers) — memoize parse ใหม่เฉพาะตอนสตริงเปลี่ยน
   let _potRaw = null, _potSet = new Set();
   function potionTierSet() {
@@ -4379,7 +4380,20 @@
     // ⚡ v6.101: พลังต่ำกว่าเกณฑ์ = ห้ามเปิดยา (ยาอยู่ 30 นาที — พลังหมดกลางบัฟ = ทิ้งเงินยาเปล่า) · 0 = ปิดเกณฑ์
     const ePot = energyPct();
     if (cfg.potionMinEnergy > 0 && ePot != null && ePot < cfg.potionMinEnergy) {
-      if (now() - lastPotionEnergySayAt > 600000) { lastPotionEnergySayAt = now(); say(`🧪 งดใช้ยา — พลัง ${Math.round(ePot)}% < เกณฑ์ ${cfg.potionMinEnergy}% (กันเปิดยาแล้วไม่มีพลังตก)`); }
+      if (now() - lastPotionEnergySayAt > 600000) {
+        lastPotionEnergySayAt = now();
+        say(`🧪 งดใช้ยา — พลัง ${Math.round(ePot)}% < เกณฑ์ ${cfg.potionMinEnergy}% (กันเปิดยาแล้วไม่มีพลังตก)`);
+        // ⚠️ v6.233: จับ "ค่าที่ตั้งขัดกันเองจนยาไม่มีวันได้ใช้" — จัดการพลังดันเพดานไว้ต่ำกว่าเกณฑ์ห้ามใช้ยา
+        //   เคสจริงของผู้ใช้: energyResumeAt 40% < potionMinEnergy 50% → พลังแตะเพดาน 40% แล้วกลับไปตกทันที
+        //   = ไม่มีวันถึง 50% = ยาโชค 🍀 ไม่เคยได้ใช้เลย 21,538 การตก (ครอบคลุมยา 0%) ทั้งที่เปิดสวิตช์ยาไว้
+        //   แจ้งเฉย ๆ ไม่แก้ค่าให้เอง (ห้ามทับค่าที่ผู้ใช้ตั้งจากการอนุมาน — กฎเดิมของโปรเจกต์)
+        if (cfg.energyManage && cfg.energyResumeAt < cfg.potionMinEnergy && !potionEnergyDeadlockSaid) {
+          potionEnergyDeadlockSaid = true;
+          const msg = `⚠️ ค่าขัดกันเอง: "กลับมาตกที่ ${cfg.energyResumeAt}%" ต่ำกว่า "ห้ามใช้ยาต่ำกว่า ${cfg.potionMinEnergy}%" → พลังไม่มีวันถึงเกณฑ์ = ยาไม่ได้ใช้เลย · แก้ได้ 2 ทาง: ลดเกณฑ์ห้ามใช้ยาให้ต่ำกว่า ${cfg.energyResumeAt}% หรือเพิ่ม "กลับมาตก" ให้เกิน ${cfg.potionMinEnergy}%`;
+          logWarn(msg);
+          if (isOn('tgOn')) void tgSend(`⚠️ <b>ค่าตั้งขัดกันเอง</b>\n${esc(msg)}`);
+        }
+      }
       return;
     }
     busy = true;
