@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.231
+// @version      6.232
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.231';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.232';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1830,16 +1830,24 @@
     while (t <= fromMs - 90000) t += iv;   // −90 วิ: บอสเพิ่งโผล่ยังนับเป็นรอบนี้
     return t;
   }
+  const hhmmOf = (ms) => { const d = new Date(ms), z = (x) => String(x).padStart(2, '0'); return `${z(d.getHours())}:${z(d.getMinutes())}`; };
+  // 🔮 v6.232: บอก "แหล่งที่มา" ของค่าทำนายล่าสุด — เดิม log เขียนตายตัวว่า "ทำนายจากรอบก่อน (ทุก N นาที)"
+  //   ทั้งที่ v6.230 เปลี่ยนมาใช้ตารางเวลาเป็นหลักแล้ว → อ่าน log แล้วเข้าใจผิดว่าตารางไม่ทำงาน (เสียเวลาไล่ผิดจุด)
+  let bossPredictSrc = '';
   function bossPredictNextMin() {
     // 🕐 v6.230: ตารางเวลานาฬิกามาก่อน (แม่นกว่า + ไม่ drift)
     const sched = bossScheduleNextMs(Date.now());
-    if (sched) return Math.max(0, Math.round((sched - Date.now()) / 60000));
+    if (sched) {
+      bossPredictSrc = `ตารางเวลา (รอบถัดไป ${hhmmOf(sched)} น.)`;
+      return Math.max(0, Math.round((sched - Date.now()) / 60000));
+    }
     // seed จาก "ไฟต์บอสล่าสุดที่บันทึกไว้" ถ้ายังไม่เคยมีฐาน (เพิ่งอัปเดตเวอร์ชัน = ทำนายได้ทันที)
     if (!bossNextMs) { try { const a = loadBossStats(); const last = a[a.length - 1]; if (last && last.ts) setBossNext(last.ts); } catch {} }
-    if (!bossNextMs) return null;
+    if (!bossNextMs) { bossPredictSrc = ''; return null; }
     const iv = clamp(cfg.bossIntervalMin || 180, 10, 720) * 60000;
     let target = bossNextMs;
     while (target < Date.now() - 90000) target += iv;   // เลยรอบไปแล้ว → เลื่อนไปรอบถัดไป (−90วิ เผื่อบอสเพิ่งโผล่)
+    bossPredictSrc = `รอบก่อน + ทุก ${Math.round(iv / 60000)} นาที (ตารางเวลาปิดอยู่)`;
     return Math.max(0, Math.round((target - Date.now()) / 60000));
   }
   let bossPredictSayAt = 0;
@@ -1864,7 +1872,7 @@
     const pred = bossPredictNextMin();
     if (pred != null && now() - bossPredictSayAt > 600000) {   // log ทุก 10 นาที กันสแปม
       bossPredictSayAt = now();
-      logInfo(`🔮 อ่านเวลาบอสจาก DOM ไม่ได้ (ป้ายค้าง/ไม่มีตัวนับ) → ทำนายจากรอบก่อน: อีก ~${pred} นาที (รอบทุก ${clamp(cfg.bossIntervalMin || 180, 10, 720)} นาที)`);
+      logInfo(`🔮 อ่านเวลาบอสจาก DOM ไม่ได้ (ป้ายค้าง/ไม่มีตัวนับ) → ใช้${bossPredictSrc}: อีก ~${pred} นาที`);
     }
     return pred;   // null ถ้ายังไม่เคยอ่าน DOM สำเร็จเลย (ไม่มีฐานให้ทำนาย)
   }
@@ -2861,7 +2869,10 @@
     // 🧪 v6.165: เดิม testRunning บล็อกทริปเมือง "ตลอด" → เทสต์ยาว/ค้าง = rare+ ไม่มีทางระบาย → กระเป๋าเต็ม → บอทหยุด (เจอจริง)
     //   ตอนนี้: ถ้ากระเป๋าใกล้เต็ม (≥90%) ให้ไประบายได้แม้กำลังเทสต์ — กระเป๋าเต็ม = เทสต์เดินต่อไม่ได้อยู่ดี
     const bagCrit = bagFullTries > 0 || (lastBagPct != null && lastBagPct >= 90);
-    if (orchestrating || busy || bossPhase !== 'idle' || mythicActive()) return;
+    // 🐛 v6.232: เดิม `mythicActive()` อยู่ในเงื่อนไขนี้ → เปิดโหมดล่าปลาเทพค้างไว้ = **ทริปเมืองไม่เคยได้ทำงาน**
+    //   ร้ายกว่าเรื่องหีบ เพราะตาข่ายกันกระเป๋าเต็ม (bagCrit) อยู่บรรทัดถัดไป = ถูกปิดไปด้วยทั้งที่ตั้งใจให้ผ่านเสมอ
+    //   → ปลา rare+ ระบายไม่ได้ → กระเป๋าเต็ม → บอทหยุด (บั๊กชนิดเดียวกับ v6.231 · ทริปเมือง set orchestrating กันชนอยู่แล้ว)
+    if (orchestrating || busy || bossPhase !== 'idle') return;
     if (testRunning && !bagCrit) return;
     if (!isOn('npcStorageOn') && !isOn('npcEssenceOn')) return;   // v6.178: ตัด orbsmith
     if (now() - lastNpcErrandAt < 3 * 60000) return;          // เพิ่งไปมา = พัก 3 นาที
@@ -5224,7 +5235,11 @@
   // ถึงรอบเช็คหีบไหม (ลำดับต่ำ — หลังบอส/เมือง/ล่าปลาเทพ) · self-throttle chestCheckMin นาที
   function chestGrabDue() {
     if (!isOn('grabChest')) return false;
-    if (orchestrating || busy || bossPhase !== 'idle' || mythicActive() || testRunning || energyResting || paused) return false;
+    // 🐛 v6.232: เดิมมี `mythicActive()` ในเงื่อนไขนี้ → ผู้ใช้เปิดโหมดล่าปลาเทพค้างไว้ 24 ชม. = **ระบบหีบไม่เคยได้ทำงานเลย**
+    //   (หลักฐานสด: เก็บหีบครั้งสุดท้าย 03:03 = 18 ชม.ก่อน ทั้งที่ตั้ง "ทุก 30 นาที" ไว้ · หีบมีลิมิตรายวัน = เสียของฟรีทุกวัน)
+    //   ไม่ต้องกันด้วย mythicActive: ทริปหีบ set orchestrating และ runMythicMove เช็ค orchestrating อยู่แล้ว = ชนกันไม่ได้
+    //   และหีบเดินในแมพเดิม (กลับ home) ไม่แย่งการ "เลือกแมพ" ของโหมดล่าปลาเทพ · ดู v6.231 (บั๊กชนิดเดียวกัน)
+    if (orchestrating || busy || bossPhase !== 'idle' || testRunning || energyResting || paused) return false;
     if (now() - lastChestCheckAt < clamp(cfg.chestCheckMin || 3, 1, 120) * 60000) return false;
     lastChestCheckAt = now();
     if (chestDailyDone()) return false;
