@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.229
+// @version      6.230
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.229';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.230';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -118,6 +118,11 @@
     bossBaitTier: 2,             // 👹 เหยื่อ "จุดอ่อนบอส" ระหว่างตี (วิดีโอ: มัดอ้วนขั้น2/กุ้งฝอยขั้น4 = ดาเมจ x1.5) · 0 = ไม่สลับ
     bossStatKeep: 20,            // 📊 v6.195: เก็บสถิติล่าบอสกี่ "ครั้งล่าสุด" (ring buffer · 0 = ปิดการเก็บ)
     bossIntervalMin: 180,        // 🔮 v6.211: บอสมาทุกกี่นาที (ข้อมูลจริง = 3 ชม.) — ใช้ทำนายรอบถัดไปตอนอ่านเวลาจาก DOM ไม่ได้
+    // 🕐 v6.230: บอสมา "เป็นเวลานาฬิกา" ไม่ใช่นับจากรอบก่อน — ยืนยันจาก 20 ไฟต์จริง (ฆ่าสำเร็จอยู่ที่ HH:31-32 ทุกครั้ง)
+    //   ตารางจริง: 01:30 · 04:30 · 07:30 · 10:30 · 13:30 · 16:30 · 19:30 · 22:30 (ทุก 3 ชม.)
+    //   ข้อดี: ไม่ drift (แบบเดิมฐานเพี้ยนครั้งเดียว = เพี้ยนสะสมตลอด)
+    bossSchedOn: true,           // ใช้ตารางเวลานาฬิกา (แนะนำเปิด) · ปิด = กลับไปใช้ "รอบก่อน + interval" แบบเดิม
+    bossSchedFirst: '01:30',     // เวลาบอสรอบแรกของวัน (HH:MM) — รอบถัดไป = +bossIntervalMin ไปเรื่อยๆ
     // 🔬 v6.229: โหมดวัดเกจบอส — กด "ทุกมุม" (ไม่เฉพาะแดง) เว้นจังหวะ 300ms เพื่อระบุดาเมจต่อการกดได้ชัด
     //   ใช้ครั้งเดียวเพื่อตอบว่า "นอกแดงได้ดาเมจไหม/เท่าไร" แล้วปิดเองอัตโนมัติหลังจบไฟต์ (เสียดาเมจ 1 รอบ แลกความจริง)
     gaugeProbe: false,
@@ -1035,7 +1040,13 @@
         reply(`👹 <b>สถานะบอส</b>\nแมพตอนนี้: ${esc(map || '?')} · เฟสล่าบอส: ${bossPhase}\n` +
           `บอสถัดไป: ${min == null ? 'อ่านไม่ได้' : min <= 0 ? 'โผล่แล้ว/ใกล้มาก!' : min < 60 ? `อีก ${min} นาที` : `อีก ${Math.floor(min/60)} ชม. ${min%60} นาที`}` +
           `${rb ? `\nบอสในฉาก: ${rb.present ? 'อยู่' : 'ยังไม่มา'}${rb.dead ? ' (ตายแล้ว)' : ''}` : ''}` +
-          `\nระบบล่าบอส: ${isOn('bossHunt') ? 'เปิด' : 'ปิด'} · กราฟแมพที่รู้: ${Object.keys(loadBossGraph()).join(', ') || '(ยังไม่มี)'}`);
+          `\nระบบล่าบอส: ${isOn('bossHunt') ? 'เปิด' : 'ปิด'} · กราฟแมพที่รู้: ${Object.keys(loadBossGraph()).join(', ') || '(ยังไม่มี)'}` +
+          (() => {   // 🕐 v6.230: โชว์ตารางเวลาที่ใช้อยู่ + รอบถัดไปตามตาราง
+            const nx = bossScheduleNextMs(Date.now());
+            if (!nx) return `\n🕐 ตารางเวลา: ปิด (ใช้ "รอบก่อน + ${clamp(cfg.bossIntervalMin || 180, 10, 720)} นาที")`;
+            const d = new Date(nx), z = (x) => String(x).padStart(2, '0');
+            return `\n🕐 ตารางเวลา: รอบแรก ${esc(cfg.bossSchedFirst || '01:30')} ทุก ${clamp(cfg.bossIntervalMin || 180, 10, 720)} นาที → รอบถัดไป <b>${z(d.getHours())}:${z(d.getMinutes())}</b>`;
+          })());
         break;
       }
       case 'bosslog': {
@@ -1801,7 +1812,28 @@
   let bossNextMs = 0;
   try { bossNextMs = +W.localStorage.getItem(BOSS_NEXT_KEY) || 0; } catch {}
   const setBossNext = (ms) => { bossNextMs = ms; try { W.localStorage.setItem(BOSS_NEXT_KEY, String(ms)); } catch {} };
+  // 🕐 v6.230 (ผู้ใช้ท้วง "บอสไม่ได้มาทุก 180 นาที — บอสมาเป็นเวลา"): ยืนยันจากข้อมูลจริง 20 ไฟต์
+  //   ทุกครั้งที่ฆ่าสำเร็จอยู่ที่ **HH:31-32** เท่านั้น (นาที :31 = 10 ครั้ง · :32 = 3 ครั้ง) ชั่วโมง 10/13/16/19/22
+  //   log ออกเดินทาง: ออก HH:26 + "บอสอีก 3 นาที" → **บอสเกิด HH:29-30 ทุก 3 ชม.ตรง** (เวลานาฬิกา ไม่ใช่นับจากรอบก่อน)
+  //   ที่เวลาแปลก (19:54·20:36·23:11) = noshow ทั้งหมด = บอทไปเก้อจากป้ายเพี้ยน
+  //   ⚠️ ทำไมต้องแก้: แบบเดิม "รอบก่อน + interval" ถ้าฐานเพี้ยนครั้งเดียวจะ **เพี้ยนสะสมตลอด** (drift)
+  //      ตารางเวลานาฬิกา = self-correcting ไม่มีวันเลื่อน
+  function bossScheduleNextMs(fromMs) {
+    if (!isOn('bossSchedOn')) return null;
+    const m = /^\s*(\d{1,2})\s*[:.]\s*(\d{1,2})\s*$/.exec(String(cfg.bossSchedFirst || '01:30'));
+    if (!m) return null;
+    const firstMin = clamp(+m[1], 0, 23) * 60 + clamp(+m[2], 0, 59);
+    const iv = clamp(cfg.bossIntervalMin || 180, 10, 720) * 60000;
+    const d = new Date(fromMs);
+    const midnight = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    let t = midnight + firstMin * 60000;
+    while (t <= fromMs - 90000) t += iv;   // −90 วิ: บอสเพิ่งโผล่ยังนับเป็นรอบนี้
+    return t;
+  }
   function bossPredictNextMin() {
+    // 🕐 v6.230: ตารางเวลานาฬิกามาก่อน (แม่นกว่า + ไม่ drift)
+    const sched = bossScheduleNextMs(Date.now());
+    if (sched) return Math.max(0, Math.round((sched - Date.now()) / 60000));
     // seed จาก "ไฟต์บอสล่าสุดที่บันทึกไว้" ถ้ายังไม่เคยมีฐาน (เพิ่งอัปเดตเวอร์ชัน = ทำนายได้ทันที)
     if (!bossNextMs) { try { const a = loadBossStats(); const last = a[a.length - 1]; if (last && last.ts) setBossNext(last.ts); } catch {} }
     if (!bossNextMs) return null;
@@ -7227,7 +7259,18 @@ ${esc(reason)}
       labeled('เปิด', checkbox('bossHunt', refreshBossBtn)),
       labeled('ไปก่อน (นาที)', numInput('bossLeadMin', 1, 60, 48)),
       labeled('รอสูงสุด (นาที)', numInput('bossMaxWaitMin', 1, 30, 48)),
-      labeled('บอสมาทุก (นาที)', numInput('bossIntervalMin', 10, 720, 52)),
+    ));
+
+    panel.appendChild(row(
+      '🕐 ตารางเวลาบอส (บอสมาเป็นเวลานาฬิกา)',
+      'ยืนยันจากข้อมูลจริง 20 ไฟต์: บอสมา **ตามเวลานาฬิกาตายตัว** ไม่ใช่ "นับ 180 นาทีจากรอบก่อน" — ที่ฆ่าสำเร็จอยู่ที่ HH:29-30 ทุกครั้ง '
+      + '(ตารางจริง: 01:30 · 04:30 · 07:30 · 10:30 · 13:30 · 16:30 · 19:30 · 22:30) · '
+      + 'ข้อดีของตารางเวลา: **ไม่มีวันเลื่อนสะสม** — แบบเดิมถ้าฐานเวลาเพี้ยนครั้งเดียว จะเพี้ยนต่อไปทุกรอบ · '
+      + 'ตัวนับบนป้าย HUD ของเกมยังถูกใช้ก่อนเสมอเมื่ออ่านได้ (แม่นสุด) · ตารางนี้ใช้ตอนป้ายเพี้ยน/หาย · '
+      + 'ปิดสวิตช์ = กลับไปใช้แบบ "รอบก่อน + ทุกกี่นาที" แบบเดิม',
+      labeled('ใช้ตารางเวลา', checkbox('bossSchedOn')),
+      labeled('รอบแรกของวัน (HH:MM)', smallTextInput('bossSchedFirst', '01:30', 64)),
+      labeled('ทุกกี่นาที', numInput('bossIntervalMin', 10, 720, 52)),
     ));
 
     panel.appendChild(row(
