@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.237
+// @version      6.238
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.237';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.238';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -123,9 +123,12 @@
     //   ข้อดี: ไม่ drift (แบบเดิมฐานเพี้ยนครั้งเดียว = เพี้ยนสะสมตลอด)
     bossSchedOn: true,           // ใช้ตารางเวลานาฬิกา (แนะนำเปิด) · ปิด = กลับไปใช้ "รอบก่อน + interval" แบบเดิม
     bossSchedFirst: '01:30',     // เวลาบอสรอบแรกของวัน (HH:MM) — รอบถัดไป = +bossIntervalMin ไปเรื่อยๆ
-    // 🔬 v6.229: โหมดวัดเกจบอส — กด "ทุกมุม" (ไม่เฉพาะแดง) เว้นจังหวะ 300ms เพื่อระบุดาเมจต่อการกดได้ชัด
-    //   ใช้ครั้งเดียวเพื่อตอบว่า "นอกแดงได้ดาเมจไหม/เท่าไร" แล้วปิดเองอัตโนมัติหลังจบไฟต์ (เสียดาเมจ 1 รอบ แลกความจริง)
-    gaugeProbe: false,
+    // 🔬 v6.238: **ถอดสวิตช์ "โหมดวัดเกจ" (gaugeProbe) ออกแล้ว** — ตอบภารกิจจบไปแล้ว และเป็นกับดัก
+    //   ตอบได้: กด 464 ครั้ง อยู่ในแดงแค่ 62 แต่ดาเมจ 21,717 = 10 เท่าของทฤษฎี "แดงเท่านั้น" → นอกแดงได้ดาเมจแน่นอน
+    //   ตอบไม่ได้ (และไม่มีวันได้): ดาเมจต่อมุม — เลข "⚔️ ของเรา" เด้งทุก ~1.35 วิ แต่โหมดวัดกดทุก 0.3 วิ
+    //     → ดาเมจถูกโยนให้การกดที่บังเอิญค้างอยู่ = สุ่มเทียบมุม (ทำนาย 22.2% วัดได้ 22.4% ตรงกัน) = เพดานของตัวเลขบนจอ
+    //   ทำไมต้องถอด ไม่ใช่แค่ปิด: เปิดค้างไว้เมื่อไร **A/B หยุดเก็บข้อมูลเงียบๆ** (เกิดจริง เสียบอสไป 1 รอบ)
+    //   ผลที่วัดไว้ยังดูได้ที่ปุ่ม "🔬 ผลวัดเกจบอส" / `/gaugeprobe` (อ่านอย่างเดียว)
     // 🧪 v6.234/6.236: A/B วัดกลยุทธ์กดเกจ — หมุน 3 กลยุทธ์ "รอแดง / กดรัวทุกมุม / กดเว้นเขียว" เป็นช่วงๆ **ภายในไฟต์เดียวกัน**
     //   ทำไมไม่เทียบข้ามไฟต์: บอสคนละตัว/ผู้เล่นคนอื่นไม่เท่ากัน/เบ็ดเปลี่ยน → ต่างกันเองอยู่แล้ว 80-119 ดาเมจ/วิ
     //   ทำไมวัด "ต่อวินาที" ไม่ใช่ "ต่อการกด": เลข "⚔️ ของเรา" เด้งทุก ~1.35 วิ ช้ากว่าจังหวะกดมาก (v6.229 พลาดตรงนี้)
@@ -396,6 +399,9 @@
         // v6.84: 'gameauto' ใน v6.81-6.83 เป็นค่าที่ระบบบังคับ (โหมด bot ยังพัง) ไม่ใช่ตัวเลือกผู้ใช้
         // → เอนจิน bot ใช้ได้แล้ว ย้ายให้ครั้งเดียว (หลังจากนี้ผู้ใช้เลือกเองใน UI ระบบเคารพเสมอ)
         if (!('fishModeV684' in old)) { if (old.fishMode === 'gameauto') c.fishMode = 'bot'; c.fishModeV684 = true; }
+        // v6.238: ล้างคีย์ของฟีเจอร์ที่ถอดออกแล้ว (ไม่ใช่การ "เดาแทนผู้ใช้" — สวิตช์ไม่มีอยู่จริงแล้ว
+        //   ถ้าปล่อยค้างไว้ ตอนตรวจค่าตั้งครั้งหน้าจะเห็น gaugeProbe:true แล้วเข้าใจผิดว่ายังทำงานอยู่)
+        delete c.gaugeProbe;
         // v6.95: testGameAuto (bool) → testMode ('bot'/'gameauto'/'both') — เปิดออโต้เกมเดิม = ทดสอบทั้งคู่
         if (!('testMode' in old)) c.testMode = old.testGameAuto ? 'both' : 'bot';
         // v6.101: testBuff (bool) → testBuffMode ('plain'/'buff'/'both') — เดิม true=ทั้งคู่ · false=ไม่ใช้ยาอย่างเดียว
@@ -1088,14 +1094,10 @@
         if (!enabled) toggle();
         reply('👹 สั่งออกล่าบอสเดี๋ยวนี้'); void runBossHunt(); break;
       }
-      case 'gaugeprobe': case 'probe': {   // 🔬 v6.229: ผลวัดเกจบอส / เปิด-ปิดโหมดวัด
+      case 'gaugeprobe': case 'probe': {   // 🔬 v6.238: อ่านผลเก่าอย่างเดียว (ถอดสวิตช์วัดออกแล้ว)
         const a = (args[0] || '').toLowerCase();
-        if (a === 'on' || a === 'off') {
-          cfg.gaugeProbe = a === 'on'; sessionOff.delete('gaugeProbe'); saveCfg(); syncPanel();
-          reply(`🔬 โหมดวัดเกจบอส: <b>${a === 'on' ? 'เปิด' : 'ปิด'}</b>${a === 'on' ? ' — รอบบอสถัดไปจะกดทุกมุมเพื่อวัด แล้วปิดเอง (ดาเมจรอบนั้นจะน้อยลง)' : ''}`);
-          break;
-        }
-        if (a === 'reset') { gProbeRing = []; gProbeSave(); reply('🔬 ล้างผลวัดเกจแล้ว'); break; }
+        if (a === 'on') { reply('🔬 โหมดวัดเกจถูกถอดออกแล้ว (v6.238) — มันตอบ "ดาเมจต่อมุม" ไม่ได้จริง และเปิดค้างไว้จะทำให้ A/B หยุดเก็บข้อมูล · ใช้ <code>/gaugeab on</code> แทน'); break; }
+        if (a === 'reset') { gProbeRing = []; gProbeSave(); reply('🔬 ล้างผลวัดเกจเก่าแล้ว'); break; }
         reply(`<code>${esc(gaugeProbeReport())}</code>`);
         break;
       }
@@ -1106,7 +1108,6 @@
           const want = clamp(cfg.gaugeABFights || 6, 1, 30);
           reply(`🧪 A/B กลยุทธ์เกจ: <b>${a === 'on' ? 'เปิด' : 'ปิด'}</b>${a === 'on' ? ` — จะหมุน 3 กลยุทธ์ "รอแดง/กดรัว/เว้นเขียว" ทุก ${clamp(cfg.gaugeABBlockSec || 15, 5, 60)} วิ ในไฟต์เดียวกัน ครบ ${want} ไฟต์แล้วปิดเอง` : ''}`
             // เตือน 2 กรณีที่เปิดแล้ว "ไม่ได้ข้อมูล" — ต้องบอกตอนนี้ ไม่ใช่ให้ไปงงทีหลัง
-            + (a === 'on' && isOn('gaugeProbe') ? '\n⛔ แต่ "โหมดวัดเกจ" เปิดอยู่ → A/B จะถูกพักไว้ (ข้อมูลจะปนกัน) · ปิดด้วย /gaugeprobe off ก่อน' : '')
             + (a === 'on' && gabFightsDone() >= want ? `\n⚠️ มีข้อมูลเก่าครบ ${gabFightsDone()} ไฟต์แล้ว → จะปิดตัวเองทันทีหลังไฟต์แรก · อยากวัดใหม่ให้ /gaugeab reset ก่อน` : ''));
           break;
         }
@@ -1582,26 +1583,12 @@
   //   วิธี: กด → จำ (มุม, ดาเมจเราก่อนกด) → พอกดครั้งถัดไป (ห่าง ≥300ms) อ่านดาเมจใหม่ = ส่วนต่างของการกดครั้งก่อน
   //   เก็บมุมเป็น "องศาห่างจากกึ่งกลางแถบแดง" → เทียบข้ามไฟต์ได้แม้แถบแดงย้ายตำแหน่ง
   const GPROBE_KEY = 'tokpla_gauge_probe';
-  let gProbePend = null, gProbeRing = [];
+  let gProbeRing = [];   // v6.238: เก็บไว้อ่านผลเก่าอย่างเดียว (ตัวบันทึก gaugeProbeMark ถอดออกแล้ว)
   try { const a = JSON.parse(W.localStorage.getItem(GPROBE_KEY) || '[]'); if (Array.isArray(a)) gProbeRing = a.slice(-1200); } catch {}
   const gProbeSave = () => { try { W.localStorage.setItem(GPROBE_KEY, JSON.stringify(gProbeRing.slice(-1200))); } catch {} };
-  // ปิดบัญชีการกดครั้งก่อน (ได้ดาเมจเท่าไร) แล้วเปิดบัญชีใหม่ — เรียก "ก่อน" ยิงคลิกเสมอ
-  function gaugeProbeMark(ang, a0, a1) {
-    const cur = readBossContribution().dmg;
-    if (gProbePend && cur != null && gProbePend.d0 != null) {
-      const d = cur - gProbePend.d0;
-      if (d >= 0 && d < 200000) { gProbeRing.push({ a: Math.round(gProbePend.rel), d }); if (gProbeRing.length % 20 === 0) gProbeSave(); }
-    }
-    let rel = null;
-    if (ang != null && a0 != null && a1 != null) {
-      const c = (a0 + a1) / 2;
-      rel = ang - c; while (rel > 180) rel -= 360; while (rel < -180) rel += 360;
-    }
-    gProbePend = rel == null ? null : { rel, d0: cur };
-  }
-  // สรุปเป็นตาราง "ดาเมจเฉลี่ยตามระยะห่างจากกึ่งกลางแดง" (บั๊กเก็ต 20°)
+  // สรุปเป็นตาราง "ดาเมจเฉลี่ยตามระยะห่างจากกึ่งกลางแดง" (บั๊กเก็ต 20°) — v6.238 อ่านผลเก่าอย่างเดียว
   function gaugeProbeReport() {
-    if (!gProbeRing.length) return '🔬 ยังไม่มีข้อมูลวัดเกจ — เปิด "โหมดวัดเกจบอส" แล้วรอบอสรอบถัดไป (วัดจบแล้วปิดเอง)';
+    if (!gProbeRing.length) return '🔬 ไม่มีข้อมูลวัดเกจเก่าเก็บไว้ (โหมดวัดถูกถอดออกใน v6.238 — ใช้ "🧪 A/B กลยุทธ์เกจ" แทน)';
     const B = new Map();
     for (const s of gProbeRing) { const k = Math.min(8, Math.floor(Math.abs(s.a) / 20)); const b = B.get(k) || { n: 0, sum: 0, hit: 0 }; b.n++; b.sum += s.d; if (s.d > 0) b.hit++; B.set(k, b); }
     const rows = [...B.keys()].sort((x, y) => x - y).map((k) => {
@@ -1714,7 +1701,7 @@
     const health = (skew > 25 ? `⚠️ เวลาแต่ละแขนไม่สมดุล (ต่าง ${skew.toFixed(0)}%) — ผลยังเชื่อไม่ได้เต็มที่\n` : '')
       + (dropped > 0 ? `🕳️ ตัดเวลาที่ไม่ได้ตีจริงออกแล้ว ${Math.round(dropped / 1000)} วิ (ตาย/หลุดออกถ้ำ/บอสหาย)\n` : '')
       + (nog.length && nogSeen < nog.length / 2 ? `⚠️ แขน "เว้นเขียว" มองไม่เห็นโซนเขียวใน ${nog.length - nogSeen}/${nog.length} ช่วง → ช่วงเหล่านั้นพฤติกรรม = กดรัว (ดูแผนที่โซนจริงใน log บอส "🎨 โซนเกจ")\n` : '')
-      + (isOn('gaugeProbe') ? `⛔ "โหมดวัดเกจ" เปิดอยู่ = A/B ถูกพักไว้ (โหมดวัดบังคับกดทุกมุม ข้อมูลจะปน) — ปิดโหมดวัดก่อน\n` : '');
+      ;
     return `🧪 A/B กลยุทธ์กดเกจบอส — ${gabFightsDone()} ไฟต์ · ${gabRing.length} ช่วง\n\n`
       + `${GAB_ARMS.map(row).join('\n')}\n\n${health}${verdict}\n`
       + `(หมุน 3 กลยุทธ์ทุก ${clamp(cfg.gaugeABBlockSec || 15, 5, 60)} วิ ภายในไฟต์เดียวกัน → บอส/ผู้เล่นอื่น/เบ็ด เหมือนกันทุกแขน · ตัวหาร = เวลาที่ตีจริงเท่านั้น)`;
@@ -2325,7 +2312,7 @@
       //   แพงเฉพาะจังหวะสลับบล็อก (อ่านเลขดาเมจ 1 ครั้ง/15 วิ) · นอกนั้นแค่ floor+เทียบ
       // 🐛 v6.235: **ห้ามวัด A/B ตอนโหมดวัดเกจเปิดอยู่** — โหมดวัดบังคับกดทุกมุมที่ 300ms ทั้งไฟต์
       //   → บล็อกที่ป้ายว่า 'red' จะกลายเป็นกดรัวจริงๆ = ข้อมูลปนกันเงียบๆ โดยไม่มีอะไรฟ้อง (แย่กว่าไม่มีข้อมูล)
-      const abLive = isOn('gaugeAB') && !isOn('gaugeProbe');
+      const abLive = isOn('gaugeAB');   // v6.238: ไม่ต้องหลบโหมดวัดเกจอีกแล้ว (ถอดออกไป)
       if (!abLive && gabBlock) gabBlock = null;   // ปิด A/B กลางคัน = ทิ้งบล็อกค้าง ไม่ให้ตกไปปนไฟต์หน้า
       const abMode = (abLive && present && fightT0) ? gabModeNow(fightT0) : null;
       // 📊 วัด HP แบบ throttle (getPhaserScene แพง) — เก็บ start ครั้งแรกที่อ่านได้ + ต่ำสุดตลอดไฟต์
@@ -2448,11 +2435,9 @@
         // ⚙️ v6.162: ใช้ gaugeReady — เทียบทั้ง "ตำแหน่งเข็มตอนนี้" และ "ตำแหน่งที่คาด (ความเร็วเข็ม × latency 120ms)"
         const inRed = gaugeReady(g);
         // 🔬 v6.229 โหมดวัด: กด "ทุกมุม" เว้นจังหวะ 300ms → ระบุดาเมจต่อการกดได้ชัด (ปกติกดเฉพาะแดง ห่าง 60ms)
-        const probing = isOn('gaugeProbe');
-        // 🧪 v6.234: ช่วง 'spam' ของ A/B = กดทุกมุมด้วยจังหวะปกติ (60ms) ไม่ใช่ 300ms แบบโหมดวัด
-        //   ต้องเป็นจังหวะจริงที่จะใช้ลงสนาม ไม่งั้นวัดแล้วเอาไปใช้ไม่ได้
+        // 🧪 v6.234: ช่วง 'spam' ของ A/B = กดทุกมุมด้วยจังหวะปกติ (60ms) — ต้องเป็นจังหวะจริงที่จะใช้ลงสนาม
         // 🎨 v6.236: แขนที่ 3 "เว้นเขียว" — กดทุกที่ที่เข็มไม่อยู่โซนเขียว (แดง/ส้ม/เทา กดหมด)
-        const spamNow = probing || abMode === 'spam' || (abMode === 'nogreen' && gabNoGreenOk(g));
+        const spamNow = abMode === 'spam' || (abMode === 'nogreen' && gabNoGreenOk(g));
         // บันทึกว่าไฟต์นี้ "เห็นโซนเขียวจริงไหม" — ถ้าเกจไม่มีเขียวให้แกะ แขนเว้นเขียวจะเท่ากับกดรัว รายงานต้องฟ้องได้
         if (gabBlock && g.zones && g.zones.some((z) => z.c === 'green')) gabBlock.z = 1;
         // 🎨 log แผนที่โซนครั้งแรกของไฟต์ — พิสูจน์ว่าเกจบอสมีสีอะไรบ้างจริง (วัดก่อนเชื่อ ไม่เดาจากวิดีโอ)
@@ -2461,9 +2446,7 @@
           const zs = g.zones.map((z) => `${z.c} ${Math.round(z.d0)}-${Math.round(z.d1)}°`).join(' · ');
           bossEvent(`🎨 โซนเกจไฟต์นี้: ${zs}`);
         }
-        const gap = probing ? 300 : 60;
-        if ((spamNow || inRed) && orb && !orb.disabled && now() - lastPress > gap) {
-          if (probing) gaugeProbeMark(g.ang, g.a0, g.a1);   // ปิดบัญชีกดก่อนหน้า + เปิดบัญชีใหม่ (ต้องเรียกก่อนคลิก)
+        if ((spamNow || inRed) && orb && !orb.disabled && now() - lastPress > 60) {
           if (gabBlock) gabBlock.p++;
           lastPress = now(); fireClick(orb); gaugePresses++;
         }
@@ -2475,7 +2458,7 @@
       } else { await sleep(120); }
     }
     // 🧪 v6.234: จบไฟต์ A/B → ปิดบล็อกสุดท้าย + นับไฟต์ · ครบตามที่ตั้งแล้วปิดเอง พร้อมคำตัดสิน
-    if (isOn('gaugeAB') && !isOn('gaugeProbe')) {
+    if (isOn('gaugeAB')) {
       gabCloseBlock();
       gabFightNo++;
       const done = gabFightsDone(), want = clamp(cfg.gaugeABFights || 6, 1, 30);
@@ -2486,16 +2469,7 @@
         if (isOn('tgOn')) void tgSend(`🧪 <b>A/B เกจ</b> ไฟต์ ${done}/${want}\n<code>${esc(gaugeABReport())}</code>`);
       }
     }
-    // 🔬 v6.229: จบไฟต์วัดเกจ → ปิดโหมดวัดเอง (กันเสียดาเมจรอบถัดไป) + สรุปผลให้ดูทันที
-    if (isOn('gaugeProbe')) {
-      gaugeProbeMark(null, null, null);   // ปิดบัญชีการกดสุดท้าย
-      gProbeSave();
-      const inR = gProbeRing.filter((s) => Math.abs(s.a) < 20), outR = gProbeRing.filter((s) => Math.abs(s.a) >= 20);
-      const avg = (a) => a.length ? (a.reduce((s, x) => s + x.d, 0) / a.length).toFixed(1) : '-';
-      // v6.235: ปิด "ถาวร" — เดิมใช้ disableForSession ซึ่งอยู่แค่ในหน่วยความจำ → รีโหลดทีไรติดอาวุธใหม่ กินดาเมจบอสซ้ำๆ
-      disablePersist('gaugeProbe', `🔬 วัดเกจบอสเสร็จ (${gProbeRing.length} การกด) — ในแดงเฉลี่ย ${avg(inR)} · นอกแดงเฉลี่ย ${avg(outR)} · ปิดโหมดวัดแล้ว ดูผลเต็มที่ปุ่ม "🔬 ผลวัดเกจบอส"`);
-      if (isOn('tgOn')) void tgSend(`🔬 <b>วัดเกจบอสเสร็จ</b> (${gProbeRing.length} การกด)\nในแดงเฉลี่ย <b>${avg(inR)}</b> · นอกแดงเฉลี่ย <b>${avg(outR)}</b>\nดูตารางเต็ม: /gaugeprobe`);
-    }
+    // (v6.238: บล็อก "จบไฟต์โหมดวัดเกจ" ถูกถอดออกพร้อมสวิตช์ — ผลที่วัดไว้ยังอ่านได้จาก gaugeProbeReport())
     // สลับเหยื่อคืนขั้นเดิม (สู้จบแล้ว — เหยื่อจุดอ่อนไว้ตีบอสเท่านั้น)
     if (prevBaitTier != null && currentBait()?.tier !== prevBaitTier) {
       busy = true;
@@ -7575,19 +7549,13 @@ ${esc(reason)}
       labeled('แมพบ้าน', smallTextInput('bossHomeMap', 'ว่าง=อัตโนมัติ', 96)),
     ));
 
-    panel.appendChild(row(
-      '🔬 โหมดวัดเกจบอส (ทดลอง — ใช้ 1 รอบบอสแล้วปิดเอง)',
-      'ตอบคำถามว่า "กดนอกแถบแดงได้ดาเมจไหม" ด้วยการวัดจริง ไม่ใช่เดา · เปิดแล้วรอบบอสถัดไปบอทจะกด **ทุกมุม** (ไม่เฉพาะแดง) '
-      + 'เว้นจังหวะ 300ms เพื่อจับคู่ "มุมที่กด ↔ ดาเมจที่ได้" ให้ชัด · วัดจาก "⚔️ ของเรา" ไม่ใช่ HP บอสรวม (บอสเป็น raid มีคนอื่นตีด้วย HP รวมจึงเชื่อไม่ได้) · '
-      + '⚠️ รอบที่วัดดาเมจจะน้อยลง (กดห่างขึ้น + กดโดนนอกแดงบ้าง) — แลกกับการรู้ความจริง · จบไฟต์ปิดเองอัตโนมัติ',
-      labeled('เปิดวัดรอบหน้า', checkbox('gaugeProbe')),
-    ));
-    {
+    // 🔬 v6.238: ถอด "โหมดวัดเกจ" ออก เหลือแค่ปุ่มดูผลที่วัดไว้แล้ว (ถ้ามีข้อมูลเก่า)
+    if (gProbeRing.length) {
       const gp = document.createElement('button');
       gp.setAttribute('data-tkbot', '1');
-      gp.textContent = '🔬 ผลวัดเกจบอส';
+      gp.textContent = '🔬 ผลวัดเกจบอส (เก่า)';
       gp.style.cssText = 'padding:5px 10px;border-radius:7px;border:1px solid #4a5568;background:#2d3748;color:#e2e8f0;font-size:11px;cursor:pointer;margin:2px 3px 6px 0;';
-      gp.addEventListener('click', () => showTextModal('🔬 ผลวัดเกจบอส', gaugeProbeReport()));
+      gp.addEventListener('click', () => showTextModal('🔬 ผลวัดเกจบอส (เก็บไว้อ่าน)', gaugeProbeReport()));
       panel.appendChild(gp);
     }
 
