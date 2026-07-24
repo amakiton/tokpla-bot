@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.235
+// @version      6.236
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.235';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.236';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -126,7 +126,7 @@
     // 🔬 v6.229: โหมดวัดเกจบอส — กด "ทุกมุม" (ไม่เฉพาะแดง) เว้นจังหวะ 300ms เพื่อระบุดาเมจต่อการกดได้ชัด
     //   ใช้ครั้งเดียวเพื่อตอบว่า "นอกแดงได้ดาเมจไหม/เท่าไร" แล้วปิดเองอัตโนมัติหลังจบไฟต์ (เสียดาเมจ 1 รอบ แลกความจริง)
     gaugeProbe: false,
-    // 🧪 v6.234: A/B วัดกลยุทธ์กดเกจ — สลับ "รอแดง" ↔ "กดรัวทุกมุม" เป็นช่วงๆ **ภายในไฟต์เดียวกัน**
+    // 🧪 v6.234/6.236: A/B วัดกลยุทธ์กดเกจ — หมุน 3 กลยุทธ์ "รอแดง / กดรัวทุกมุม / กดเว้นเขียว" เป็นช่วงๆ **ภายในไฟต์เดียวกัน**
     //   ทำไมไม่เทียบข้ามไฟต์: บอสคนละตัว/ผู้เล่นคนอื่นไม่เท่ากัน/เบ็ดเปลี่ยน → ต่างกันเองอยู่แล้ว 80-119 ดาเมจ/วิ
     //   ทำไมวัด "ต่อวินาที" ไม่ใช่ "ต่อการกด": เลข "⚔️ ของเรา" เด้งทุก ~1.35 วิ ช้ากว่าจังหวะกดมาก (v6.229 พลาดตรงนี้)
     gaugeAB: false,
@@ -1093,7 +1093,7 @@
         if (a === 'on' || a === 'off') {
           cfg.gaugeAB = a === 'on'; sessionOff.delete('gaugeAB'); saveCfg(); syncPanel();
           const want = clamp(cfg.gaugeABFights || 6, 1, 30);
-          reply(`🧪 A/B กลยุทธ์เกจ: <b>${a === 'on' ? 'เปิด' : 'ปิด'}</b>${a === 'on' ? ` — จะสลับ "รอแดง/กดรัว" ทุก ${clamp(cfg.gaugeABBlockSec || 15, 5, 60)} วิ ในไฟต์เดียวกัน ครบ ${want} ไฟต์แล้วปิดเอง` : ''}`
+          reply(`🧪 A/B กลยุทธ์เกจ: <b>${a === 'on' ? 'เปิด' : 'ปิด'}</b>${a === 'on' ? ` — จะหมุน 3 กลยุทธ์ "รอแดง/กดรัว/เว้นเขียว" ทุก ${clamp(cfg.gaugeABBlockSec || 15, 5, 60)} วิ ในไฟต์เดียวกัน ครบ ${want} ไฟต์แล้วปิดเอง` : ''}`
             // เตือน 2 กรณีที่เปิดแล้ว "ไม่ได้ข้อมูล" — ต้องบอกตอนนี้ ไม่ใช่ให้ไปงงทีหลัง
             + (a === 'on' && isOn('gaugeProbe') ? '\n⛔ แต่ "โหมดวัดเกจ" เปิดอยู่ → A/B จะถูกพักไว้ (ข้อมูลจะปนกัน) · ปิดด้วย /gaugeprobe off ก่อน' : '')
             + (a === 'on' && gabFightsDone() >= want ? `\n⚠️ มีข้อมูลเก่าครบ ${gabFightsDone()} ไฟต์แล้ว → จะปิดตัวเองทันทีหลังไฟต์แรก · อยากวัดใหม่ให้ /gaugeab reset ก่อน` : ''));
@@ -1616,6 +1616,18 @@
   const GAB_KEY = 'tokpla_gauge_ab';
   // ช่องว่างระหว่างรอบลูปที่ยังถือว่า "ตีอยู่จริง" — ลูปเดินทุก 30-120ms · เกินนี้ = หลุดไปทำอย่างอื่น
   const GAB_TICK_MAX = 1500;
+  // 🎨 v6.236: ครบ 3 กลยุทธ์ตามโจทย์ผู้ใช้ — (1) รอแดง (2) กดรัวทุกมุม (3) กดเว้นเขียว (แดง+ส้มกดหมด)
+  const GAB_ARMS = ['red', 'spam', 'nogreen'];
+  const GAB_NAME = { red: '🔴 รอแถบแดง', spam: '⚡ กดรัวทุกมุม', nogreen: '🟠 กดเว้นเขียว' };
+  // เข็มชี้อยู่โซนสีอะไร (จาก zones ที่ readGaugeWheel แกะได้) · null = ไม่รู้ (เกจไม่มีข้อมูลโซน)
+  function gaugeNeedleColor(g) {
+    if (!g || g.ang == null || !g.zones || !g.zones.length) return null;
+    const a = ((g.ang % 360) + 360) % 360;
+    for (const z of g.zones) if (a >= z.d0 && a < z.d1) return z.c;
+    return 'x';
+  }
+  // กลยุทธ์ "เว้นเขียว": กดได้ทุกที่ที่เข็มไม่อยู่โซนเขียว · ไม่รู้โซน = กดไปก่อน (เหมือน spam) แต่บล็อกจะบันทึก z=0 ให้รายงานฟ้อง
+  const gabNoGreenOk = (g) => gaugeNeedleColor(g) !== 'green';
   let gabRing = [], gabBlock = null, gabFightNo = 0;
   try { const a = JSON.parse(W.localStorage.getItem(GAB_KEY) || '[]'); if (Array.isArray(a)) gabRing = a.slice(-600); } catch {}
   // 🐛 v6.235: เลขไฟต์ต้อง "เดินต่อจากของเดิม" ไม่ใช่เริ่ม 0 ใหม่ทุกครั้งที่รีโหลด
@@ -1637,18 +1649,18 @@
     if (d < 0 || d >= 200000) return;                    // ติดลบ/กระโดดผิดปกติ = อ่านพลาด
     if (b.act < 5000) return;                            // เวลาตีจริงสั้นเกินไป
     if (b.gap > b.act * 0.5) return;                     // ช่วงนี้ "หายไป" นานกว่าครึ่ง (ตาย/ออกนอกถ้ำ/บอสหาย) = เทียบไม่ได้
-    gabRing.push({ m: b.m, d, ms: Math.round(b.act), p: b.p, f: b.f, w: Math.round(b.gap) });
+    gabRing.push({ m: b.m, d, ms: Math.round(b.act), p: b.p, f: b.f, w: Math.round(b.gap), z: b.z || 0 });
     gabSave();
   }
   // คืนกลยุทธ์ที่ต้องใช้ "ตอนนี้" + เปิด/ปิดบล็อกให้เอง · เรียกได้ทุกรอบลูป (แพงเฉพาะตอนสลับบล็อก)
   function gabModeNow(fightT0) {
     const sec = clamp(cfg.gaugeABBlockSec || 15, 5, 60);
     const idx = Math.floor((now() - fightT0) / (sec * 1000));
-    // +gabFightNo = สลับหัวท้ายทุกไฟต์ ไม่งั้น "ช่วงต้นไฟต์" จะตกกับกลยุทธ์เดิมเสมอ (บอสเฟส 1 กับ 3 ดาเมจไม่เท่ากัน)
-    const m = ((idx + gabFightNo) % 2 === 0) ? 'red' : 'spam';
+    // +gabFightNo = หมุนกลยุทธ์เริ่มต้นทุกไฟต์ ไม่งั้น "ช่วงต้นไฟต์" จะตกกับกลยุทธ์เดิมเสมอ (บอสเฟส 1 กับ 3 ดาเมจไม่เท่ากัน)
+    const m = GAB_ARMS[(idx + gabFightNo) % GAB_ARMS.length];
     if (!gabBlock || gabBlock.idx !== idx) {
       gabCloseBlock();
-      gabBlock = { idx, m, t0: now(), last: now(), act: 0, gap: 0, d0: readBossContribution().dmg, p: 0, f: gabFightNo };
+      gabBlock = { idx, m, t0: now(), last: now(), act: 0, gap: 0, d0: readBossContribution().dmg, p: 0, f: gabFightNo, z: 0 };
     } else {
       // 🐛 v6.235: ตัวหารต้องเป็น "เวลาที่ตีจริง" ไม่ใช่เวลานาฬิกา
       //   ฟังก์ชันนี้ถูกเรียกเฉพาะตอนบอสอยู่ตรงหน้า → ช่วงที่เรียกห่างผิดปกติ = ตาย/ถูกเด้งออกถ้ำ/บอสหาย
@@ -1667,30 +1679,34 @@
       const d = a.reduce((s, b) => s + b.d, 0), ms = a.reduce((s, b) => s + b.ms, 0), p = a.reduce((s, b) => s + b.p, 0);
       return { n: a.length, d, sec: ms / 1000, p, dps: ms ? d / (ms / 1000) : 0, dpp: p ? d / p : 0, rate: ms ? p / (ms / 1000) : 0 };
     };
-    const R = grp('red'), S = grp('spam');
-    const row = (n, g) => `${n.padEnd(16)} ${String(g.n).padStart(3)} ช่วง · ${String(Math.round(g.sec)).padStart(4)} วิ · ดาเมจ ${g.d.toLocaleString().padStart(7)} → ${g.dps.toFixed(1).padStart(6)} ดาเมจ/วิ · ${g.rate.toFixed(1)} กด/วิ · ${g.dpp.toFixed(1)} ดาเมจ/กด`;
+    const G = {}; for (const m of GAB_ARMS) G[m] = grp(m);
+    const row = (m) => { const g = G[m]; return `${GAB_NAME[m].padEnd(14)} ${String(g.n).padStart(3)} ช่วง · ${String(Math.round(g.sec)).padStart(4)} วิ · ดาเมจ ${g.d.toLocaleString().padStart(7)} → ${g.dps.toFixed(1).padStart(6)} ดาเมจ/วิ · ${g.rate.toFixed(1)} กด/วิ`; };
+    // 🏁 จัดอันดับจาก ดาเมจ/วิ (ห้ามใช้ดาเมจ/กด — แขนที่กดถี่ตัวหารพอง ผลกลับด้าน)
+    const ranked = GAB_ARMS.filter((m) => G[m].n > 0).sort((a, b) => G[b].dps - G[a].dps);
     let verdict;
-    if (!R.n || !S.n) verdict = '⏳ ยังไม่ครบทั้งสองแบบ — รอบอสอีกสักรอบ';
+    if (ranked.length < GAB_ARMS.length) verdict = `⏳ ยังไม่ครบทุกกลยุทธ์ (มีข้อมูล ${ranked.length}/${GAB_ARMS.length}) — รอบอสอีกสักรอบ`;
     else {
-      const diff = (S.dps / R.dps - 1) * 100;
+      const [w1, w2] = ranked;
+      const diff = (G[w1].dps / G[w2].dps - 1) * 100;
       // n น้อย = ยังไม่ฟันธง · เกณฑ์ 10% กันตัดสินจากความผันผวนปกติ (ข้อมูลจริงแกว่ง ~±20%)
-      const enough = R.n >= 8 && S.n >= 8;
-      verdict = Math.abs(diff) < 10
-        ? `🤝 ต่างกันแค่ ${diff.toFixed(1)}% = แทบเท่ากัน — ใช้ "รอแดง" ต่อได้ (ปลอดภัยกว่า)${enough ? '' : ' · ข้อมูลยังน้อย'}`
-        : diff > 0
-          ? `🏆 กดรัวทุกมุม ชนะ +${diff.toFixed(1)}%${enough ? ' (ข้อมูลพอแล้ว — ควรเปลี่ยนเป็นกดรัว)' : ' · ยังน้อย รออีกสักไฟต์'}`
-          : `🏆 รอแดง ชนะ +${(-diff).toFixed(1)}%${enough ? ' (ข้อมูลพอแล้ว — ใช้แบบเดิมถูกแล้ว)' : ' · ยังน้อย รออีกสักไฟต์'}`;
+      const enough = GAB_ARMS.every((m) => G[m].n >= 8);
+      verdict = diff < 10
+        ? `🤝 ${GAB_NAME[w1]} กับ ${GAB_NAME[w2]} ต่างกันแค่ ${diff.toFixed(1)}% = แทบเท่ากัน${enough ? ' — เลือกแบบไหนก็ได้' : ' · ข้อมูลยังน้อย'}`
+        : `🏆 ${GAB_NAME[w1]} ชนะ (+${diff.toFixed(1)}% เหนืออันดับ 2)${enough ? ' — ข้อมูลพอแล้ว ใช้แบบนี้ประจำได้' : ' · ยังน้อย รออีกสักไฟต์'}`;
     }
-    // ⚖️ ตรวจความสมดุลของการทดลอง — เวลาสองฝั่งต้องใกล้เคียงกัน ไม่งั้นแปลว่ามีบล็อกถูกทิ้งไม่เท่ากัน (เช่นตายบ่อยในฝั่งเดียว)
-    const tot = R.sec + S.sec;
-    const skew = tot ? Math.abs(R.sec - S.sec) / tot * 100 : 0;
+    // ⚖️ ตรวจความสมดุล — เวลาแต่ละแขนต้องใกล้กัน ไม่งั้นแปลว่ามีบล็อกถูกทิ้งไม่เท่ากัน (เช่นตายบ่อยในแขนเดียว)
+    const secs = GAB_ARMS.map((m) => G[m].sec), tot = secs.reduce((a, b) => a + b, 0);
+    const skew = tot ? (Math.max(...secs) - Math.min(...secs)) / tot * 100 : 0;
     const dropped = gabRing.reduce((s, b) => s + (b.w || 0), 0);
-    const health = (skew > 25 ? `⚠️ เวลาสองฝั่งไม่สมดุล (ต่าง ${skew.toFixed(0)}%) — ผลยังเชื่อไม่ได้เต็มที่\n` : '')
+    // 🎨 แขน "เว้นเขียว" ต้องเห็นโซนเขียวจริง — ถ้าเกจไม่มีเขียวให้แกะ มันจะเท่ากับกดรัว (ต้องฟ้อง ไม่ใช่เงียบ)
+    const nog = gabRing.filter((b) => b.m === 'nogreen'), nogSeen = nog.filter((b) => b.z).length;
+    const health = (skew > 25 ? `⚠️ เวลาแต่ละแขนไม่สมดุล (ต่าง ${skew.toFixed(0)}%) — ผลยังเชื่อไม่ได้เต็มที่\n` : '')
       + (dropped > 0 ? `🕳️ ตัดเวลาที่ไม่ได้ตีจริงออกแล้ว ${Math.round(dropped / 1000)} วิ (ตาย/หลุดออกถ้ำ/บอสหาย)\n` : '')
+      + (nog.length && nogSeen < nog.length / 2 ? `⚠️ แขน "เว้นเขียว" มองไม่เห็นโซนเขียวใน ${nog.length - nogSeen}/${nog.length} ช่วง → ช่วงเหล่านั้นพฤติกรรม = กดรัว (ดูแผนที่โซนจริงใน log บอส "🎨 โซนเกจ")\n` : '')
       + (isOn('gaugeProbe') ? `⛔ "โหมดวัดเกจ" เปิดอยู่ = A/B ถูกพักไว้ (โหมดวัดบังคับกดทุกมุม ข้อมูลจะปน) — ปิดโหมดวัดก่อน\n` : '');
     return `🧪 A/B กลยุทธ์กดเกจบอส — ${gabFightsDone()} ไฟต์ · ${gabRing.length} ช่วง\n\n`
-      + `${row('🔴 รอแถบแดง', R)}\n${row('⚡ กดรัวทุกมุม', S)}\n\n${health}${verdict}\n`
-      + `(สลับกลยุทธ์ทุก ${clamp(cfg.gaugeABBlockSec || 15, 5, 60)} วิ ภายในไฟต์เดียวกัน → บอส/ผู้เล่นอื่น/เบ็ด เหมือนกันทั้งสองฝั่ง · ตัวหาร = เวลาที่ตีจริงเท่านั้น)`;
+      + `${GAB_ARMS.map(row).join('\n')}\n\n${health}${verdict}\n`
+      + `(หมุน 3 กลยุทธ์ทุก ${clamp(cfg.gaugeABBlockSec || 15, 5, 60)} วิ ภายในไฟต์เดียวกัน → บอส/ผู้เล่นอื่น/เบ็ด เหมือนกันทุกแขน · ตัวหาร = เวลาที่ตีจริงเท่านั้น)`;
   }
 
   // 📋 v6.199: บันทึก "เหตุการณ์/เหตุผล" ของระบบล่าบอสแยกจาก log หลัก
@@ -2282,7 +2298,7 @@
     let lastRecenter = 0, recenters = 0;
     // 📊 v6.191: วัด HP จริงตลอดไฟต์ (start→ต่ำสุด→จบ) + นับ "ค้างหลบ" (ปากทางกินทิศหลบหมด)
     //   ผู้ใช้ยืนยัน: เกมไม่ฟื้นเลือด → ทางรอดเดียวคือหลบไม่ให้โดน · ต้องรู้ว่าเสียเลือดตรงไหนก่อนปรับ
-    let hpStart = null, hpMin = 101, lastHpChk = 0, aoeStalls = 0;
+    let hpStart = null, hpMin = 101, lastHpChk = 0, aoeStalls = 0, gaugeZonesLogged = false;
     let fightT0 = 0, lastContrib = { dmg: null, pct: null };   // 📊 v6.195: จับเวลาไฟต์ (ตั้งตอนเห็นบอสครั้งแรก) + อ่านดาเมจล่าสุด
     // 🛡️ v6.175: เดิมเงื่อนไขลูปมี isOn('bossHunt') → **ปิดโหมดล่าบอสกลางไฟต์ = ทิ้งบอสทันที**
     //   เจอสด 16:30:14: เข้าตีตอน 16:30:00 แล้วโดนตัดจบใน 14 วิ ("กดเกจ 0") ทั้งที่บอสยืนอยู่ตรงหน้า
@@ -2380,8 +2396,8 @@
           //   เดินหลบ (WASD ค้าง) กับกดเกจ (คลิกปุ่ม) เป็นคนละ input channel → ทำพร้อมกันได้ ไม่ยกเลิกการหลบ
           //   ⚠️ ดีกว่า "facetank ยอมเลือดลด" ที่ผู้ใช้ถาม: ได้ดาเมจเพิ่มโดยไม่โดนตีเพิ่มเลย
           const gd = readGaugeWheel();
-          // 🧪 v6.234: ช่วง 'spam' ของ A/B ต้องกดรัวตรงนี้ด้วย ไม่งั้นช่วงหลบ AoE จะกลายเป็น "รอแดง" ทั้งสองฝั่ง = เจือจางผลวัด
-          if (gd && gd.ang != null && (abMode === 'spam' || gaugeReady(gd))) {
+          // 🧪 v6.234: ช่วง 'spam'/'nogreen' ของ A/B ต้องกดตามกลยุทธ์ตรงนี้ด้วย ไม่งั้นช่วงหลบ AoE จะกลายเป็น "รอแดง" ทุกแขน = เจือจางผลวัด
+          if (gd && gd.ang != null && (abMode === 'spam' || (abMode === 'nogreen' && gabNoGreenOk(gd)) || gaugeReady(gd))) {
             const orbd = bossHitOrb();
             if (orbd && !orbd.disabled && now() - lastPress > 60) { if (gabBlock) gabBlock.p++; lastPress = now(); fireClick(orbd); gaugePresses++; }
           }
@@ -2424,7 +2440,16 @@
         const probing = isOn('gaugeProbe');
         // 🧪 v6.234: ช่วง 'spam' ของ A/B = กดทุกมุมด้วยจังหวะปกติ (60ms) ไม่ใช่ 300ms แบบโหมดวัด
         //   ต้องเป็นจังหวะจริงที่จะใช้ลงสนาม ไม่งั้นวัดแล้วเอาไปใช้ไม่ได้
-        const spamNow = probing || abMode === 'spam';
+        // 🎨 v6.236: แขนที่ 3 "เว้นเขียว" — กดทุกที่ที่เข็มไม่อยู่โซนเขียว (แดง/ส้ม/เทา กดหมด)
+        const spamNow = probing || abMode === 'spam' || (abMode === 'nogreen' && gabNoGreenOk(g));
+        // บันทึกว่าไฟต์นี้ "เห็นโซนเขียวจริงไหม" — ถ้าเกจไม่มีเขียวให้แกะ แขนเว้นเขียวจะเท่ากับกดรัว รายงานต้องฟ้องได้
+        if (gabBlock && g.zones && g.zones.some((z) => z.c === 'green')) gabBlock.z = 1;
+        // 🎨 log แผนที่โซนครั้งแรกของไฟต์ — พิสูจน์ว่าเกจบอสมีสีอะไรบ้างจริง (วัดก่อนเชื่อ ไม่เดาจากวิดีโอ)
+        if (!gaugeZonesLogged && g.zones && g.zones.length) {
+          gaugeZonesLogged = true;
+          const zs = g.zones.map((z) => `${z.c} ${Math.round(z.d0)}-${Math.round(z.d1)}°`).join(' · ');
+          bossEvent(`🎨 โซนเกจไฟต์นี้: ${zs}`);
+        }
         const gap = probing ? 300 : 60;
         if ((spamNow || inRed) && orb && !orb.disabled && now() - lastPress > gap) {
           if (probing) gaugeProbeMark(g.ang, g.a0, g.a1);   // ปิดบัญชีกดก่อนหน้า + เปิดบัญชีใหม่ (ต้องเรียกก่อนคลิก)
@@ -3373,19 +3398,35 @@
   //     (เล็กกว่าเกจตกปลา 180+) → เดิม threshold ≥180 เลย skip = อ่านเกจบอสไม่ได้เลย!
   //     แก้: ≥90 (ตัดสำเนา orb ~56) + เลือก "วงแดงใหญ่สุด" (fishing→180+, boss→104, กันสำเนาเล็กแย่ง)
   //     + รองรับแดงพันรอบ: มีแดงจบที่ 360° → ตั้ง a0 ติดลบ (340-360=-20) ให้ inRed ครอบแถบเต็มยอดได้
+  // 🎨 v6.236: แยกสี stop ของเกจ — เดิมทั้งระบบมองเห็นแค่ "แดง" → กลยุทธ์ "กดเว้นเขียว" วัดไม่ได้เลย
+  //   เกณฑ์สีตั้งกว้างตามโทนที่เกมใช้: แดง ~255,60,60 · ส้ม ~249,115,22 · เหลือง/ทอง ~250,204,21 · เขียว ~34,197,94
+  function gaugeStopColor(r, g, b) {
+    if (r > 190 && g < 110 && b < 110) return 'red';
+    if (g > 140 && r < 140) return 'green';
+    if (r > 190 && g >= 110 && b < 130) return 'orange';   // ครอบส้ม+เหลือง (โจทย์ผู้ใช้จัดเป็นกลุ่ม "ไม่ใช่เขียว" เหมือนกัน)
+    return 'x';                                             // เทา/พื้น
+  }
   function readGaugeWheel() {
     let best = null, bestW = 0;
     for (const d of document.querySelectorAll('div[style*="conic-gradient"]')) {
       const w = d.offsetWidth;
       if (w < 90 || w <= bestW) continue;                      // ≥90 ตัดสำเนา orb · เอาวงใหญ่สุดที่มีแดง
       const st = d.getAttribute('style') || '';
+      // v6.236: parse stop ทุกตัวเสมอ (เดิมทำเฉพาะ fallback) — ได้แผนที่สีทุกโซนไว้ตอบ "เข็มอยู่สีอะไร"
+      //   conic ของเกมใช้ hard stop (สีเดิมซ้ำ 2 ครั้ง = ช่วงของสีนั้น) → จับคู่ stop ติดกันที่สีเดียวกัน
+      const stops = [...st.matchAll(/rgb\(\s*(\d+),\s*(\d+),\s*(\d+)\s*\)\s*([\d.]+)deg/g)]
+        .map((s) => ({ r: +s[1], g: +s[2], b: +s[3], deg: +s[4] }));
+      const zones = [];
+      for (let i = 0; i + 1 < stops.length; i++) {
+        const c = gaugeStopColor(stops[i].r, stops[i].g, stops[i].b);
+        if (c === gaugeStopColor(stops[i + 1].r, stops[i + 1].g, stops[i + 1].b) && stops[i + 1].deg > stops[i].deg)
+          zones.push({ c, d0: stops[i].deg, d1: stops[i + 1].deg });
+      }
       let a0, a1;
       const m = st.match(/conic-gradient\(rgb\(255,\s*\d+,\s*\d+\)\s*([\d.]+)deg,\s*rgb\(255,\s*\d+,\s*\d+\)\s*([\d.]+)deg/);
       if (m) { a0 = +m[1]; a1 = +m[2]; }                       // แดงมาก่อน (เกจตกปลา + เกจบอส)
       else {
         // fallback: หา color-stop สีแดง (r>190,g<110,b<110) แล้วโซนแดง = [deg ของแดง, deg stop ถัดไป]
-        const stops = [...st.matchAll(/rgb\(\s*(\d+),\s*(\d+),\s*(\d+)\s*\)\s*([\d.]+)deg/g)]
-          .map((s) => ({ r: +s[1], g: +s[2], b: +s[3], deg: +s[4] }));
         if (stops.length < 2) continue;
         const ri = stops.findIndex((s) => s.r > 190 && s.g < 110 && s.b < 110);
         if (ri < 0) continue;
@@ -3411,7 +3452,7 @@
           if (ang != null) break;
         }
       }
-      best = { a0, a1, ang, w }; bestW = w;                    // เก็บวงใหญ่สุดที่มีแดง แล้ววนต่อ (ไม่ return ทันที) · w ให้ผู้เรียกแยกเกจตกปลา/บอส
+      best = { a0, a1, ang, w, zones }; bestW = w;             // เก็บวงใหญ่สุดที่มีแดง แล้ววนต่อ (ไม่ return ทันที) · w ให้ผู้เรียกแยกเกจตกปลา/บอส · zones v6.236
     }
     return best;
   }
@@ -7443,8 +7484,8 @@ ${esc(reason)}
 
     {
       panel.appendChild(row(
-        '🧪 A/B กลยุทธ์กดเกจบอส (วัดว่า "รอแดง" หรือ "กดรัว" แรงกว่า)',
-        'สลับสองกลยุทธ์ **สลับช่วงกันภายในไฟต์เดียวกัน** แล้วเทียบดาเมจ/วินาที · ทำแบบนี้เพราะบอสคนละตัว/ผู้เล่นคนอื่นไม่เท่ากัน '
+        '🧪 A/B กลยุทธ์กดเกจบอส (รอแดง vs กดรัวทุกมุม vs กดเว้นเขียว)',
+        'หมุน 3 กลยุทธ์ **สลับช่วงกันภายในไฟต์เดียวกัน** แล้วเทียบดาเมจ/วินาที · ทำแบบนี้เพราะบอสคนละตัว/ผู้เล่นคนอื่นไม่เท่ากัน '
         + 'ทำให้เทียบข้ามไฟต์ไม่ได้ (ข้อมูลจริง: รอแดงล้วนยังแกว่ง 80-119 ดาเมจ/วิ) · '
         + 'และวัดเป็น "ช่วงเวลา" ไม่ใช่ "ต่อการกด" เพราะเลข "⚔️ ของเรา" บนจอเด้งทุก ~1.35 วิ ช้ากว่าจังหวะกดมาก — '
         + 'บทเรียนจากโหมดวัดเกจ (v6.229) ที่ผูกดาเมจกับการกดทีละครั้งแล้วได้ตารางที่อ่านไม่ได้ · '
