@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.227
+// @version      6.228
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.227';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.228';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -313,6 +313,7 @@
   let awayAt = 0;         // ปุ่มตกปลาถูกปิด (ยืนไกลบ่อ) ตั้งแต่เมื่อไร
   let bagFullTries = 0;   // เจอกระเป๋าเต็มแล้วขายไม่ออกกี่ครั้งติด
   let storageFullUntil = 0;   // 🏬 v6.223: คลังลุงคลังเต็ม → พักระบบฝากถึงเวลานี้ (กันวนไปเมืองฝากไม่ได้ไม่จบ)
+  let forceRodStoodDown = false;   // 🎣 v6.228: แจ้งครั้งเดียวว่า forceRod หลีกทางให้ rodSwitchOn แล้ว
   let catchNotified = false;   // แจ้ง popup ปลาตัวนี้ไปแล้วหรือยัง (popup เดียวอยู่หลายเฟรม)
   let pauseNotified = false;   // แจ้งเรื่องพักพลังไปแล้วหรือยัง
   let energyResting = false;   // กำลังนั่งพักรอพลังฟื้น (จัดการเชิงรุก)
@@ -455,7 +456,7 @@
     feedModeStats(fishModeEff(), { price: c.price || 0, baitCost: baitUnit(tier), weight: +c.weight || 0, rarity: c.rarity, junk: c.junk, tier });   // 🔬 สถิติ 2 แบบ
     // 📋 log สรุปทุกขั้นตอนของปลาตัวนี้ (โหมด bot — v6.88 เคยหายไปเพราะย้าย log เข้า recordGameCatch ที่โหมด bot ไม่เรียก)
     fishSeq++;
-    logInfo(`🎣 #${fishSeq} ${c.name}(${c.rarity || '?'})${typeof c.weight === 'number' ? ` ${c.weight}กก` : ''} ${c.price ? c.price.toLocaleString() + '🪙' : (c.junk ? 'ขยะ' : 'ล็อก')}${typeof c.score === 'number' ? ` ${c.score}/100` : ''} | ${traceSummary()}`);
+    logCatch(`🎣 #${fishSeq} ${c.name}(${c.rarity || '?'})${typeof c.weight === 'number' ? ` ${c.weight}กก` : ''} ${c.price ? c.price.toLocaleString() + '🪙' : (c.junk ? 'ขยะ' : 'ล็อก')}${typeof c.score === 'number' ? ` ${c.score}/100` : ''} | ${traceSummary()}`);   // v6.228: ไป ring ปลา ไม่กิน log หลัก
     fishTrace = null;
     // Persist ทุก ≥3 วิ · รีโหลดกลางคัน อย่างแย่หาย ~1-2 รายการล่าสุด
     if (Date.now() - lastCatchSaveAt >= 3000) { lastCatchSaveAt = Date.now(); saveProfit(); }
@@ -736,6 +737,23 @@
   function logInfo(msg) { logPush('info', msg); console.log('[Tokpla Bot]', msg); }
   function logWarn(msg) { logPush('warn', msg); console.warn('[Tokpla Bot]', msg); }
   function logErr(msg, e) { const full = e !== undefined ? `${msg}: ${e?.message || e}` : String(msg); logPush('error', full); console.error('[Tokpla Bot]', full); }
+  // 🎣 v6.228: แยก "บรรทัดตกได้ทีละตัว" ออกจาก log หลัก — วัดจริงพบว่ามันกิน **71% (214/300)** ของ log
+  //   ผลคือ log หลักครอบคลุมแค่ ~56 นาที → เวลามีปัญหา หลักฐาน "เหตุการณ์" หมุนทับหายไปแล้ว วินิจฉัยย้อนหลังไม่ได้
+  //   (เจอเองตอนไล่หา pond-stuck/หีบ ต้องพึ่ง event ring แทน) · แยกแล้ว log หลักเก็บเหตุการณ์ได้หลายชั่วโมง–เป็นวัน
+  //   ประวัติปลายังครบเหมือนเดิม แค่ไปอยู่คนละที่ (ดูได้จากปุ่มในแผง / /catchlog)
+  const CATCH_LOG_KEY = 'tokpla_catch_log', CATCH_KEEP = 300;
+  let catchRing = [], lastCatchLogSave = 0;
+  try { const a = JSON.parse(W.localStorage.getItem(CATCH_LOG_KEY) || '[]'); if (Array.isArray(a)) catchRing = a.slice(-CATCH_KEEP); } catch {}
+  function logCatch(msg) {
+    catchRing.push({ at: Date.now(), m: String(msg) });
+    if (catchRing.length > CATCH_KEEP) catchRing.splice(0, catchRing.length - CATCH_KEEP);
+    const t = Date.now();
+    if (t - lastCatchLogSave > 4000) { lastCatchLogSave = t; try { W.localStorage.setItem(CATCH_LOG_KEY, JSON.stringify(catchRing.slice(-CATCH_KEEP))); } catch {} }
+    console.log('[Tokpla Bot]', msg);
+  }
+  const catchLogText = () => catchRing.length
+    ? `🎣 บันทึกการตกปลา ${catchRing.length} ตัวล่าสุด (ใหม่สุดอยู่บน)\n\n` + catchRing.slice().reverse().map((e) => `${hhmmss(e.at)}  ${e.m}`).join('\n')
+    : '(ยังไม่มีบันทึกการตกปลา)';
   let logViewEl = null;
   function refreshLogView() {
     if (!logViewEl) return;
@@ -1028,6 +1046,12 @@
         if (bossPhase !== 'idle' || orchestrating) { reply('👹 กำลังล่า/ทำงานอื่นอยู่'); break; }
         if (!enabled) toggle();
         reply('👹 สั่งออกล่าบอสเดี๋ยวนี้'); void runBossHunt(); break;
+      }
+      case 'catchlog': case 'fishlog': {   // 🎣 v6.228: ประวัติปลาที่ตกได้ (แยกจาก log หลัก)
+        const n = clamp(parseInt(args[0], 10) || 25, 5, 80);
+        const lines = catchRing.slice(-n).reverse().map((e) => `${hhmmss(e.at)} ${e.m}`);
+        reply(lines.length ? `🎣 <b>บันทึกการตกปลา ${n} ตัวล่าสุด</b> (เก็บไว้ ${catchRing.length})\n<code>${esc(lines.join('\n'))}</code>` : '🎣 ยังไม่มีบันทึกการตกปลา');
+        break;
       }
       case 'chest': case 'chests': {   // 🎁 หีบสมบัติ — สถานะ/สั่งเก็บเดี๋ยวนี้
         const a = (args[0] || '').toLowerCase();
@@ -1392,7 +1416,7 @@
     // 📋 สรุป 1 บรรทัด/ตัวลง log (ผู้ใช้ /report ส่งให้วิเคราะห์ได้)
     fishSeq++;
     const wkg = typeof r.weight === 'number' ? `${r.weight.toFixed(2)}กก` : '';
-    logInfo(`🎣 #${fishSeq} ${r.fish}(${r.rarity || '?'}) ${wkg} ${price ? price.toLocaleString() + '🪙' : 'ล็อก/ขยะ'} | โหมดเกมออโต้`);
+    logCatch(`🎣 #${fishSeq} ${r.fish}(${r.rarity || '?'}) ${wkg} ${price ? price.toLocaleString() + '🪙' : 'ล็อก/ขยะ'} | โหมดเกมออโต้`);   // v6.228: ไป ring ปลา ไม่กิน log หลัก
     if (Date.now() - lastCatchSaveAt >= 3000) { lastCatchSaveAt = Date.now(); saveProfit(); }
     // แจ้งเตือน Telegram ปลาน่าสนใจ (reuse ตรรกะเดียวกับ readCatch เดิม)
     if (isOn('tgOn')) {
@@ -4724,7 +4748,13 @@
     if (busy) return;
     busy = true;
     try {
-      if (isOn('forceRod') && currentRod() !== null && currentRod() !== cfg.rodTier) {
+      // 🎣 v6.228: มี 2 ระบบคุมเบ็ด — forceRod บังคับ "ขั้น" ด้วยปุ่ม G · rodSwitchOn เลือก "ชิ้น" จากค่าหินผ่านกระเป๋า
+      //   ถ้าเปิดพร้อมกันแล้วชิ้นที่เลือก (เช่นเบ็ดบอส) อยู่คนละขั้นกับ rodTier → G จะดึงกลับ = **เขี่ยชิ้นที่เลือกไว้หลุด**
+      //   ซึ่งคือบั๊กเดิมที่ทำให้ต้องปิดระบบ G ทั้งหมดใน v6.189 (ชิ้นนอกวง G กลับเข้าไม่ได้อีก)
+      //   → rodSwitchOn เปิดเมื่อไร forceRod หลีกทางเสมอ (เลือกจากค่าหินแม่นกว่าเลือกจากขั้น)
+      if (isOn('forceRod') && isOn('rodSwitchOn')) {
+        if (!forceRodStoodDown) { forceRodStoodDown = true; logInfo('🎣 ปิดการ "บังคับเบ็ดขั้น" ชั่วคราว — ระบบเลือกชิ้นเบ็ดจากค่าหิน (สลับเบ็ดบอส/ฟาร์ม) ทำงานอยู่ ซึ่งแม่นกว่า · ถ้าอยากบังคับขั้นจริงๆ ให้ปิด "สลับเบ็ดอัตโนมัติ" ก่อน'); }
+      } else if (isOn('forceRod') && currentRod() !== null && currentRod() !== cfg.rodTier) {
         const ok = await cycleTo('เลือกเบ็ด', cfg.rodTier, currentRod);
         if (!ok) disableForSession('forceRod', `สลับไปเบ็ดขั้น ${cfg.rodTier} ไม่ได้ (ยังไม่มีเบ็ดขั้นนั้น?) — พักการบังคับเบ็ด`);
       }
@@ -7829,6 +7859,16 @@ ${esc(reason)}
     logClear.addEventListener('click', () => { logRing.length = 0; saveLog(true); refreshLogView(); say('ล้าง log แล้ว'); });
     logBtns.append(logRefresh, logCopy, logClear);
     panel.appendChild(logBtns);
+    {
+      // 🎣 v6.228: บันทึกการตกปลาย้ายมาอยู่ ring แยก (log หลักจะได้เก็บ "เหตุการณ์" ได้นานขึ้นมาก)
+      const cl = document.createElement('button');
+      cl.setAttribute('data-tkbot', '1');
+      cl.textContent = '🎣 ดูบันทึกการตกปลา';
+      cl.title = 'ประวัติปลาที่ตกได้ทีละตัว (แยกจาก log หลัก เพื่อให้ log หลักเก็บเหตุการณ์ได้นานขึ้น)';
+      cl.style.cssText = 'padding:5px 10px;border-radius:7px;border:1px solid #4a5568;background:#2d3748;color:#e2e8f0;font-size:11px;cursor:pointer;margin:4px 3px 6px 0;';
+      cl.addEventListener('click', () => showTextModal('🎣 บันทึกการตกปลา', catchLogText()));
+      panel.appendChild(cl);
+    }
 
     // ---------- 💾 สำรอง / กู้คืน ----------
     sectionHead('💾 สำรอง / กู้คืน (ย้าย VPS)', false);
