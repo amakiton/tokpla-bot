@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.230
+// @version      6.231
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.230';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.231';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -5318,7 +5318,11 @@
   const lastFishMap = () => { try { return W.localStorage.getItem(FISH_MAP_KEY) || cfg.bossHome || 'lotus_marsh'; } catch { return cfg.bossHome || 'lotus_marsh'; } };
   let lastPondWalk = 0, lastPondSay = 0, pondWalkStart = 0;
   function walkToPondIfNeeded() {
-    if (bossMapId() === BOSS_MAP || mythicActive()) { pondWalkStart = 0; return false; }   // ถ้ำบอสไม่มีบ่อ · ล่าปลาเทพคุมตำแหน่งเอง
+    // 🐛 v6.231 (ผู้ใช้เจอสด: ค้างที่ sea_dock ไม่ตกปลาเลย): เดิมกันโหมดล่าปลาเทพออกทั้งฟังก์ชัน
+    //   สมมติว่า "ล่าปลาเทพคุมตำแหน่งเอง" — **ผิด** มันคุมแค่ *เลือกแมพ* (runMythicMove) ไม่ได้คุม *ตำแหน่งในแมพ*
+    //   → เปิดโหมดนี้ = ไม่มีใครพาเข้าบ่อ → ยืนค้างขึ้น "ปุ่มตกปลากดไม่ได้" ตลอดกาล (recoveryWatch ก็ไม่รีโหลด เพราะปุ่มมีอยู่แต่ disabled)
+    //   แก้: "เดินเข้าบ่อในแมพเดียวกัน" ทำได้เสมอ · เฉพาะ "ข้ามแมพ" เท่านั้นที่ยอมให้โหมดล่าปลาเทพจัดการ (กันแย่งกันเดิน)
+    if (bossMapId() === BOSS_MAP) { pondWalkStart = 0; return false; }   // ถ้ำบอส — ระบบบอสจัดการเอง
     const near = sceneNearPond();
     if (near === null) { pondWalkStart = 0; return false; }   // อ่านไม่ได้ (กำลังโหลด/transition) = ไม่ยุ่ง
     const aw = gameWalker(); if (!aw) return false;
@@ -5339,6 +5343,8 @@
     }
     // 🗺️ v6.224: แมพนี้ "ไม่มีบ่อ" (fisher_town ฯลฯ) — ตัวติดเกาะ (เจอจริง: ทำธุระเมือง/รีโหลดแล้วค้างในเมือง ตกปลาไม่ได้เลย)
     //   → เดินข้ามแมพกลับ "แมพที่เคยตก" · ไม่งั้นบอทยืนขึ้น "ปุ่มตกปลากดไม่ได้" ไปเรื่อยๆ ไม่มีวันหลุด
+    // 🌈 v6.231: เฉพาะ "ข้ามแมพ" เท่านั้นที่หลีกให้โหมดล่าปลาเทพ (มันมีตรรกะเลือกแมพเป้าของตัวเอง — เดินแย่งกันจะตีกัน)
+    if (mythicActive()) { pondWalkStart = 0; return false; }
     const home = lastFishMap();
     if (!home || home === curMap) return false;   // ไม่รู้จะไปไหน = ปล่อย (กันวน)
     if (!pondWalkStart) pondWalkStart = now();
