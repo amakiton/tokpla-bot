@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.238
+// @version      6.239
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.238';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.239';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1101,6 +1101,12 @@
         reply(`<code>${esc(gaugeProbeReport())}</code>`);
         break;
       }
+      case 'dmgtap': {   // 🎥 v6.239: ข้อมูลดักเลขดาเมจต่อครั้ง (อ่านอย่างเดียว เปิดตลอด)
+        const a = (args[0] || '').toLowerCase();
+        if (a === 'reset') { dtapRing = []; try { W.localStorage.setItem(DTAP_KEY, '[]'); } catch {} reply('🎥 ล้างข้อมูลดักดาเมจแล้ว'); break; }
+        reply(`<code>${esc(dmgTapReport())}</code>`);
+        break;
+      }
       case 'gaugeab': case 'ab': {   // 🧪 v6.234: A/B กลยุทธ์กดเกจ (รอแดง vs กดรัว)
         const a = (args[0] || '').toLowerCase();
         if (a === 'on' || a === 'off') {
@@ -1604,6 +1610,76 @@
       + `   ดาเมจจึงถูกโยนให้การกดที่บังเอิญค้างอยู่ตอนเลขเด้ง = สุ่มเทียบกับมุม (มีแค่ ${Math.round(gProbeRing.filter((s) => s.d > 0).length / gProbeRing.length * 100)}% ของการกดที่เห็นเลขขยับ)\n`
       + `   ✅ ใช้ได้แค่ข้อสรุปรวม: กด ${gProbeRing.length} ครั้ง อยู่ในแดงแค่ ${inR.length} แต่ดาเมจรวมสูงกว่าที่ทฤษฎี "แดงเท่านั้น" ทำนายหลายเท่า → **นอกแดงได้ดาเมจแน่นอน**\n`
       + `   👉 อยากรู้ว่ากลยุทธ์ไหนดีกว่า ให้เปิด "🧪 A/B กลยุทธ์เกจ" แทน (วัดถูกวิธี)`;
+  }
+
+  // 🎥 v6.239: ตัวดักเลขดาเมจต่อครั้ง (อ่านอย่างเดียว) — เกมมีเมธอด scene.showDamagePopup วาด "เลขลอย" ทุกครั้งที่ตีโดน
+  //   นี่คือข้อมูลที่ละเอียดกว่า "⚔️ ของเรา" (ยอดสะสม เด้งทุก ~1.35 วิ) แบบเทียบกันไม่ได้ — ถ้ายืนยันได้ว่าอาร์กิวเมนต์ไหน
+  //   คือดาเมจ + แยกของเราออกจากคนอื่นได้ จะตอบ "กดโซนสีไหนได้เท่าไร" ต่อการกดจริงๆ (สิ่งที่ v6.229 ทำไม่ได้)
+  //   ⚠️ ภาพจากผู้ใช้ (24/7): เลขลอยมีชื่อผู้เล่นอื่นแปะ (VISA/เด็กวัด/น้องฟิว) = popup โชว์ของทุกคน → ห้ามสรุปว่าเป็นของเรา
+  //   → เฟสแรกเป็น "เครื่องบันทึก" ล้วนๆ: จดอาร์กิวเมนต์ดิบทุกตัว + มุมเข็ม/สีโซน + เวลาห่างจากการกดล่าสุดของเรา
+  //     แล้วค่อยวิเคราะห์จากข้อมูลจริง (บทเรียน v6.229/6.234: ออกแบบก่อนเห็นข้อมูล = พังทุกครั้ง)
+  //   เปิดตลอด ไม่มีสวิตช์ — อ่านอย่างเดียว ต้นทุน ~0 และสวิตช์ทดลองคือกับดักที่เพิ่งถอดไป (v6.238)
+  const DTAP_KEY = 'tokpla_dmg_tap';
+  let dtapRing = [], dtapLastSave = 0, lastBossPressAt = 0;   // lastBossPressAt = Date.now() ของการกดปุ่มตีบอสล่าสุดของเรา
+  try { const a = JSON.parse(W.localStorage.getItem(DTAP_KEY) || '[]'); if (Array.isArray(a)) dtapRing = a.slice(-800); } catch {}
+  function dtapPush(o) {
+    dtapRing.push(o); if (dtapRing.length > 800) dtapRing.splice(0, dtapRing.length - 800);
+    if (Date.now() - dtapLastSave > 3000) { dtapLastSave = Date.now(); try { W.localStorage.setItem(DTAP_KEY, JSON.stringify(dtapRing)); } catch {} }
+  }
+  // ห่อ showDamagePopup ของ scene — จดแล้ว "ส่งต่อให้ของเดิมเสมอ" ไม่แตะพฤติกรรมเกม · ติดซ้ำไม่ได้ (ธงบน scene)
+  function installDmgTap() {
+    try {
+      const s = getPhaserScene();
+      if (!s || s.__tkDmgTap || typeof s.showDamagePopup !== 'function') return;
+      const orig = s.showDamagePopup;
+      s.showDamagePopup = function (...args) {
+        try {
+          const g = readGaugeWheel();
+          dtapPush({
+            t: Date.now(), k: 'pop',
+            // อาร์กิวเมนต์ดิบทุกตัว (ยังไม่รู้ว่าตัวไหนคือดาเมจ/พิกัด/สี — เก็บให้ครบแล้วให้ข้อมูลบอกเอง)
+            a: args.map((x) => typeof x === 'number' ? Math.round(x * 100) / 100 : typeof x === 'string' ? x.slice(0, 24) : typeof x),
+            ang: g && g.ang != null ? Math.round(g.ang) : null,
+            z: g ? gaugeNeedleColor(g) : null,
+            sp: lastBossPressAt ? Math.min(99999, Date.now() - lastBossPressAt) : null,   // ms ห่างจากการกดล่าสุดของเรา — กุญแจแยก "ของเรา"
+          });
+        } catch {}
+        return orig.apply(this, args);
+      };
+      s.__tkDmgTap = true;
+      logInfo('🎥 ติดตัวดักเลขดาเมจต่อครั้งแล้ว (อ่านอย่างเดียว — จดเฉยๆ ไม่แตะเกม)');
+    } catch {}
+  }
+  // สรุปข้อมูลดิบที่ดักได้ — จัดรูปให้วิเคราะห์ง่าย: สถิติรายตำแหน่งอาร์กิวเมนต์ + แยกตาม "ใกล้การกดของเรา" + สีโซน + คูลดาวน์
+  function dmgTapReport() {
+    const pops = dtapRing.filter((r) => r.k === 'pop'), cds = dtapRing.filter((r) => r.k === 'cd');
+    if (!pops.length && !cds.length) return '🎥 ยังไม่มีข้อมูล — ตัวดักจะเริ่มจดตอนสู้บอสรอบถัดไป (ไม่ต้องเปิดอะไร ทำงานเอง)';
+    const L = [`🎥 ข้อมูลดักดาเมจ — เลขลอย ${pops.length} ครั้ง · วัดคูลดาวน์ ${cds.length} ครั้ง`];
+    // สถิติรายตำแหน่งอาร์กิวเมนต์ (หาว่าตัวไหนคือดาเมจ: ตัวที่เป็นเลขและแกว่งแบบดาเมจ)
+    for (let i = 0; i < 4; i++) {
+      const vals = pops.map((p) => p.a && p.a[i]).filter((v) => typeof v === 'number');
+      if (!vals.length) { const s0 = pops.find((p) => p.a && p.a[i] !== undefined); L.push(`arg${i}: ไม่ใช่ตัวเลข (เช่น ${s0 ? JSON.stringify(s0.a[i]) : '-'} )`); continue; }
+      const mn = Math.min(...vals), mx = Math.max(...vals), av = vals.reduce((a, b) => a + b, 0) / vals.length;
+      L.push(`arg${i}: ตัวเลข ${vals.length} ตัว · ต่ำสุด ${mn} · สูงสุด ${mx} · เฉลี่ย ${av.toFixed(1)}`);
+    }
+    // เดา "แถวของเรา": popup ที่โผล่ ≤250ms หลังเรากด (ไว้ตรวจกับจำนวนการกดจริง)
+    const near = pops.filter((p) => p.sp != null && p.sp <= 250);
+    L.push(`\nโผล่ ≤250ms หลังเรากด: ${near.length}/${pops.length} (${pops.length ? Math.round(near.length / pops.length * 100) : 0}%)`);
+    // แยกตามสีโซนตอนเข็ม (เฉพาะกลุ่ม "ใกล้การกดของเรา" — กลุ่มอื่นคือของคนอื่น/อ่านมุมไม่ได้)
+    const byZone = {};
+    for (const p of near) { const z = p.z || '?'; (byZone[z] = byZone[z] || []).push(p); }
+    for (const [z, arr] of Object.entries(byZone)) {
+      // ใช้ arg ที่เป็นตัวเลขตัวสุดท้าย (มักเป็นดาเมจ ตาม pattern add.text(x,y,dmg)) — รายงานทุก arg เลขเผื่อผิด
+      const nums = arr.map((p) => (p.a || []).filter((v) => typeof v === 'number')).filter((a) => a.length);
+      const lastAvg = nums.length ? (nums.reduce((s, a) => s + a[a.length - 1], 0) / nums.length).toFixed(1) : '-';
+      L.push(`  โซน ${z}: ${arr.length} ครั้ง · ค่าเฉลี่ย arg เลขตัวท้าย ${lastAvg}`);
+    }
+    if (cds.length) {
+      const ms = cds.map((c) => c.ms).sort((a, b) => a - b);
+      L.push(`\n⏱️ คูลดาวน์ปุ่มตีบอส (กดแล้วปุ่มดับ→ติดใหม่): กลาง ${ms[Math.floor(ms.length / 2)]}ms · ต่ำสุด ${ms[0]} · สูงสุด ${ms[ms.length - 1]} (${ms.length} ตัวอย่าง)`);
+    }
+    L.push(`\nตัวอย่างดิบ 6 รายการท้าย:\n${pops.slice(-6).map((p) => JSON.stringify(p)).join('\n')}`);
+    return L.join('\n');
   }
 
   // 🧪 v6.234: A/B กลยุทธ์กดเกจ — สลับ "รอแดง" ↔ "กดรัวทุกมุม" สลับช่วงกันในไฟต์เดียว แล้วเทียบดาเมจ/วินาที
@@ -2297,6 +2373,7 @@
     // 📊 v6.191: วัด HP จริงตลอดไฟต์ (start→ต่ำสุด→จบ) + นับ "ค้างหลบ" (ปากทางกินทิศหลบหมด)
     //   ผู้ใช้ยืนยัน: เกมไม่ฟื้นเลือด → ทางรอดเดียวคือหลบไม่ให้โดน · ต้องรู้ว่าเสียเลือดตรงไหนก่อนปรับ
     let hpStart = null, hpMin = 101, lastHpChk = 0, aoeStalls = 0, gaugeZonesLogged = false;
+    let orbWasDisabled = false, orbDisabledAt = 0;   // 🎥 v6.239: วัดคูลดาวน์ปุ่มตีบอส (กด→ดับ→ติดใหม่)
     let fightT0 = 0, lastContrib = { dmg: null, pct: null };   // 📊 v6.195: จับเวลาไฟต์ (ตั้งตอนเห็นบอสครั้งแรก) + อ่านดาเมจล่าสุด
     // 🛡️ v6.175: เดิมเงื่อนไขลูปมี isOn('bossHunt') → **ปิดโหมดล่าบอสกลางไฟต์ = ทิ้งบอสทันที**
     //   เจอสด 16:30:14: เข้าตีตอน 16:30:00 แล้วโดนตัดจบใน 14 วิ ("กดเกจ 0") ทั้งที่บอสยืนอยู่ตรงหน้า
@@ -2397,7 +2474,7 @@
           // 🧪 v6.234: ช่วง 'spam'/'nogreen' ของ A/B ต้องกดตามกลยุทธ์ตรงนี้ด้วย ไม่งั้นช่วงหลบ AoE จะกลายเป็น "รอแดง" ทุกแขน = เจือจางผลวัด
           if (gd && gd.ang != null && (abMode === 'spam' || (abMode === 'nogreen' && gabNoGreenOk(gd)) || gaugeReady(gd))) {
             const orbd = bossHitOrb();
-            if (orbd && !orbd.disabled && now() - lastPress > 60) { if (gabBlock) gabBlock.p++; lastPress = now(); fireClick(orbd); gaugePresses++; }
+            if (orbd && !orbd.disabled && now() - lastPress > 60) { if (gabBlock) gabBlock.p++; lastPress = now(); lastBossPressAt = Date.now(); fireClick(orbd); gaugePresses++; }
           }
           await sleep(80); continue;   // react ไว กว่าจังหวะตี
         }
@@ -2416,6 +2493,19 @@
         }
       }
       const orb = bossHitOrb();
+      // 🎥 v6.239: ติดตัวดักเลขดาเมจ (ครั้งเดียวต่อ scene — ธงบน scene กันซ้ำ) + วัดคูลดาวน์ปุ่มตีบอสจริง
+      if (present) {
+        installDmgTap();
+        // คูลดาวน์: จับ "เรากด → ปุ่มดับ → ปุ่มติดใหม่" (ตอบคำถามผู้ใช้ว่าเกจคูลดาวน์กี่วิ — วัดจริง ไม่เดาจากวิดีโอ)
+        const dis = !!(orb && orb.disabled);
+        if (dis && !orbWasDisabled && Date.now() - lastBossPressAt < 600) orbDisabledAt = Date.now();
+        else if (!dis && orbWasDisabled && orbDisabledAt) {
+          const ms = Date.now() - orbDisabledAt;
+          if (ms > 50 && ms < 30000) dtapPush({ t: Date.now(), k: 'cd', ms });
+          orbDisabledAt = 0;
+        }
+        orbWasDisabled = dis;
+      }
       // (1) 🦘 หลบ: บอสหมุน → กดกระโดด · v6.117: เช็คเตือน (TreeWalker แพง) ทุก 180ms + กระโดด 1 ครั้ง/สปิน (cooldown 1.2วิ)
       if (now() - lastSpinChk > 180) { lastSpinChk = now(); spinNow = bossSpinWarning(); }
       if (spinNow && now() - lastJump > 1200) {
@@ -2448,11 +2538,11 @@
         }
         if ((spamNow || inRed) && orb && !orb.disabled && now() - lastPress > 60) {
           if (gabBlock) gabBlock.p++;
-          lastPress = now(); fireClick(orb); gaugePresses++;
+          lastPress = now(); lastBossPressAt = Date.now(); fireClick(orb); gaugePresses++;
         }
         await sleep(30);   // ถี่พอจับเข็ม
       } else if (orb && !orb.disabled && now() - lastEngage > 220) {
-        lastEngage = now(); fireClick(orb); hits++;   // ไม่มีเกจ + ปุ่มกดได้ = เริ่มตีครั้งใหม่ (คลิก orb ตีบอส)
+        lastEngage = now(); lastBossPressAt = Date.now(); fireClick(orb); hits++;   // ไม่มีเกจ + ปุ่มกดได้ = เริ่มตีครั้งใหม่ (คลิก orb ตีบอส)
         if (gabBlock) gabBlock.p++;                   // v6.235: นับด้วย ไม่งั้นคอลัมน์ "กด/วิ" ต่ำกว่าจริง
         await sleep(60);
       } else { await sleep(120); }
@@ -7549,6 +7639,15 @@ ${esc(reason)}
       labeled('แมพบ้าน', smallTextInput('bossHomeMap', 'ว่าง=อัตโนมัติ', 96)),
     ));
 
+    // 🎥 v6.239: ปุ่มดูข้อมูลดักเลขดาเมจต่อครั้ง (ตัวดักเปิดตลอด ไม่มีสวิตช์ — อ่านอย่างเดียว)
+    {
+      const dt = document.createElement('button');
+      dt.setAttribute('data-tkbot', '1');
+      dt.textContent = '🎥 ข้อมูลดักดาเมจ';
+      dt.style.cssText = 'padding:5px 10px;border-radius:7px;border:1px solid #4a5568;background:#2d3748;color:#e2e8f0;font-size:11px;cursor:pointer;margin:2px 3px 6px 0;';
+      dt.addEventListener('click', () => showTextModal('🎥 ข้อมูลดักดาเมจต่อครั้ง', dmgTapReport()));
+      panel.appendChild(dt);
+    }
     // 🔬 v6.238: ถอด "โหมดวัดเกจ" ออก เหลือแค่ปุ่มดูผลที่วัดไว้แล้ว (ถ้ามีข้อมูลเก่า)
     if (gProbeRing.length) {
       const gp = document.createElement('button');
