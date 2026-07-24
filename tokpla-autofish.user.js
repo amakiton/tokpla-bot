@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.234
+// @version      6.235
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.234';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.235';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -844,6 +844,16 @@
     say(why);
     if (cfg.tgWarn && isOn('tgOn')) void tgSend(`⚠️ ${esc(why)}`);
   }
+  // 🐛 v6.235: ปิดถาวร (เขียนลง cfg) — สำหรับ "โหมดทดลองใช้ครั้งเดียวจบ"
+  //   ต่างจาก disableForSession ที่เก็บใน sessionOff ซึ่งเป็นตัวแปรในหน่วยความจำ → **รีโหลดหน้าแล้วกลับมาเปิดเอง**
+  //   เคสจริง: v6.229 ตั้งใจให้โหมดวัดเกจ "ใช้ 1 ไฟต์แล้วปิด" แต่ cfg.gaugeProbe ยังเป็น true อยู่
+  //   → ทุกครั้งที่รีโหลด (อัปเดตสคริปต์/กู้คืน) มันติดอาวุธใหม่ = เสียดาเมจบอสรอบนั้นซ้ำๆ ตลอดไป
+  function disablePersist(key, why) {
+    cfg[key] = false; saveCfg(); sessionOff.delete(key);
+    syncPanel();
+    say(why);
+    if (isOn('tgOn')) void tgSend(`ℹ️ ${esc(why)}`);
+  }
 
   // ================= แจ้งเตือน Telegram =================
   // เว็บนี้ตั้ง CSP ไว้ว่า  connect-src 'self' https://*.supabase.co
@@ -1082,10 +1092,14 @@
         const a = (args[0] || '').toLowerCase();
         if (a === 'on' || a === 'off') {
           cfg.gaugeAB = a === 'on'; sessionOff.delete('gaugeAB'); saveCfg(); syncPanel();
-          reply(`🧪 A/B กลยุทธ์เกจ: <b>${a === 'on' ? 'เปิด' : 'ปิด'}</b>${a === 'on' ? ` — จะสลับ "รอแดง/กดรัว" ทุก ${clamp(cfg.gaugeABBlockSec || 15, 5, 60)} วิ ในไฟต์เดียวกัน ครบ ${clamp(cfg.gaugeABFights || 6, 1, 30)} ไฟต์แล้วปิดเอง` : ''}`);
+          const want = clamp(cfg.gaugeABFights || 6, 1, 30);
+          reply(`🧪 A/B กลยุทธ์เกจ: <b>${a === 'on' ? 'เปิด' : 'ปิด'}</b>${a === 'on' ? ` — จะสลับ "รอแดง/กดรัว" ทุก ${clamp(cfg.gaugeABBlockSec || 15, 5, 60)} วิ ในไฟต์เดียวกัน ครบ ${want} ไฟต์แล้วปิดเอง` : ''}`
+            // เตือน 2 กรณีที่เปิดแล้ว "ไม่ได้ข้อมูล" — ต้องบอกตอนนี้ ไม่ใช่ให้ไปงงทีหลัง
+            + (a === 'on' && isOn('gaugeProbe') ? '\n⛔ แต่ "โหมดวัดเกจ" เปิดอยู่ → A/B จะถูกพักไว้ (ข้อมูลจะปนกัน) · ปิดด้วย /gaugeprobe off ก่อน' : '')
+            + (a === 'on' && gabFightsDone() >= want ? `\n⚠️ มีข้อมูลเก่าครบ ${gabFightsDone()} ไฟต์แล้ว → จะปิดตัวเองทันทีหลังไฟต์แรก · อยากวัดใหม่ให้ /gaugeab reset ก่อน` : ''));
           break;
         }
-        if (a === 'reset') { gabRing = []; gabSave(); reply('🧪 ล้างผล A/B แล้ว'); break; }
+        if (a === 'reset') { gabRing = []; gabBlock = null; gabFightNo = 0; gabSave(); reply('🧪 ล้างผล A/B แล้ว (เริ่มนับไฟต์ใหม่)'); break; }
         reply(`<code>${esc(gaugeABReport())}</code>`);
         break;
       }
@@ -1600,19 +1614,31 @@
   //   วิธีที่ถูก: วัดเป็น "ช่วงเวลา" ยาวพอ (15 วิ) แล้วเทียบอัตราดาเมจ — lag ระดับวินาทีจึงไม่มีผล
   //   และต้องสลับ "ภายในไฟต์เดียวกัน" เพราะบอส/ผู้เล่นอื่น/เบ็ด ต่างกันทุกไฟต์ (ข้อมูลจริง: รอแดงล้วนยังแกว่ง 79.9-119.3 ดาเมจ/วิ)
   const GAB_KEY = 'tokpla_gauge_ab';
+  // ช่องว่างระหว่างรอบลูปที่ยังถือว่า "ตีอยู่จริง" — ลูปเดินทุก 30-120ms · เกินนี้ = หลุดไปทำอย่างอื่น
+  const GAB_TICK_MAX = 1500;
   let gabRing = [], gabBlock = null, gabFightNo = 0;
   try { const a = JSON.parse(W.localStorage.getItem(GAB_KEY) || '[]'); if (Array.isArray(a)) gabRing = a.slice(-600); } catch {}
+  // 🐛 v6.235: เลขไฟต์ต้อง "เดินต่อจากของเดิม" ไม่ใช่เริ่ม 0 ใหม่ทุกครั้งที่รีโหลด
+  //   ไม่งั้น: (1) f ชนกัน → นับไฟต์ได้น้อยกว่าจริง ปิดโหมดเองไม่ทำงาน
+  //           (2) การสลับหัวท้าย ((idx+f)%2) รีเซ็ต → "ช่วงต้นไฟต์" กลับไปตกกับกลยุทธ์เดิมเสมอ = อคติที่ตั้งใจกันไว้แต่แรก
+  //   บอทรีโหลดบ่อย (อัปเดตสคริปต์/recoveryWatch) และ A/B กินเวลา 6 ไฟต์ ≈ 18 ชม. → เจอรีโหลดแน่นอน
+  try { if (gabRing.length) gabFightNo = Math.max(...gabRing.map((b) => b.f || 0)) + 1; } catch {}
   const gabSave = () => { try { W.localStorage.setItem(GAB_KEY, JSON.stringify(gabRing.slice(-600))); } catch {} };
   const gabFightsDone = () => new Set(gabRing.map((b) => b.f)).size;
-  // ปิดบล็อกปัจจุบัน (บันทึกดาเมจที่ได้ในช่วงนั้น) — ทิ้งบล็อกสั้น/อ่านเลขไม่ได้ ดีกว่าเก็บค่าขยะ
+  // ปิดบล็อกปัจจุบัน — ทิ้งบล็อกที่ "ไม่ยุติธรรม" ดีกว่าเก็บค่าขยะ (ข้อมูลผิดแย่กว่าข้อมูลน้อย)
   function gabCloseBlock() {
     if (!gabBlock) return;
-    const d1 = readBossContribution().dmg, ms = now() - gabBlock.t0;
-    if (gabBlock.d0 != null && d1 != null && ms >= 5000) {
-      const d = d1 - gabBlock.d0;
-      if (d >= 0 && d < 200000) { gabRing.push({ m: gabBlock.m, d, ms: Math.round(ms), p: gabBlock.p, f: gabBlock.f }); gabSave(); }
-    }
-    gabBlock = null;
+    const b = gabBlock; gabBlock = null;
+    // ปิดยอดเวลาช่วงสุดท้ายก่อน (ดูเหตุผลของ act/gap ใน gabModeNow)
+    const dt = now() - b.last; if (dt <= GAB_TICK_MAX) b.act += dt; else b.gap += dt;
+    const d1 = readBossContribution().dmg;
+    if (b.d0 == null || d1 == null) return;              // อ่านเลข "⚔️ ของเรา" ไม่ได้ (HUD หายหลังบอสตาย)
+    const d = d1 - b.d0;
+    if (d < 0 || d >= 200000) return;                    // ติดลบ/กระโดดผิดปกติ = อ่านพลาด
+    if (b.act < 5000) return;                            // เวลาตีจริงสั้นเกินไป
+    if (b.gap > b.act * 0.5) return;                     // ช่วงนี้ "หายไป" นานกว่าครึ่ง (ตาย/ออกนอกถ้ำ/บอสหาย) = เทียบไม่ได้
+    gabRing.push({ m: b.m, d, ms: Math.round(b.act), p: b.p, f: b.f, w: Math.round(b.gap) });
+    gabSave();
   }
   // คืนกลยุทธ์ที่ต้องใช้ "ตอนนี้" + เปิด/ปิดบล็อกให้เอง · เรียกได้ทุกรอบลูป (แพงเฉพาะตอนสลับบล็อก)
   function gabModeNow(fightT0) {
@@ -1622,7 +1648,15 @@
     const m = ((idx + gabFightNo) % 2 === 0) ? 'red' : 'spam';
     if (!gabBlock || gabBlock.idx !== idx) {
       gabCloseBlock();
-      gabBlock = { idx, m, t0: now(), d0: readBossContribution().dmg, p: 0, f: gabFightNo };
+      gabBlock = { idx, m, t0: now(), last: now(), act: 0, gap: 0, d0: readBossContribution().dmg, p: 0, f: gabFightNo };
+    } else {
+      // 🐛 v6.235: ตัวหารต้องเป็น "เวลาที่ตีจริง" ไม่ใช่เวลานาฬิกา
+      //   ฟังก์ชันนี้ถูกเรียกเฉพาะตอนบอสอยู่ตรงหน้า → ช่วงที่เรียกห่างผิดปกติ = ตาย/ถูกเด้งออกถ้ำ/บอสหาย
+      //   เคสจริงที่จะพัง: ตาย 1 ครั้ง = ออกนอกถ้ำ + รอเกิดใหม่ 10 วิ + เดินกลับได้ถึง 60 วิ
+      //   → บล็อกเดียวกินเวลานาฬิกา ~70 วิ แต่ดาเมจ ~0 → กลยุทธ์ที่ถือบล็อกนั้นอยู่โดนใส่ร้ายหนักมาก
+      const dt = now() - gabBlock.last;
+      if (dt <= GAB_TICK_MAX) gabBlock.act += dt; else gabBlock.gap += dt;
+      gabBlock.last = now();
     }
     return m;
   }
@@ -1634,7 +1668,7 @@
       return { n: a.length, d, sec: ms / 1000, p, dps: ms ? d / (ms / 1000) : 0, dpp: p ? d / p : 0, rate: ms ? p / (ms / 1000) : 0 };
     };
     const R = grp('red'), S = grp('spam');
-    const row = (n, g) => `${n.padEnd(18)} ${String(g.n).padStart(3)} ช่วง · ${String(Math.round(g.sec)).padStart(4)} วิ · ดาเมจ ${g.d.toLocaleString().padStart(8)} → **${g.dps.toFixed(1)} ดาเมจ/วิ** · ${g.rate.toFixed(1)} กด/วิ · ${g.dpp.toFixed(1)} ดาเมจ/กด`;
+    const row = (n, g) => `${n.padEnd(16)} ${String(g.n).padStart(3)} ช่วง · ${String(Math.round(g.sec)).padStart(4)} วิ · ดาเมจ ${g.d.toLocaleString().padStart(7)} → ${g.dps.toFixed(1).padStart(6)} ดาเมจ/วิ · ${g.rate.toFixed(1)} กด/วิ · ${g.dpp.toFixed(1)} ดาเมจ/กด`;
     let verdict;
     if (!R.n || !S.n) verdict = '⏳ ยังไม่ครบทั้งสองแบบ — รอบอสอีกสักรอบ';
     else {
@@ -1644,12 +1678,19 @@
       verdict = Math.abs(diff) < 10
         ? `🤝 ต่างกันแค่ ${diff.toFixed(1)}% = แทบเท่ากัน — ใช้ "รอแดง" ต่อได้ (ปลอดภัยกว่า)${enough ? '' : ' · ข้อมูลยังน้อย'}`
         : diff > 0
-          ? `🏆 **กดรัวทุกมุม** ชนะ +${diff.toFixed(1)}%${enough ? ' (ข้อมูลพอแล้ว — ควรเปลี่ยนเป็นกดรัว)' : ' · ยังน้อย รออีกสักไฟต์'}`
-          : `🏆 **รอแดง** ชนะ +${(-diff).toFixed(1)}%${enough ? ' (ข้อมูลพอแล้ว — ใช้แบบเดิมถูกแล้ว)' : ' · ยังน้อย รออีกสักไฟต์'}`;
+          ? `🏆 กดรัวทุกมุม ชนะ +${diff.toFixed(1)}%${enough ? ' (ข้อมูลพอแล้ว — ควรเปลี่ยนเป็นกดรัว)' : ' · ยังน้อย รออีกสักไฟต์'}`
+          : `🏆 รอแดง ชนะ +${(-diff).toFixed(1)}%${enough ? ' (ข้อมูลพอแล้ว — ใช้แบบเดิมถูกแล้ว)' : ' · ยังน้อย รออีกสักไฟต์'}`;
     }
+    // ⚖️ ตรวจความสมดุลของการทดลอง — เวลาสองฝั่งต้องใกล้เคียงกัน ไม่งั้นแปลว่ามีบล็อกถูกทิ้งไม่เท่ากัน (เช่นตายบ่อยในฝั่งเดียว)
+    const tot = R.sec + S.sec;
+    const skew = tot ? Math.abs(R.sec - S.sec) / tot * 100 : 0;
+    const dropped = gabRing.reduce((s, b) => s + (b.w || 0), 0);
+    const health = (skew > 25 ? `⚠️ เวลาสองฝั่งไม่สมดุล (ต่าง ${skew.toFixed(0)}%) — ผลยังเชื่อไม่ได้เต็มที่\n` : '')
+      + (dropped > 0 ? `🕳️ ตัดเวลาที่ไม่ได้ตีจริงออกแล้ว ${Math.round(dropped / 1000)} วิ (ตาย/หลุดออกถ้ำ/บอสหาย)\n` : '')
+      + (isOn('gaugeProbe') ? `⛔ "โหมดวัดเกจ" เปิดอยู่ = A/B ถูกพักไว้ (โหมดวัดบังคับกดทุกมุม ข้อมูลจะปน) — ปิดโหมดวัดก่อน\n` : '');
     return `🧪 A/B กลยุทธ์กดเกจบอส — ${gabFightsDone()} ไฟต์ · ${gabRing.length} ช่วง\n\n`
-      + `${row('🔴 รอแถบแดง', R)}\n${row('⚡ กดรัวทุกมุม', S)}\n\n${verdict}\n`
-      + `(สลับกลยุทธ์ทุก ${clamp(cfg.gaugeABBlockSec || 15, 5, 60)} วิ ภายในไฟต์เดียวกัน → บอส/ผู้เล่นอื่น/เบ็ด เหมือนกันทั้งสองฝั่ง)`;
+      + `${row('🔴 รอแถบแดง', R)}\n${row('⚡ กดรัวทุกมุม', S)}\n\n${health}${verdict}\n`
+      + `(สลับกลยุทธ์ทุก ${clamp(cfg.gaugeABBlockSec || 15, 5, 60)} วิ ภายในไฟต์เดียวกัน → บอส/ผู้เล่นอื่น/เบ็ด เหมือนกันทั้งสองฝั่ง · ตัวหาร = เวลาที่ตีจริงเท่านั้น)`;
   }
 
   // 📋 v6.199: บันทึก "เหตุการณ์/เหตุผล" ของระบบล่าบอสแยกจาก log หลัก
@@ -2255,7 +2296,11 @@
       if (present) { bossSeen = true; goneAt = 0; if (!fightT0) fightT0 = now(); }
       // 🧪 v6.234: เดินนาฬิกา A/B ทุกรอบลูป (ไม่ใช่เฉพาะตอนมีเกจ) — บล็อกจะได้ปิดตรงเวลาแม้ช่วงนั้นมัวหลบ AoE
       //   แพงเฉพาะจังหวะสลับบล็อก (อ่านเลขดาเมจ 1 ครั้ง/15 วิ) · นอกนั้นแค่ floor+เทียบ
-      const abMode = (isOn('gaugeAB') && present && fightT0) ? gabModeNow(fightT0) : null;
+      // 🐛 v6.235: **ห้ามวัด A/B ตอนโหมดวัดเกจเปิดอยู่** — โหมดวัดบังคับกดทุกมุมที่ 300ms ทั้งไฟต์
+      //   → บล็อกที่ป้ายว่า 'red' จะกลายเป็นกดรัวจริงๆ = ข้อมูลปนกันเงียบๆ โดยไม่มีอะไรฟ้อง (แย่กว่าไม่มีข้อมูล)
+      const abLive = isOn('gaugeAB') && !isOn('gaugeProbe');
+      if (!abLive && gabBlock) gabBlock = null;   // ปิด A/B กลางคัน = ทิ้งบล็อกค้าง ไม่ให้ตกไปปนไฟต์หน้า
+      const abMode = (abLive && present && fightT0) ? gabModeNow(fightT0) : null;
       // 📊 วัด HP แบบ throttle (getPhaserScene แพง) — เก็บ start ครั้งแรกที่อ่านได้ + ต่ำสุดตลอดไฟต์
       if (present && now() - lastHpChk > 400) {
         lastHpChk = now(); const _h = bossPlayerHpPct();
@@ -2389,17 +2434,21 @@
         await sleep(30);   // ถี่พอจับเข็ม
       } else if (orb && !orb.disabled && now() - lastEngage > 220) {
         lastEngage = now(); fireClick(orb); hits++;   // ไม่มีเกจ + ปุ่มกดได้ = เริ่มตีครั้งใหม่ (คลิก orb ตีบอส)
+        if (gabBlock) gabBlock.p++;                   // v6.235: นับด้วย ไม่งั้นคอลัมน์ "กด/วิ" ต่ำกว่าจริง
         await sleep(60);
       } else { await sleep(120); }
     }
     // 🧪 v6.234: จบไฟต์ A/B → ปิดบล็อกสุดท้าย + นับไฟต์ · ครบตามที่ตั้งแล้วปิดเอง พร้อมคำตัดสิน
-    if (isOn('gaugeAB')) {
+    if (isOn('gaugeAB') && !isOn('gaugeProbe')) {
       gabCloseBlock();
       gabFightNo++;
       const done = gabFightsDone(), want = clamp(cfg.gaugeABFights || 6, 1, 30);
-      if (done >= want) disableForSession('gaugeAB', `🧪 A/B กลยุทธ์เกจครบ ${done} ไฟต์ — ปิดโหมดวัดแล้ว\n${gaugeABReport()}`);
-      else { logInfo(`🧪 A/B ไฟต์ที่ ${done}/${want} — ${gabRing.length} ช่วงสะสม (ดูผลที่ปุ่ม "🧪 ผล A/B เกจ")`); }
-      if (isOn('tgOn')) void tgSend(`🧪 <b>A/B เกจ</b> ไฟต์ ${done}/${want}\n<code>${esc(gaugeABReport())}</code>`);
+      // v6.235: ปิดถาวร ไม่ใช่แค่ session — ไม่งั้นรีโหลดแล้วติดอาวุธใหม่ กินไฟต์ทิ้งเรื่อยๆ ทั้งที่ข้อมูลครบแล้ว
+      if (done >= want) disablePersist('gaugeAB', `🧪 A/B กลยุทธ์เกจครบ ${done} ไฟต์ — ปิดโหมดวัดแล้ว (อยากวัดใหม่: /gaugeab reset ก่อนแล้วเปิดอีกครั้ง)\n${gaugeABReport()}`);
+      else {
+        logInfo(`🧪 A/B ไฟต์ที่ ${done}/${want} — ${gabRing.length} ช่วงสะสม (ดูผลที่ปุ่ม "🧪 ผล A/B เกจ")`);
+        if (isOn('tgOn')) void tgSend(`🧪 <b>A/B เกจ</b> ไฟต์ ${done}/${want}\n<code>${esc(gaugeABReport())}</code>`);
+      }
     }
     // 🔬 v6.229: จบไฟต์วัดเกจ → ปิดโหมดวัดเอง (กันเสียดาเมจรอบถัดไป) + สรุปผลให้ดูทันที
     if (isOn('gaugeProbe')) {
@@ -2407,7 +2456,8 @@
       gProbeSave();
       const inR = gProbeRing.filter((s) => Math.abs(s.a) < 20), outR = gProbeRing.filter((s) => Math.abs(s.a) >= 20);
       const avg = (a) => a.length ? (a.reduce((s, x) => s + x.d, 0) / a.length).toFixed(1) : '-';
-      disableForSession('gaugeProbe', `🔬 วัดเกจบอสเสร็จ (${gProbeRing.length} การกด) — ในแดงเฉลี่ย ${avg(inR)} · นอกแดงเฉลี่ย ${avg(outR)} · ปิดโหมดวัดแล้ว ดูผลเต็มที่ปุ่ม "🔬 ผลวัดเกจบอส"`);
+      // v6.235: ปิด "ถาวร" — เดิมใช้ disableForSession ซึ่งอยู่แค่ในหน่วยความจำ → รีโหลดทีไรติดอาวุธใหม่ กินดาเมจบอสซ้ำๆ
+      disablePersist('gaugeProbe', `🔬 วัดเกจบอสเสร็จ (${gProbeRing.length} การกด) — ในแดงเฉลี่ย ${avg(inR)} · นอกแดงเฉลี่ย ${avg(outR)} · ปิดโหมดวัดแล้ว ดูผลเต็มที่ปุ่ม "🔬 ผลวัดเกจบอส"`);
       if (isOn('tgOn')) void tgSend(`🔬 <b>วัดเกจบอสเสร็จ</b> (${gProbeRing.length} การกด)\nในแดงเฉลี่ย <b>${avg(inR)}</b> · นอกแดงเฉลี่ย <b>${avg(outR)}</b>\nดูตารางเต็ม: /gaugeprobe`);
     }
     // สลับเหยื่อคืนขั้นเดิม (สู้จบแล้ว — เหยื่อจุดอ่อนไว้ตีบอสเท่านั้น)
