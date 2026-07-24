@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.228
+// @version      6.229
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.228';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.229';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -118,6 +118,9 @@
     bossBaitTier: 2,             // 👹 เหยื่อ "จุดอ่อนบอส" ระหว่างตี (วิดีโอ: มัดอ้วนขั้น2/กุ้งฝอยขั้น4 = ดาเมจ x1.5) · 0 = ไม่สลับ
     bossStatKeep: 20,            // 📊 v6.195: เก็บสถิติล่าบอสกี่ "ครั้งล่าสุด" (ring buffer · 0 = ปิดการเก็บ)
     bossIntervalMin: 180,        // 🔮 v6.211: บอสมาทุกกี่นาที (ข้อมูลจริง = 3 ชม.) — ใช้ทำนายรอบถัดไปตอนอ่านเวลาจาก DOM ไม่ได้
+    // 🔬 v6.229: โหมดวัดเกจบอส — กด "ทุกมุม" (ไม่เฉพาะแดง) เว้นจังหวะ 300ms เพื่อระบุดาเมจต่อการกดได้ชัด
+    //   ใช้ครั้งเดียวเพื่อตอบว่า "นอกแดงได้ดาเมจไหม/เท่าไร" แล้วปิดเองอัตโนมัติหลังจบไฟต์ (เสียดาเมจ 1 รอบ แลกความจริง)
+    gaugeProbe: false,
     rodSwitchOn: true,           // 🎣 v6.190+: สลับเบ็ด "ผ่านกระเป๋า" (เลือกชิ้นที่ดาเมจบอสสูงสุดตอนตีบอส · โบนัสปลาสูงสุดตอนฟาร์ม)
                                  //   (คอมเมนต์เดิมบอก "ปิดไว้" เป็นของยุค v6.189 ที่ใช้ปุ่ม G ซึ่งสลับได้แค่ tier — เลิกใช้แล้ว)
     bossRodId: '',               // 🎣 v6.174: UUID "ชิ้นเบ็ด" ที่ใช้ตอนตีบอส (เช่นชิ้นที่ติดหินดาเมจบอส) · ว่าง = ไม่สลับ
@@ -1047,6 +1050,17 @@
         if (!enabled) toggle();
         reply('👹 สั่งออกล่าบอสเดี๋ยวนี้'); void runBossHunt(); break;
       }
+      case 'gaugeprobe': case 'probe': {   // 🔬 v6.229: ผลวัดเกจบอส / เปิด-ปิดโหมดวัด
+        const a = (args[0] || '').toLowerCase();
+        if (a === 'on' || a === 'off') {
+          cfg.gaugeProbe = a === 'on'; sessionOff.delete('gaugeProbe'); saveCfg(); syncPanel();
+          reply(`🔬 โหมดวัดเกจบอส: <b>${a === 'on' ? 'เปิด' : 'ปิด'}</b>${a === 'on' ? ' — รอบบอสถัดไปจะกดทุกมุมเพื่อวัด แล้วปิดเอง (ดาเมจรอบนั้นจะน้อยลง)' : ''}`);
+          break;
+        }
+        if (a === 'reset') { gProbeRing = []; gProbeSave(); reply('🔬 ล้างผลวัดเกจแล้ว'); break; }
+        reply(`<code>${esc(gaugeProbeReport())}</code>`);
+        break;
+      }
       case 'catchlog': case 'fishlog': {   // 🎣 v6.228: ประวัติปลาที่ตกได้ (แยกจาก log หลัก)
         const n = clamp(parseInt(args[0], 10) || 25, 5, 80);
         const lines = catchRing.slice(-n).reverse().map((e) => `${hhmmss(e.at)} ${e.m}`);
@@ -1507,6 +1521,46 @@
       if (!m) return { dmg: null, pct: null };
       return { dmg: parseInt(m[1].replace(/,/g, ''), 10), pct: parseFloat(m[2]) };
     } catch { return { dmg: null, pct: null }; }
+  }
+
+  // 🔬 v6.229: วัด "ดาเมจจริงต่อมุมเข็ม" ของเกจบอส — ตอบคำถามว่ากดนอกแถบแดงได้ดาเมจไหม (ส้ม/เขียว) และกดรัวคุ้มไหม
+  //   ⚠️ ต้องวัดจาก **"ดาเมจของเรา"** (readBossContribution) ไม่ใช่ HP บอสรวม — บอสเป็น raid มีผู้เล่นอื่นตีด้วย
+  //      HP รวมจึงลดจากคนอื่นตลอดเวลา = ปนเปื้อน · "ของเรา" เพิ่มจากการกดของเราเท่านั้น = ระบุได้สะอาด
+  //   วิธี: กด → จำ (มุม, ดาเมจเราก่อนกด) → พอกดครั้งถัดไป (ห่าง ≥300ms) อ่านดาเมจใหม่ = ส่วนต่างของการกดครั้งก่อน
+  //   เก็บมุมเป็น "องศาห่างจากกึ่งกลางแถบแดง" → เทียบข้ามไฟต์ได้แม้แถบแดงย้ายตำแหน่ง
+  const GPROBE_KEY = 'tokpla_gauge_probe';
+  let gProbePend = null, gProbeRing = [];
+  try { const a = JSON.parse(W.localStorage.getItem(GPROBE_KEY) || '[]'); if (Array.isArray(a)) gProbeRing = a.slice(-1200); } catch {}
+  const gProbeSave = () => { try { W.localStorage.setItem(GPROBE_KEY, JSON.stringify(gProbeRing.slice(-1200))); } catch {} };
+  // ปิดบัญชีการกดครั้งก่อน (ได้ดาเมจเท่าไร) แล้วเปิดบัญชีใหม่ — เรียก "ก่อน" ยิงคลิกเสมอ
+  function gaugeProbeMark(ang, a0, a1) {
+    const cur = readBossContribution().dmg;
+    if (gProbePend && cur != null && gProbePend.d0 != null) {
+      const d = cur - gProbePend.d0;
+      if (d >= 0 && d < 200000) { gProbeRing.push({ a: Math.round(gProbePend.rel), d }); if (gProbeRing.length % 20 === 0) gProbeSave(); }
+    }
+    let rel = null;
+    if (ang != null && a0 != null && a1 != null) {
+      const c = (a0 + a1) / 2;
+      rel = ang - c; while (rel > 180) rel -= 360; while (rel < -180) rel += 360;
+    }
+    gProbePend = rel == null ? null : { rel, d0: cur };
+  }
+  // สรุปเป็นตาราง "ดาเมจเฉลี่ยตามระยะห่างจากกึ่งกลางแดง" (บั๊กเก็ต 20°)
+  function gaugeProbeReport() {
+    if (!gProbeRing.length) return '🔬 ยังไม่มีข้อมูลวัดเกจ — เปิด "โหมดวัดเกจบอส" แล้วรอบอสรอบถัดไป (วัดจบแล้วปิดเอง)';
+    const B = new Map();
+    for (const s of gProbeRing) { const k = Math.min(8, Math.floor(Math.abs(s.a) / 20)); const b = B.get(k) || { n: 0, sum: 0, hit: 0 }; b.n++; b.sum += s.d; if (s.d > 0) b.hit++; B.set(k, b); }
+    const rows = [...B.keys()].sort((x, y) => x - y).map((k) => {
+      const b = B.get(k), lo = k * 20, hi = k === 8 ? 180 : lo + 20;
+      const zone = lo < 20 ? '🔴 ในแถบแดง' : '⚪ นอกแถบแดง';
+      return `${String(lo).padStart(3)}-${String(hi).padStart(3)}°  ${zone}  กด ${String(b.n).padStart(4)} ครั้ง · เข้า ${String(Math.round(b.hit / b.n * 100)).padStart(3)}% · ดาเมจเฉลี่ย ${(b.sum / b.n).toFixed(1)}`;
+    });
+    const inR = gProbeRing.filter((s) => Math.abs(s.a) < 20), outR = gProbeRing.filter((s) => Math.abs(s.a) >= 20);
+    const avg = (a) => a.length ? (a.reduce((s, x) => s + x.d, 0) / a.length).toFixed(1) : '-';
+    return `🔬 ผลวัดเกจบอส (${gProbeRing.length} การกด)\nระยะห่างจากกึ่งกลางแถบแดง → ดาเมจที่ได้จริง\n\n${rows.join('\n')}\n\n`
+      + `สรุป: ในแดง ${inR.length} กด เฉลี่ย ${avg(inR)} · นอกแดง ${outR.length} กด เฉลี่ย ${avg(outR)}\n`
+      + `→ ถ้า "นอกแดง" เฉลี่ยเกือบ 0 = ต้องรอแดงอย่างเดียว · ถ้าได้ดาเมจบางส่วน = กดส้มด้วยคุ้มกว่า`;
   }
 
   // 📋 v6.199: บันทึก "เหตุการณ์/เหตุผล" ของระบบล่าบอสแยกจาก log หลัก
@@ -2199,12 +2253,27 @@
       if (g && g.ang != null) {
         // ⚙️ v6.162: ใช้ gaugeReady — เทียบทั้ง "ตำแหน่งเข็มตอนนี้" และ "ตำแหน่งที่คาด (ความเร็วเข็ม × latency 120ms)"
         const inRed = gaugeReady(g);
-        if (inRed && orb && !orb.disabled && now() - lastPress > 60) { lastPress = now(); fireClick(orb); gaugePresses++; }
+        // 🔬 v6.229 โหมดวัด: กด "ทุกมุม" เว้นจังหวะ 300ms → ระบุดาเมจต่อการกดได้ชัด (ปกติกดเฉพาะแดง ห่าง 60ms)
+        const probing = isOn('gaugeProbe');
+        const gap = probing ? 300 : 60;
+        if ((probing || inRed) && orb && !orb.disabled && now() - lastPress > gap) {
+          if (probing) gaugeProbeMark(g.ang, g.a0, g.a1);   // ปิดบัญชีกดก่อนหน้า + เปิดบัญชีใหม่ (ต้องเรียกก่อนคลิก)
+          lastPress = now(); fireClick(orb); gaugePresses++;
+        }
         await sleep(30);   // ถี่พอจับเข็ม
       } else if (orb && !orb.disabled && now() - lastEngage > 220) {
         lastEngage = now(); fireClick(orb); hits++;   // ไม่มีเกจ + ปุ่มกดได้ = เริ่มตีครั้งใหม่ (คลิก orb ตีบอส)
         await sleep(60);
       } else { await sleep(120); }
+    }
+    // 🔬 v6.229: จบไฟต์วัดเกจ → ปิดโหมดวัดเอง (กันเสียดาเมจรอบถัดไป) + สรุปผลให้ดูทันที
+    if (isOn('gaugeProbe')) {
+      gaugeProbeMark(null, null, null);   // ปิดบัญชีการกดสุดท้าย
+      gProbeSave();
+      const inR = gProbeRing.filter((s) => Math.abs(s.a) < 20), outR = gProbeRing.filter((s) => Math.abs(s.a) >= 20);
+      const avg = (a) => a.length ? (a.reduce((s, x) => s + x.d, 0) / a.length).toFixed(1) : '-';
+      disableForSession('gaugeProbe', `🔬 วัดเกจบอสเสร็จ (${gProbeRing.length} การกด) — ในแดงเฉลี่ย ${avg(inR)} · นอกแดงเฉลี่ย ${avg(outR)} · ปิดโหมดวัดแล้ว ดูผลเต็มที่ปุ่ม "🔬 ผลวัดเกจบอส"`);
+      if (isOn('tgOn')) void tgSend(`🔬 <b>วัดเกจบอสเสร็จ</b> (${gProbeRing.length} การกด)\nในแดงเฉลี่ย <b>${avg(inR)}</b> · นอกแดงเฉลี่ย <b>${avg(outR)}</b>\nดูตารางเต็ม: /gaugeprobe`);
     }
     // สลับเหยื่อคืนขั้นเดิม (สู้จบแล้ว — เหยื่อจุดอ่อนไว้ตีบอสเท่านั้น)
     if (prevBaitTier != null && currentBait()?.tier !== prevBaitTier) {
@@ -7169,6 +7238,22 @@ ${esc(reason)}
       labeled('เหยื่อจุดอ่อน (ขั้น)', numInput('bossBaitTier', 0, 8, 44)),
       labeled('แมพบ้าน', smallTextInput('bossHomeMap', 'ว่าง=อัตโนมัติ', 96)),
     ));
+
+    panel.appendChild(row(
+      '🔬 โหมดวัดเกจบอส (ทดลอง — ใช้ 1 รอบบอสแล้วปิดเอง)',
+      'ตอบคำถามว่า "กดนอกแถบแดงได้ดาเมจไหม" ด้วยการวัดจริง ไม่ใช่เดา · เปิดแล้วรอบบอสถัดไปบอทจะกด **ทุกมุม** (ไม่เฉพาะแดง) '
+      + 'เว้นจังหวะ 300ms เพื่อจับคู่ "มุมที่กด ↔ ดาเมจที่ได้" ให้ชัด · วัดจาก "⚔️ ของเรา" ไม่ใช่ HP บอสรวม (บอสเป็น raid มีคนอื่นตีด้วย HP รวมจึงเชื่อไม่ได้) · '
+      + '⚠️ รอบที่วัดดาเมจจะน้อยลง (กดห่างขึ้น + กดโดนนอกแดงบ้าง) — แลกกับการรู้ความจริง · จบไฟต์ปิดเองอัตโนมัติ',
+      labeled('เปิดวัดรอบหน้า', checkbox('gaugeProbe')),
+    ));
+    {
+      const gp = document.createElement('button');
+      gp.setAttribute('data-tkbot', '1');
+      gp.textContent = '🔬 ผลวัดเกจบอส';
+      gp.style.cssText = 'padding:5px 10px;border-radius:7px;border:1px solid #4a5568;background:#2d3748;color:#e2e8f0;font-size:11px;cursor:pointer;margin:2px 3px 6px 0;';
+      gp.addEventListener('click', () => showTextModal('🔬 ผลวัดเกจบอส', gaugeProbeReport()));
+      panel.appendChild(gp);
+    }
 
     // 📊 v6.195: สถิติล่าบอส — เก็บ N ครั้งล่าสุด + ปุ่มดูสรุป
     {
