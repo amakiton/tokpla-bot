@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.255
+// @version      6.256
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.255';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.256';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3509,14 +3509,22 @@
       if (!(await waitFor(() => gameTextVisible(/คลังลุงคลัง/), 6000))) {   // v6.181: เดิมแมตช์คำอธิบายในแผงบอทเอง = ผ่านทันทีเสมอ (กฎเหล็ก #7)
         say('🏬 เปิดคลังลุงคลังไม่สำเร็จ (รอ 6 วิ)'); return 0;
       }
-      const ft = [...document.querySelectorAll('button')].find((b) => /🐟\s*ปลา/.test(b.textContent || '') && npcVisible(b)); if (ft) { fireClick(ft); }
+      // v6.256: เกมตัดอิโมจิจากแท็บแล้ว ("ปลา242 ชิ้น") — ใช้ตัวกลาง findUiTab ก่อน แล้วค่อยตกไปแบบเดิม
+      const ft = findUiTab('ปลา') || [...document.querySelectorAll('button')].find((b) => /🐟\s*ปลา/.test(b.textContent || '') && npcVisible(b));
+      if (ft) { fireClick(ft); }
       // ⏳ รอ "การ์ดปลาโผล่จริง" (ไม่ใช่หน่วงคงที่) — ต้นเหตุ "ฝาก 0" ที่ผู้ใช้เจอ
       const gotCards = await waitFor(() => readBag().some((c) => c.rarity != null && npcVisible(c.el)), 4000, 200);
       if (!gotCards) { say('🏬 เปิดคลังแล้วแต่การ์ดปลาไม่โผล่ — ข้ามรอบนี้'); return 0; }
       const stoMin = rarityRank(cfg.npcStorageRarity);
       let fullSig = 0;   // 🏬 v6.223: กด "ฝาก →" ไม่ได้กี่ใบติด (คลังเต็ม = ปุ่มถูก disable/เกมขึ้น "เต็ม")
+      // 🐛 v6.256 (ผู้ใช้เจอสด 20:27 — กระเป๋าเต็ม 345/350 ระบายไม่ออก): ลูปนี้หยิบ "การ์ดใบแรกที่เข้าเงื่อนไข"
+      //   ใหม่ทุกรอบ · ถ้าใบนั้นกด "ฝาก →" ไม่ได้ (ปลาล็อก/ปุ่มไม่เรนเดอร์) → continue แล้ว **เจอใบเดิมซ้ำ**
+      //   → ครบ 3 ครั้งก็เลิกทั้งทริป ทั้งที่ใบอื่นยังฝากได้ (log จริง: "ฝาก 3" แล้วหยุด ทั้งที่คลังว่าง 226 ช่อง)
+      //   แก้: จำใบที่ฝากไม่สำเร็จไว้ แล้วข้ามไปใบถัดไป — ฝากให้ได้มากที่สุดเท่าที่ทำได้ในทริปเดียว
+      const skipCards = new Set();
+      const cardKey = (c) => `${c.shiny ? '✨' : ''}${c.species}`;
       for (let round = 0; round < 40; round++) {
-      const card = readBag().find((c) => c.rarity != null && rarityRank(c.rarity) >= stoMin && (c.count - c.lockedCount) > 0 && npcVisible(c.el));
+      const card = readBag().find((c) => c.rarity != null && rarityRank(c.rarity) >= stoMin && (c.count - c.lockedCount) > 0 && npcVisible(c.el) && !skipCards.has(cardKey(c)));
       if (!card) break;
       fireClick(card.el); await sleep(400);                  // เปิด popup เลือกจำนวน
       // 🏬 v6.223: เกมขึ้นข้อความ "คลังเต็ม" (ผู้ใช้เจอจริง: ของเต็ม บอทมีปัญหาทันที) → เลิกทันที ไม่วนเปล่า
@@ -3544,11 +3552,13 @@
       //   ไม่งั้นสาเหตุอื่น (ปุ่มยังไม่เรนเดอร์ / ปลาถูกล็อก / popup ซ้อน) จะถูกแปะป้ายผิดแล้วพักระบบฝากฟรีๆ 30 นาที
       if (!dep) {
         npcCloseQtyPopup(); await sleep(250);
+        skipCards.add(cardKey(card));   // 🐛 v6.256: ข้ามใบนี้ไปเลย ไม่งั้นรอบหน้าเจอใบเดิมซ้ำจนเลิกทั้งทริป
         if (++fullSig >= 3) {
           const fr = storageFreeSlots();
           if (fr === null || fr <= 0) { storageFull = true; break; }
-          say(`🏬 กด "ฝาก →" ไม่ได้ 3 ใบติด แต่คลังยังว่าง ${fr} ช่อง — ไม่ใช่คลังเต็ม ข้ามรอบนี้ไปก่อน`);
-          break;
+          // ยังว่างอยู่ = ไม่ใช่คลังเต็ม · ลองใบอื่นต่อ (รีเซ็ตตัวนับ) แทนการเลิกทั้งทริป
+          say(`🏬 มี ${skipCards.size} ชนิดที่ฝากไม่ได้ (ล็อกอยู่?) แต่คลังยังว่าง ${fr} ช่อง — ข้ามไปฝากชนิดอื่นต่อ`);
+          fullSig = 0;
         }
         continue;
       }
