@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.246
+// @version      6.247
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.246';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.247';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1111,6 +1111,24 @@
         if (!enabled) toggle();
         reply('👹 สั่งออกล่าบอสเดี๋ยวนี้'); void runBossHunt(); break;
       }
+      // 🧭 v6.247: ตรวจ/แก้ "ถ้ำบอสที่รู้จัก" ด้วยมือ — เกมหมุนเวียนถ้ำ ถ้าบอทเรียนช้าจะได้ใส่เองทัน
+      case 'bosscaves': case 'caves': {
+        const a = (args[0] || '').toLowerCase();
+        if (a === 'add' && args[1]) { learnBossMap(args[1]); reply(`👹 เพิ่มถ้ำ <b>${esc(args[1])}</b> แล้ว`); break; }
+        if (a === 'reset') {
+          bossMapSet.clear(); ['boss_cave', 'naga_vortex'].forEach((m) => bossMapSet.add(m));
+          try { W.localStorage.setItem(BOSS_MAPS_KEY, JSON.stringify([...bossMapSet])); } catch {}
+          reply('👹 ล้างกลับเป็น 2 ถ้ำตั้งต้นแล้ว'); break;
+        }
+        const here = bossMapId();
+        const ex = bossMapExits().map((e) => `${e.targetMap}${isBossMap(e.targetMap) ? ' 👹' : ''}`).join(', ') || '(ไม่มี)';
+        reply(`👹 <b>ถ้ำบอสที่รู้จัก</b> (${bossMapSet.size})\n<code>${esc([...bossMapSet].join('\n'))}</code>\n\n`
+          + `📍 อยู่ที่: <b>${esc(here || '?')}</b>${isBossMap(here) ? ' (เป็นถ้ำบอส)' : ''}\n`
+          + `🚪 ประตูจากตรงนี้: ${esc(ex)}\n`
+          + `🎯 ถ้ำที่จะมุ่งไป: <b>${esc(bossActiveCave())}</b>\n\n`
+          + `<code>/bosscaves add &lt;map_id&gt;</code> เพิ่มเอง · <code>/bosscaves reset</code> ล้าง`);
+        break;
+      }
       case 'gaugeprobe': case 'probe': {   // 🔬 v6.238: อ่านผลเก่าอย่างเดียว (ถอดสวิตช์วัดออกแล้ว)
         const a = (args[0] || '').toLowerCase();
         if (a === 'on') { reply('🔬 โหมดวัดเกจถูกถอดออกแล้ว (v6.238) — มันตอบ "ดาเมจต่อมุม" ไม่ได้จริง และเปิดค้างไว้จะทำให้ A/B หยุดเก็บข้อมูล · ใช้ <code>/gaugeab on</code> แทน'); break; }
@@ -1588,6 +1606,17 @@
     logInfo(`👹 เรียนรู้ถ้ำบอสใหม่: ${id} (เกมหมุนเวียนถ้ำ) — จะตีได้ทุกถ้ำแล้ว`);
     if (isOn('tgOn')) void tgSend(`👹 เจอถ้ำบอสใหม่: <b>${esc(id)}</b> — เพิ่มเข้าระบบแล้ว`);
   }
+  // 🧭 v6.247: "ถ้ำบอสที่ใช้งานรอบนี้คือถ้ำไหน" — ตอบจาก **ประตูจริงในเกม** ไม่ใช่ค่าคงที่
+  //   ต้นเหตุที่ v6.246 ยังแก้ไม่จบ: isBossMap() รับหลายถ้ำแล้วก็จริง แต่ "เป้าหมายการเดินทาง" ยัง hardcode BOSS_MAP
+  //   → รอบที่ถ้ำ active คือ naga_vortex บอทเดินเข้าไปถึงแล้ว แต่ bossGameNavTo ยังเทียบ cur === 'boss_cave' = ไม่เคยถึง
+  //     → สั่ง navigate ซ้ำไปเรื่อยๆ = **เดินออกจากถ้ำที่ยืนอยู่** แล้วสรุปว่า "ไปถ้ำบอสไม่สำเร็จ กลับบ้าน" (ไม่ได้ตีเลย)
+  //   วิธีใหม่: อยู่ในถ้ำบอสแล้ว = ถ้ำนั้น · ไม่งั้นอ่าน exit zone ของแมพปัจจุบันหาอันที่ชี้ไปถ้ำบอสที่รู้จัก · ไม่เจอ = BOSS_MAP (เดิม)
+  function bossActiveCave() {
+    const cur = bossMapId();
+    if (isBossMap(cur)) return cur;
+    for (const e of bossMapExits()) if (isBossMap(e.targetMap)) return e.targetMap;
+    return BOSS_MAP;
+  }
   const BOSS_GRAPH_KEY = 'tokpla_boss_graph', BOSS_STATE_KEY = 'tokpla_boss_state';
   let bossPhase = 'idle';        // idle | travel | fight | return — persist กันหลุดตอนรีโหลด
   let bossHome = '';             // แมพบ้านที่จะกลับ (จำตอนเริ่มล่า)
@@ -1669,7 +1698,13 @@
   function installDmgTap() {
     try {
       const s = getPhaserScene();
-      if (!s || s.__tkDmgTap || typeof s.showDamagePopup !== 'function') return;
+      if (!s || s.__tkDmgTap) return;
+      // 🔎 v6.247: เดิม early-return เงียบสนิทเมื่อไม่มีเมธอด → แยกไม่ออกจาก "ยังไม่ถึงเวลาติด"
+      //   จด 'miss' ไว้ (จำกัดครั้งเดียวต่อ scene) = /dmgtap ตอบได้ตรงๆ ว่าเมธอดหายไปจริงหรือแค่ยังไม่ถึงคิว
+      if (typeof s.showDamagePopup !== 'function') {
+        if (!s.__tkDmgMiss) { s.__tkDmgMiss = true; dtapPush({ t: Date.now(), k: 'miss', why: typeof s.showDamagePopup, map: (() => { try { return s.mapManager?.def?.id; } catch { return null; } })() }); }
+        return;
+      }
       const orig = s.showDamagePopup;
       s.showDamagePopup = function (...args) {
         try {
@@ -1695,12 +1730,21 @@
   // สรุปข้อมูลดิบที่ดักได้ — จัดรูปให้วิเคราะห์ง่าย: สถิติรายตำแหน่งอาร์กิวเมนต์ + แยกตาม "ใกล้การกดของเรา" + สีโซน + คูลดาวน์
   function dmgTapReport() {
     const pops = dtapRing.filter((r) => r.k === 'pop'), cds = dtapRing.filter((r) => r.k === 'cd');
-    const inss = dtapRing.filter((r) => r.k === 'ins');
-    if (!pops.length && !cds.length && !inss.length) return '🎥 ยังไม่มีข้อมูล — ตัวดักจะเริ่มจดตอนสู้บอสรอบถัดไป (ไม่ต้องเปิดอะไร ทำงานเอง)';
-    // 🔎 v6.244: วินิจฉัย "ติดแล้วแต่เงียบ" — ins มีแต่ pop ว่าง = เกมไม่เรียก showDamagePopup แล้ว (เปลี่ยนวิธีวาดเลขหลังอัปเดต)
+    const inss = dtapRing.filter((r) => r.k === 'ins'), miss = dtapRing.filter((r) => r.k === 'miss');
+    if (!pops.length && !cds.length && !inss.length && !miss.length) return '🎥 ยังไม่มีข้อมูล — ตัวดักจะเริ่มจดตอนสู้บอสรอบถัดไป (ไม่ต้องเปิดอะไร ทำงานเอง)';
+    // 🔎 v6.247: เมธอดหายไปจริง (จด miss ตอน early-return) — อันนี้คือหลักฐานตรงว่าเกมเปลี่ยน
+    if (!pops.length && !inss.length && miss.length) {
+      return `🎥 **ไม่มีเมธอด showDamagePopup ในซีนแล้ว** (พบ ${miss.length} ครั้ง · ล่าสุด @${miss[miss.length - 1].map || '?'} เป็น "${miss[miss.length - 1].why}")\n`
+        + `→ เกมเปลี่ยนวิธีวาดเลขดาเมจจริง แนวทางนี้ตายแล้ว — ใช้ "🧪 A/B กลยุทธ์เกจ" วัดแทน`;
+    }
+    // 🔎 v6.244: วินิจฉัย "ติดแล้วแต่เงียบ" — ins มีแต่ pop ว่าง
+    //   ⚠️ v6.247: เดิมสรุปตรงนี้ว่า "เกมเลิกใช้ showDamagePopup แล้ว" ซึ่ง **ฟันธงเกินหลักฐาน** —
+    //   รอบ 16:30 ที่ได้ 0 popup อธิบายได้ด้วยบั๊กแมพ (ตัวดักอยู่หลัง guard หลุดถ้ำ = ไม่เคยติดตั้ง) ไม่ใช่เกมเปลี่ยน
+    //   v6.247 ย้ายตัวดักมาหัวลูป + จด miss แยก → ข้อมูลรอบหน้าถึงจะตัดสินได้จริง
     if (!pops.length && inss.length) {
-      return `🎥 ตัวดักติดตั้งแล้ว ${inss.length} ครั้ง (ล่าสุด ${new Date(inss[inss.length - 1].t).toLocaleTimeString('th-TH')} @${inss[inss.length - 1].map || '?'}) แต่**ไม่มี popup ผ่านมาเลย**\n`
-        + `→ เกมน่าจะเลิกใช้ showDamagePopup วาดเลขดาเมจแล้ว (อัปเดต 25/7) — แนวทางนี้ใช้ไม่ได้ ต้องหาช่องทางใหม่\n`
+      return `🎥 ตัวดักติดตั้งสำเร็จ ${inss.length} ครั้ง (ล่าสุด ${new Date(inss[inss.length - 1].t).toLocaleTimeString('th-TH')} @${inss[inss.length - 1].map || '?'}) แต่ไม่มี popup ผ่านมาเลย\n`
+        + `→ เมธอดยังอยู่แต่เกมไม่เรียก · เป็นไปได้ 3 ทาง: (ก) เกมเก็บ reference เดิมไว้ก่อนเราแพตช์ (ข) เลขวาดจากซีน/ออบเจกต์อื่น (ค) เมธอดนี้เป็นของเก่าที่เลิกใช้\n`
+        + `👉 ยังสรุปไม่ได้ว่า "ตายแล้ว" — ถ้ารอบถัดไปยังเป็นแบบนี้อีก ค่อยทิ้งแนวทางนี้แล้วใช้ 🧪 A/B กลยุทธ์เกจ\n`
         + (cds.length ? `\n⏱️ คูลดาวน์ปุ่มที่วัดได้: ${cds.map((c) => c.ms + 'ms').slice(-5).join(' · ')}` : '');
     }
     const L = [`🎥 ข้อมูลดักดาเมจ — เลขลอย ${pops.length} ครั้ง · วัดคูลดาวน์ ${cds.length} ครั้ง`];
@@ -2301,6 +2345,11 @@
     let lastGateProbe = 0;
     while (enabled && (anyMode || isOn('bossHunt') || mythicActive()) && now() - t0 < maxMs) {
       const cur = bossMapId(), p = bossPlayerXY();
+      // 🧭 v6.247: เป้าคือ "ถ้ำบอส" → เข้าถ้ำบอส**ถ้ำไหนก็ถือว่าถึง** และไม่ต้องเดินให้ตรงพิกัด
+      //   เหตุผล 2 ข้อ: (1) เกมหมุนเวียนถ้ำ ประตูพาเข้าถ้ำที่ active ไม่ใช่ถ้ำที่เราขอ
+      //   (2) ถ้ำใหม่ไม่มีพิกัดใน BOSS_NAV_TARGET (ใช้ default 700,500 ที่อาจอยู่ในกำแพง) = เดินถึงไม่ได้ตลอดกาล
+      //   เข้าถ้ำได้แล้วปล่อยให้ bossFight จัดตำแหน่งเอง (มันเดินหาบอส/หลบ AoE อยู่แล้ว)
+      if (isBossMap(targetMap) && isBossMap(cur)) { aw.cancel && aw.cancel(); return true; }
       if (cur === targetMap && p && Math.abs(p.x - t.x) < 70 && Math.abs(p.y - t.y) < 70) { aw.cancel && aw.cancel(); return true; }
       // 🚪 v6.245: รอบ 13:30 เข้าได้ทาง A* → bossWaitGate (เส้นทางสำรอง) ไม่เคยรัน = /bossgate ว่างเปล่า
       //   ต้องเก็บข้อมูลหน้าประตูจากเส้นทางนี้ด้วย (ตอนเป้าคือถ้ำบอสและยังไปไม่ถึง)
@@ -2311,12 +2360,17 @@
       if ((!aw.walking || stillFor >= 6) && now() - lastNav > 2500) {
         lastNav = now(); stillFor = 0;
         let ok = false; try { ok = aw.navigate({ x: t.x, y: t.y, mapId: targetMap }); } catch {}
-        if (!ok) { if (bossMapId() === targetMap) return true; return false; }   // หาเส้นไม่ได้ → ให้ fallback ทำต่อ (ยกเว้นถึงแล้ว)
+        if (!ok) { if (bossNavArrived(targetMap)) return true; return false; }   // หาเส้นไม่ได้ → ให้ fallback ทำต่อ (ยกเว้นถึงแล้ว)
       }
       await sleep(400);
     }
-    return bossMapId() === targetMap;
+    return bossNavArrived(targetMap);
   }
+  // v6.247: "ถึงเป้าหรือยัง" — เป้าเป็นถ้ำบอส ให้ถ้ำบอสถ้ำไหนก็นับ (เกมหมุนเวียนถ้ำ)
+  const bossNavArrived = (targetMap) => {
+    const cur = bossMapId();
+    return cur === targetMap || (isBossMap(targetMap) && isBossMap(cur));
+  };
   // เดินทางไปแมพเป้าหมาย (ข้ามหลายแมพผ่านกราฟ) — คืน true ถ้าถึง
   async function bossTravelTo(targetMap) {
     // 🎮 v6.146: ลอง A* ในตัวเกมก่อน (เชื่อถือได้กว่าเดิน WASD สุ่ม + ข้ามแมพเอง) · ไปไม่ถึง = fallback วิธีเดิม (waypoint + wall-slide)
@@ -2328,7 +2382,7 @@
     for (let hop = 0; hop < 10 && enabled && (isOn('bossHunt') || mythicActive()); hop++) {   // v6.132: ล่าปลาเทพใช้ bossTravelTo ด้วย — เดิม bossHunt ปิด = เดินไม่ออกเงียบๆ
       const cur = bossMapId();
       if (!cur) { await sleep(1000); continue; }
-      if (cur === targetMap) return true;
+      if (bossNavArrived(targetMap)) return true;
       recordBossGraph();
       let nextTarget = bossNextHop(cur, targetMap);
       // v6.139: ไปถ้ำบอสแต่ยังไม่รู้ route → มุ่งไป "village" ก่อน (boss_cave ต่อ village) → ถึง village = เรียน village→boss_cave (passive) แล้วไปต่อ
@@ -2336,9 +2390,26 @@
       const exits = bossMapExits();
       // ไม่รู้ทาง → heuristic: ลอง "หมู่บ้าน" (hub) ก่อน ไม่งั้นสำรวจ exit แรกที่ยังไม่เคยไป
       let exit = nextTarget ? exits.find((e) => e.targetMap === nextTarget) : null;
+      // 🧭 v6.247 (ตาข่ายกันตก "ถ้ำที่เกมเพิ่งเพิ่ม"): เป้าเป็นถ้ำบอสแต่ไม่มี exit ตรงชื่อ
+      //   1) ประตูบานไหนก็ได้ที่ชี้ไป "ถ้ำบอสที่รู้จัก" — รอบนี้อาจหมุนไปถ้ำอื่นที่เรารู้จักอยู่แล้ว
+      //   2) ยังไม่เจอ → ประตูที่ชี้ไปแมพที่ **ไม่เคยไป** (ไม่อยู่ในกราฟ) และไม่ใช่บ้าน = ผู้ต้องสงสัยถ้ำใหม่
+      //      (ถ้าเดาผิดก็แค่เดินไปแมพนึงแล้ววนใหม่ ไม่ได้พัง — ดีกว่ายอมแพ้ทั้งรอบ)
+      let caveGuess = '';
+      if (!exit && isBossMap(targetMap)) {
+        exit = exits.find((e) => isBossMap(e.targetMap));
+        if (!exit) {
+          const g = loadBossGraph();
+          exit = exits.find((e) => e.targetMap && e.targetMap !== bossHome && e.targetMap !== cur && !g[e.targetMap]);
+          if (exit) { caveGuess = exit.targetMap; say(`👹 ไม่รู้จักถ้ำรอบนี้ — ลองประตูที่ไม่เคยเข้า: ${exit.targetMap}`); }
+        }
+      }
       if (!exit) exit = exits.find((e) => e.targetMap === 'village') || exits.find((e) => e.targetMap !== bossHome) || exits[0];
       if (!exit) { say('👹 หาทางออกจากแมพนี้ไม่เจอ — ยกเลิกล่าบอส'); return false; }
       say(`👹 เดินทาง: ${cur} → ${exit.targetMap} (เป้า ${targetMap})`);
+      // 🚪 v6.247: "ประตูบานนี้ตั้งใจว่าเป็นทางเข้าถ้ำบอส" — ชี้ไปถ้ำที่รู้จัก หรือเป็นผู้ต้องสงสัยถ้ำใหม่ที่เพิ่งเลือก
+      //   ต้องรู้ก่อนเดิน เพราะการเปลี่ยนแมพเกิดได้ 3 ทาง (waypoint / เดินชนโซน / รอประตูเปิด) — ต้องเรียนรู้ให้ครบทุกทาง
+      const gateToCave = isBossMap(exit.targetMap) || (isBossMap(targetMap) && caveGuess === exit.targetMap);
+      const learnIfLanded = () => { const m = bossMapId(); if (gateToCave && m && m !== cur) learnBossMap(m); };
       // 🧭 v6.145: เดินตาม waypoint ที่ "เรียนรู้จากการเดินจริง" (tokpla_route_wps) ก่อนถึงปากทาง —
       //   เลี่ยงสระบัวกลาง village (เลียบขอบเหนืออ้อมสระ) + จุดติดหินก่อนสะพาน river_bank ที่เดินตรงๆ ไม่ผ่าน
       //   key = 'fromMap>toMap' · ไม่มี = เดินตรงแบบเดิม (backward-compatible) · waypoint สุดท้ายมักเป็นจุด trigger ปากทาง
@@ -2349,15 +2420,22 @@
           if (await bossWalkTo(wp[0], wp[1], { thresh: 40, maxMs: 12000 }) === 'mapchanged') break;
         }
       } catch {}
-      if (bossMapId() !== cur) { await sleep(1200); continue; }   // waypoint สุดท้าย trigger ปากทางแล้ว
+      if (bossMapId() !== cur) { learnIfLanded(); await sleep(1200); continue; }   // waypoint สุดท้าย trigger ปากทางแล้ว
       const r = await bossWalkTo(exit.x, exit.y, { thresh: 24 });
-      if (r === 'mapchanged') { await sleep(1200); continue; }   // เข้า transition แล้ว
+      if (r === 'mapchanged') { learnIfLanded(); await sleep(1200); continue; }   // เข้า transition แล้ว
       // เดินถึงปากทางแล้วแต่ยังไม่เปลี่ยนแมพ → เดินย้ำเข้าโซนอีกนิด (เผื่อ trigger ต้อง overlap)
       await bossWalkTo(exit.x, exit.y + (exit.height ? 30 : 0), { thresh: 10, maxMs: 4000 });
       // 🚪 v6.242: ประตูถ้ำบอสล็อกจนถึงเวลา (mechanic ใหม่ที่ผู้ใช้แจ้ง) — บอสอยู่แค่ 1-3 นาที
       //   → ยืนปากประตูแล้ว "พุ่งเข้าถี่ๆ" รอประตูเปิด แทนรอ 6 วิ/รอบ (ของเดิมเข้าช้าไป ~1 นาที = พลาดบอส)
-      if (isBossMap(exit.targetMap)) { if (await bossWaitGate(cur)) { await sleep(1000); continue; } }
-      else { await waitFor(() => bossMapId() !== cur, 6000, 300); }
+      if (gateToCave) {
+        if (await bossWaitGate(cur, exit.targetMap)) {
+          // 🎯 v6.247 (ตาข่ายกันตกตัวจริง): ทะลุประตูถ้ำบอสเข้ามาแล้ว → **แมพที่ยืนอยู่ตอนนี้คือถ้ำบอส**
+          //   เรียนรู้ตรงนี้ ไม่ใช่รอ raidBoss โผล่ (v6.246) — เพราะบอทมาถึงก่อนบอสเกิดตาม bossLeadMin
+          //   ถ้าไม่เรียนตอนนี้: isBossMap เป็นเท็จ → ลูปข้างบนคิดว่ายังไม่ถึง → เดินออกจากถ้ำไปหาถ้ำอื่น = พลาดทั้งรอบ
+          learnIfLanded();
+          await sleep(1000); continue;
+        }
+      } else { await waitFor(() => bossMapId() !== cur, 6000, 300); learnIfLanded(); }
       if (bossMapId() === cur) { say(`👹 เปลี่ยนแมพไม่สำเร็จที่ ${cur} — ลองใหม่`); await sleep(800); }
     }
     return bossMapId() === targetMap;
@@ -2366,8 +2444,10 @@
   //   navigate "ข้ามแมพเข้า boss_cave" ซ้ำถี่ (ทุก 1.2 วิ): ประตูล็อก = A* หาเส้นไม่ได้ (อยู่นิ่ง) · เปิด = พาเข้าทันที
   //   ⚠️ ยังไม่รู้รูปแบบ countdown/ข้อความหน้าประตูแน่ชัด (ยังไม่เห็นของจริง) → เก็บ log ไว้ดูรอบหน้า (bossGateProbe)
   //   timeout: ตามเวลาบอส — ถ้าเลยเวลาที่คาดว่าบอสจะตาย (อยู่ 1-3 นาที) ยังเข้าไม่ได้ = เลิก (กันยืนรอเปล่า)
-  async function bossWaitGate(cur) {
-    const target = BOSS_NAV_TARGET[BOSS_MAP] || { x: 841, y: 445 };
+  //   🐛 v6.247: เดิม hardcode BOSS_MAP ทั้งพิกัดและ mapId → รอบที่ถ้ำ active ไม่ใช่ boss_cave = สั่งเกมพาไปถ้ำผิดใบทุก 1.2 วิ
+  async function bossWaitGate(cur, toMap) {
+    const dest = toMap || bossActiveCave();
+    const target = BOSS_NAV_TARGET[dest] || BOSS_NAV_TARGET[BOSS_MAP] || { x: 841, y: 445 };
     const t0 = now(); let said = false, lastProbe = 0, lastNav = 0;
     // เพดานรอ: lead + maxWait + เผื่อ 2 นาที (แต่ไม่เกิน 12 นาที) — ครอบเวลาบอสจริงได้ ไม่ยืนเปล่าทั้งวัน
     const maxMs = clamp((clamp(cfg.bossLeadMin, 1, 60) + clamp(cfg.bossMaxWaitMin, 1, 30) + 2), 5, 12) * 60000;
@@ -2375,7 +2455,7 @@
       if (bossMapId() !== cur) return true;                     // ประตูเปิด + เข้าได้แล้ว 🎉
       if (!said) { said = true; say('🚪 ถึงปากถ้ำบอสแล้ว — ประตูล็อกจนถึงเวลา · จะพุ่งเข้าทันทีที่เปิด (บอสอยู่แค่ 1-3 นาที)'); bossEvent('🚪 รอหน้าประตูถ้ำ — เข้าถ้ำไม่ได้ก่อนเวลา (mechanic ใหม่)'); }
       if (now() - lastProbe > 8000) { lastProbe = now(); bossGateProbe(now() - t0); }   // เก็บ mechanic (ข้อความ/countdown) ไว้ดูรอบหน้า
-      if (now() - lastNav > 1200) { lastNav = now(); try { gameWalker()?.navigate({ x: target.x, y: target.y, mapId: BOSS_MAP }); } catch {} }
+      if (now() - lastNav > 1200) { lastNav = now(); try { gameWalker()?.navigate({ x: target.x, y: target.y, mapId: dest }); } catch {} }
       await sleep(400);
     }
     return bossMapId() !== cur;
@@ -2503,14 +2583,24 @@
     //   ยืนสุดปลายเคยต้องวิ่ง 399px) · seed จุดกลางจากข้อมูลจริง 1 จุด + เก็บวงใหม่ทุกครั้ง = ปรับตัวเองถ้า pattern เปลี่ยน
     // 🧭 v6.178: จำวง AoE "ข้ามไฟต์" (localStorage) — เดิมเริ่มนับใหม่ทุกไฟต์จาก seed จุดเดียว จุดกลางเลยแกว่งช่วงต้นไฟต์
     //   สะสมทุกวงที่เคยเห็น (เก็บ 30 วงล่าสุด) → จุดกลางนิ่งขึ้นเรื่อยๆ ทุกไฟต์ · pattern เกมเปลี่ยน = ค่าเฉลี่ยเลื่อนตามเอง
-    let aoeSamples = [[841, 744]];
-    try { const sv = JSON.parse(W.localStorage.getItem('tokpla_aoe_samples') || 'null'); if (Array.isArray(sv) && sv.length) aoeSamples = sv; } catch {}
+    // 🐛 v6.247: เดิมเก็บ key เดียวใช้ร่วมทุกถ้ำ — เกมหมุนเวียนถ้ำแล้ว "กลางสนามถ้ำ A" ไม่ใช่ "กลางสนามถ้ำ B"
+    //   ผลถ้าปล่อยไว้: อยู่ naga_vortex แต่ recenter เดินไปพิกัดกลางของ boss_cave = เดินชนกำแพง/ทะลุปากทางออก กลางไฟต์
+    //   → แยก key ต่อถ้ำ · ถ้ำใหม่ที่ยังไม่มีข้อมูล = ไม่มี seed (ปล่อยว่าง) แล้ว "ไม่ recenter จนกว่าจะเห็นวง AoE จริง 1 วง"
+    const aoeKey = () => 'tokpla_aoe_samples_' + (bossMapId() || BOSS_MAP);
+    let aoeSamples = [];
+    try { const sv = JSON.parse(W.localStorage.getItem(aoeKey()) || 'null'); if (Array.isArray(sv) && sv.length) aoeSamples = sv; } catch {}
+    // ย้ายข้อมูลเก่า (key รวม) มาเป็นของ boss_cave ครั้งเดียว — ถ้ำเดิมจะไม่เสียสถิติที่สะสมไว้
+    if (!aoeSamples.length && bossMapId() === BOSS_MAP) {
+      try { const old = JSON.parse(W.localStorage.getItem('tokpla_aoe_samples') || 'null'); if (Array.isArray(old) && old.length) aoeSamples = old; } catch {}
+      if (!aoeSamples.length) aoeSamples = [[841, 744]];
+    }
     let lastRecenter = 0, recenters = 0;
     // 📊 v6.191: วัด HP จริงตลอดไฟต์ (start→ต่ำสุด→จบ) + นับ "ค้างหลบ" (ปากทางกินทิศหลบหมด)
     //   ผู้ใช้ยืนยัน: เกมไม่ฟื้นเลือด → ทางรอดเดียวคือหลบไม่ให้โดน · ต้องรู้ว่าเสียเลือดตรงไหนก่อนปรับ
     let hpStart = null, hpMin = 101, lastHpChk = 0, aoeStalls = 0, gaugeZonesLogged = false;
     let orbWasDisabled = false, orbDisabledAt = 0;   // 🎥 v6.239: วัดคูลดาวน์ปุ่มตีบอส (กด→ดับ→ติดใหม่)
     let fightT0 = 0, lastContrib = { dmg: null, pct: null };   // 📊 v6.195: จับเวลาไฟต์ (ตั้งตอนเห็นบอสครั้งแรก) + อ่านดาเมจล่าสุด
+    let fightMap = '';   // 🧭 v6.247: ถ้ำที่สู้อยู่จริง (จำตอนเห็นบอส) — ใช้พากลับเข้าถ้ำ "ใบเดิม" หลังตาย
     // 🛡️ v6.175: เดิมเงื่อนไขลูปมี isOn('bossHunt') → **ปิดโหมดล่าบอสกลางไฟต์ = ทิ้งบอสทันที**
     //   เจอสด 16:30:14: เข้าตีตอน 16:30:00 แล้วโดนตัดจบใน 14 วิ ("กดเกจ 0") ทั้งที่บอสยืนอยู่ตรงหน้า
     //   ซ้ำร้าย พอเปิดโหมดใหม่ ขา "เข้าถ้ำ" ชนกับขา "กลับบ้าน" → แมพเด้ง ถ้ำ↔บ่อตกปลา 6 รอบ โดนตีฟรีจน HP เหลือ 16%
@@ -2520,7 +2610,11 @@
       if (!isOn('bossHunt') && !bossSeen) break;
       const rb = raidBossState();
       const present = !!(rb && rb.present);
-      if (present) { bossSeen = true; goneAt = 0; if (!fightT0) fightT0 = now(); learnBossMap(bossMapId()); }   // 🐛 v6.246: เห็นบอสในฉาก = แมพนี้เป็นถ้ำบอส (เรียนรู้ถ้ำที่ 3+ เอง)
+      // 🎥 v6.247: ย้ายการติดตั้งตัวดักดาเมจมา "หัวลูป" — เดิมอยู่ลึกหลัง guard "หลุดออกจากถ้ำ"
+      //   รอบ 16:30 อยู่ naga_vortex ที่ตอนนั้น isBossMap ยังเป็นเท็จ → guard เด้ง continue ทุกรอบ = **ไม่เคยไปถึงบรรทัดติดตั้งเลย**
+      //   → "ตี 110 ครั้ง ได้ 0 popup" จึงยังไม่ใช่หลักฐานว่าเกมเลิกใช้ showDamagePopup · ติดตั้งตรงนี้แล้วรอบหน้าจะตอบได้จริง
+      installDmgTap();
+      if (present) { bossSeen = true; goneAt = 0; if (!fightT0) fightT0 = now(); fightMap = bossMapId() || fightMap; learnBossMap(bossMapId()); }   // 🐛 v6.246: เห็นบอสในฉาก = แมพนี้เป็นถ้ำบอส (เรียนรู้ถ้ำที่ 3+ เอง) · v6.247 จำถ้ำไว้กลับเข้าหลังตาย
       // 🧪 v6.234: เดินนาฬิกา A/B ทุกรอบลูป (ไม่ใช่เฉพาะตอนมีเกจ) — บล็อกจะได้ปิดตรงเวลาแม้ช่วงนั้นมัวหลบ AoE
       //   แพงเฉพาะจังหวะสลับบล็อก (อ่านเลขดาเมจ 1 ครั้ง/15 วิ) · นอกนั้นแค่ floor+เทียบ
       // 🐛 v6.235: **ห้ามวัด A/B ตอนโหมดวัดเกจเปิดอยู่** — โหมดวัดบังคับกดทุกมุมที่ 300ms ทั้งไฟต์
@@ -2544,7 +2638,9 @@
         const hp = bossPlayerHpPct(), died = (hp == null || hp < 8);
         say(`⚠️ หลุดออกจากถ้ำ (ครั้งที่ ${deaths}${died ? ' · เลือดหมด/ตาย' : ' · เดินหลบออก'}) — กลับเข้าถ้ำสู้ต่อ`);
         await sleep(died ? 10000 : 800);   // ตาย = รอ respawn · เดินออก = กลับทันที
-        if (!(await bossGameNavTo(BOSS_MAP, 60000))) { say('⚠️ กลับเข้าถ้ำไม่สำเร็จ — เลิกสู้'); break; }
+        // 🐛 v6.247: เดิมกลับเข้า BOSS_MAP เสมอ → ตายในถ้ำที่หมุนเวียนมา (naga_vortex ฯลฯ) = ถูกพากลับ **ถ้ำผิดใบ**
+        //   ตอนนี้ใช้ถ้ำที่กำลังสู้อยู่จริง (จำไว้ตอนเห็นบอสครั้งแรก) — แม่นกว่าเดาจากประตู
+        if (!(await bossGameNavTo(fightMap || bossActiveCave(), 60000))) { say('⚠️ กลับเข้าถ้ำไม่สำเร็จ — เลิกสู้'); break; }
         continue;
       }
       // 🏁 บอสเคยมาแล้วตอนนี้หายไป (ยืนยัน >1.5วิ กันอ่านพลาด) → จบทันที เก็บ reward กลับไปฟาร์ม (ไม่รอครบ maxMin เปล่าๆ)
@@ -2596,7 +2692,7 @@
             bossDodging = true; aoeDodges++;
             aoeSamples.push([Math.round(raid.cx), Math.round(raid.cy)]);   // 🧭 เก็บตำแหน่งวงจริง — จุดกลาง recenter ปรับตามข้อมูลสด
             if (aoeSamples.length > 30) aoeSamples = aoeSamples.slice(-30);
-            try { W.localStorage.setItem('tokpla_aoe_samples', JSON.stringify(aoeSamples)); } catch {}   // v6.178: จำข้ามไฟต์
+            try { W.localStorage.setItem(aoeKey(), JSON.stringify(aoeSamples)); } catch {}   // v6.178: จำข้ามไฟต์ · v6.247: แยกต่อถ้ำ
             try { _sc.autoWalker.cancel(); } catch {}                 // กัน autoWalker (recenter) เดินแย้งกับ WASD หลบ
             // v6.156: log ตำแหน่งวง (ออกแบบ recenter) · v6.159: + จับ "ตอนหลบตีบอสได้ไหม" — orb เปิด/มีเกจ = ตีระหว่างหลบได้ (ไม่ต้อง facetank) · HP = ประเมิน budget โดน AoE
             const _o = bossHitOrb(), _gz = readGaugeWheel(), _hp = bossPlayerHpPct();
@@ -2618,12 +2714,15 @@
       } else if (bossDodging) { bossReleaseAll(); bossDodging = false; }
       // 🧭 v6.162: recenter — ไม่มีวง AoE ค้าง + ห่างจุดกลาง >60px → เดิน (game A*) ไปยืนกลางสนาม
       //   ให้การหลบครั้งถัดไปวิ่ง ≤~75px (แทน 245-399px จากสุดปลาย) = แทบไม่เสียจังหวะตี · ตีระหว่างเดินได้ (v6.161 คนละ channel)
-      if (!raid && present && now() - lastRecenter > 4000 && _sc && _sc.player) {
+      // 🛡️ v6.247: ถ้ำใหม่ที่ยังไม่เคยเห็นวง AoE = ไม่รู้ว่า "กลางสนาม" อยู่ไหน → ห้ามเดา ปล่อยยืนที่เดิมปลอดภัยกว่า
+      if (!raid && present && aoeSamples.length && now() - lastRecenter > 4000 && _sc && _sc.player) {
         const mx = aoeSamples.reduce((s, a) => s + a[0], 0) / aoeSamples.length, my = aoeSamples.reduce((s, a) => s + a[1], 0) / aoeSamples.length;
         const dHome = Math.hypot(mx - _sc.player.x, my - _sc.player.y);
         if (dHome > 60) {
           lastRecenter = now(); recenters++;
-          try { _sc.autoWalker.navigate({ x: Math.round(mx), y: Math.round(my), mapId: BOSS_MAP }); } catch {}
+          // 🐛 v6.247: mapId ต้องเป็น "ถ้ำที่ยืนอยู่" — เดิมใส่ BOSS_MAP ตายตัว ทำให้ตอนสู้ในถ้ำอื่น
+          //   เกมมองเป็น "เดินข้ามแมพ" → พาบอท **เดินออกจากถ้ำกลางไฟต์** (ลูปข้างบนอ่านเป็น "ตาย/เดินออก" แล้ววนกลับเข้า)
+          try { _sc.autoWalker.navigate({ x: Math.round(mx), y: Math.round(my), mapId: bossMapId() || BOSS_MAP }); } catch {}
           // v6.169: log ครั้งแรกของไฟต์ — ยืนยัน recenter ทำงาน + เห็นจุดกลางที่คำนวณได้จริง (เดิมเงียบสนิท วัดผลไม่ได้)
           if (recenters === 1) logInfo(`🧭 recenter → กลางสนาม @${Math.round(mx)},${Math.round(my)} (จาก ${aoeSamples.length} วง) · ตัวห่าง ${Math.round(dHome)}px`);
         }
@@ -2836,7 +2935,7 @@
         if (isOn('tgOn')) void tgSend(`👹 <b>ออกล่าบอส</b> — จากแมพ ${bossHome} → ถ้ำบ่อโบราณ (จะกลับมาฟาร์มต่อ)`);
         recordBossGraph();
         await ensureBossBaitStock();   // 👹 v6.134: ซื้อเหยื่อจุดอ่อนก่อนเข้าถ้ำ (ในถ้ำซื้อไม่ได้)
-        const reached = await bossTravelTo(BOSS_MAP);
+        const reached = await bossTravelTo(bossActiveCave());   // v6.247: ถ้ำที่ active รอบนี้ (ไม่ใช่ boss_cave ตายตัว)
         if (!reached) { say('👹 ไปถ้ำบอสไม่สำเร็จ — กลับบ้าน'); bossEvent('❌ เดินไปถ้ำไม่สำเร็จ — กลับบ้าน'); }
         else {
           bossPhase = 'fight'; saveBossState();

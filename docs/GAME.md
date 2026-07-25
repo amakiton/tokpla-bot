@@ -219,6 +219,22 @@ scene.spawnRaidBoss/startBiteDodge/startSpinDodge/showAttackTelegraph/showSpinTe
 - **เดินเปลี่ยนแมพ (พิสูจน์สด):** `W.dispatchEvent(new KeyboardEvent('keydown',{code:'KeyD',keyCode:68,...}))` ค้าง → ตัวเดินขวา (~48px/150ms) → เดินเข้าโซน `type:'exit'` (x,y,w,h) → เกมเปลี่ยนแมพ + spawn ที่ targetSpawn · ปล่อยปุ่มด้วย keyup เสมอ
 - **กราฟแมพ:** รู้ exit เฉพาะแมพที่อยู่ปัจจุบัน (`def.zones`) → เรียนรู้สะสมลง `tokpla_boss_graph` แล้ว BFS · village = hub (ต่อ river_bank/boss_cave/fisher_town/ice) · boss_cave ต่อ village อย่างเดียว
 - zones ตัวอย่าง boss_cave: spawn `from_village`(836,800) · fishing `boss_pool`(841,445 castRadius560) · exit `to_village`(836,915 w240 h44 →village/from_boss_cave)
+
+### 🔄 ถ้ำบอส "หมุนเวียนตามรอบ" (แพตช์ 25/7/2026) — ห้าม hardcode ชื่อถ้ำอีก
+
+เกมเปลี่ยนถ้ำบอสทุกรอบ: 13:30 = `boss_cave` (เจ้าดุกนรก) · 16:30 = `naga_vortex` (วังวนนาคสาป) · รอบอื่นยังไม่ครบ
+**ประตูที่ village พาเข้า "ถ้ำที่ active รอบนั้น" เอง** (ยืนยันสด 16:31 บอทเข้า naga_vortex ได้โดยไม่ต้องแก้เส้นทาง)
+
+| ต้องใช้ | ห้ามใช้ | เหตุผล |
+|---|---|---|
+| `isBossMap(id)` | `id === BOSS_MAP` | เซ็ตถ้ำ ไม่ใช่ค่าเดียว (v6.246) |
+| `bossActiveCave()` | `BOSS_MAP` เป็นเป้าเดินทาง | อ่านถ้ำ active จาก exit zones จริง (v6.247) |
+| `bossNavArrived(target)` | `cur === targetMap` | เป้าเป็นถ้ำบอส → ถ้ำไหนก็นับว่าถึง (v6.247) |
+| `bossMapId()` ใน `navigate({mapId})` | `BOSS_MAP` | mapId ผิด = เกมมองเป็นเดินข้ามแมพ → **พาเดินออกจากถ้ำกลางไฟต์** (v6.247) |
+| `tokpla_aoe_samples_<mapId>` | key รวม | พิกัด "กลางสนาม" ต่างกันทุกถ้ำ (v6.247) |
+
+- **เรียนรู้ถ้ำใหม่ 2 ทาง:** เห็น `raidBoss` ในฉาก (v6.246) · **ทะลุประตูถ้ำแล้วลงที่แมพไหน = แมพนั้น** (`learnIfLanded()` v6.247 — สำคัญกว่า เพราะบอทถึงก่อนบอสเกิดตาม `bossLeadMin`) · เก็บลง `tokpla_boss_maps`
+- ตรวจ/แก้มือ: `/bosscaves` (ดูถ้ำที่รู้จัก + ประตูจากจุดที่ยืน + ถ้ำที่จะมุ่งไป) · `/bosscaves add <map_id>` · `/bosscaves reset`
 - **กลไกสู้บอส (ถอดจากวิดีโอจริง v6.113):** = **มินิเกมเกจเดิม!** กด orb "ตีบอส" → เกจวงล้อหมุน → **กดตอนเข็มเข้าแถบสีแดง** (`readGaugeWheel` เดิมใช้ได้) · ระหว่างสู้มีแจ้งเตือนให้เดินเข้า **"วงสีเขียว" หลบการโจมตี** · logger ยืนยัน: present true→dead, phase 1→2→3, orb ตีบอส enabled ตอนสู้ · ⚠️ selector "วงเขียว"+ข้อความเตือน+reward ยังไม่ยืนยัน → `bossObserve()` ดักเก็บรอบหน้า
   - ✅ **ยืนยันจาก log จริง v6.116:** **หลบ = กดปุ่ม "กระโดด" (aria กระโดด / player.tryJump)** เมื่อเตือน "🌀 บอสหมุน! กดกระโดดหลบ!" → "💨 หลบทัน!" (ไม่ใช่เดินเข้าวง) · scene object โซนหลบ = `raidDodge` · โดนตี = HP ลด แต่ respawn 100% (ไม่ตายถาวร) · บอส HP ~204,000 · raid ฆ่าได้จริงถ้าหลายคน
   - 🎥 **วิดีโอยืนยันเพิ่ม (v6.113):** RAID หลายคน · HP บอส **192,000** (แถบ "X / Y" กลางบน) · **เหยื่อจุดอ่อน ขั้น2 มัดอ้วน/ขั้น4 กุ้งฝอย = ดาเมจ ×1.5** · โจมตี = **วงแดง AoE รอบกลางบ่อ** ต้องเดินออก · "หลบทัน!" = ป้ายเขียว feedback หลบสำเร็จ · orb ล็อกชั่วขณะตอนโจมตี · reward ตามส่วน %
