@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.249
+// @version      6.250
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.249';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.250';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3566,6 +3566,19 @@
   //   v6.121: idle branch เรียกทุก 150ms แต่ bossTimerMin = TreeWalker ทั้ง DOM (แพง) → cache ผล 5 วิ (เวลาบอสละเอียดระดับนาที เหลือเฟือ)
   let bossTimerCache = null, bossTimerCacheAt = 0;
   let lastBossBlockLog = 0;
+  // ⏸ v6.250: เตือนเมื่อ "พักค้างไว้" แล้วรอบบอสใกล้เข้ามา — พักบล็อก runBossHunt ทั้งหมด (ดู tick)
+  //   เตือนครั้งเดียวต่อรอบ (กันสแปม) · ใช้เวลาจากป้ายเกมโดยตรง ไม่ใช่ตารางที่ตั้งไว้
+  let pausedBossWarnAt = 0;
+  function warnPausedNearBoss() {
+    if (!isOn('bossHunt')) return;
+    const tm = bossTimerMin();
+    if (tm == null || tm > clamp(cfg.bossLeadMin, 1, 60) + 2) return;
+    if (now() - pausedBossWarnAt < 12 * 60000) return;   // รอบบอสห่างกัน ≥ 2 ชม. → 12 นาทีพอกันเตือนซ้ำในรอบเดียว
+    pausedBossWarnAt = now();
+    logWarn(`⏸ บอทพักอยู่ แต่อีก ~${tm} นาทีถึงรอบบอส — "พัก" บล็อกการออกไปล่าทั้งหมด จะพลาดรอบนี้ · กด Alt+P หรือ /resume เพื่อเล่นต่อ`);
+    bossEvent(`⏸ พลาดรอบเพราะบอทพักอยู่ (บอสอีก ${tm} นาที) — ต้องกดเล่นต่อเอง`);
+    if (isOn('tgOn') && isOn('tgWarn')) void tgSend(`⏸ <b>บอทพักอยู่</b> — อีก ~${tm} นาทีถึงรอบบอส แต่โหมดพักบล็อกการออกไปล่า · กด <b>Alt+P</b> หรือ <code>/resume</code>`);
+  }
   function bossHuntDue() {
     if (!isOn('bossHunt')) return false;
     // 📋 v6.199: อ่านเวลาบอส "ก่อน" เช็คตัวขวาง — เพื่อบันทึกได้ว่า "ถึงเวลาแล้วแต่ไม่ไปเพราะอะไร"
@@ -6997,8 +7010,11 @@ ${esc(reason)}
         if (now() - lastIdleWork < 150) return requestAnimationFrame(tick);
         lastIdleWork = now();
 
-        // พักชั่วคราว (สั่งเอง/ผ่าน Telegram) — ยังเปิดบอทอยู่ แค่ไม่เหวี่ยงตัวใหม่
-        if (paused) { updateBadge(); return requestAnimationFrame(tick); }
+        // พักชั่วคราว (สั่งเอง/ผ่าน Telegram) — ⚠️ v6.250: คอมเมนต์เดิมเขียนว่า "แค่ไม่เหวี่ยงตัวใหม่" ซึ่ง **ไม่จริง**
+        //   return ตรงนี้อยู่ "เหนือ" bossHuntDue() (บรรทัดล่าง) → พัก = **ไม่ออกไปล่าบอสเลย** (รวมทั้งหนีออกจากถ้ำ/ธุระเมือง)
+        //   เจอจริง 25/7: ผู้ใช้กดพัก 18:50 ค้างไว้ → ถ้าไม่มีใครสังเกต จะพลาดรอบบอส 19:30 ทั้งรอบแบบเงียบๆ
+        //   ไม่เปลี่ยนพฤติกรรม (พัก = ผู้ใช้อยากคุมเอง ห้ามบอทเดินเอง) แต่ต้อง **ส่งเสียงเตือน** ไม่ใช่เงียบหาย
+        if (paused) { warnPausedNearBoss(); updateBadge(); return requestAnimationFrame(tick); }
 
         // 🛡️ v6.218: ยามเฝ้าป๊อบอัพค้างทั่วไป — "ควรตกได้แต่ตกไม่ได้เพราะมี dialog ค้าง ≥3 วิ" → เคลียร์อัตโนมัติ
         //   จุดเดียวคุมทุกฟีเจอร์ (หีบ/รางวัล/error) แทนการไล่แก้ทีละป๊อบอัพ · ไม่แตะหน้าต่างรับรางวัล (auto-claim จัดการ)
