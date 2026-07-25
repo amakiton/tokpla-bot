@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.241
+// @version      6.242
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.241';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.242';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1115,6 +1115,10 @@
       }
       case 'reloads': {   // 📉 v6.241: หน้าโหลดใหม่บ่อยแค่ไหน + ใครสั่ง
         reply(`<code>${esc(reloadReport())}</code>`);
+        break;
+      }
+      case 'bossgate': {   // 🚪 v6.242: ข้อความหน้าประตูถ้ำ (หา mechanic เวลาเปิด)
+        reply(`<code>${esc(bossGateReport())}</code>`);
         break;
       }
       case 'dmgtap': {   // 🎥 v6.239: ข้อมูลดักเลขดาเมจต่อครั้ง (อ่านอย่างเดียว เปิดตลอด)
@@ -2307,10 +2311,56 @@
       if (r === 'mapchanged') { await sleep(1200); continue; }   // เข้า transition แล้ว
       // เดินถึงปากทางแล้วแต่ยังไม่เปลี่ยนแมพ → เดินย้ำเข้าโซนอีกนิด (เผื่อ trigger ต้อง overlap)
       await bossWalkTo(exit.x, exit.y + (exit.height ? 30 : 0), { thresh: 10, maxMs: 4000 });
-      await waitFor(() => bossMapId() !== cur, 6000, 300);
+      // 🚪 v6.242: ประตูถ้ำบอสล็อกจนถึงเวลา (mechanic ใหม่ที่ผู้ใช้แจ้ง) — บอสอยู่แค่ 1-3 นาที
+      //   → ยืนปากประตูแล้ว "พุ่งเข้าถี่ๆ" รอประตูเปิด แทนรอ 6 วิ/รอบ (ของเดิมเข้าช้าไป ~1 นาที = พลาดบอส)
+      if (exit.targetMap === BOSS_MAP) { if (await bossWaitGate(cur)) { await sleep(1000); continue; } }
+      else { await waitFor(() => bossMapId() !== cur, 6000, 300); }
       if (bossMapId() === cur) { say(`👹 เปลี่ยนแมพไม่สำเร็จที่ ${cur} — ลองใหม่`); await sleep(800); }
     }
     return bossMapId() === targetMap;
+  }
+  // 🚪 v6.242: รอหน้าประตูถ้ำบอส + พุ่งเข้าทันทีที่เปิด (mechanic ใหม่: เข้าถ้ำไม่ได้ก่อนเวลา · บอสอยู่ 1-3 นาที)
+  //   navigate "ข้ามแมพเข้า boss_cave" ซ้ำถี่ (ทุก 1.2 วิ): ประตูล็อก = A* หาเส้นไม่ได้ (อยู่นิ่ง) · เปิด = พาเข้าทันที
+  //   ⚠️ ยังไม่รู้รูปแบบ countdown/ข้อความหน้าประตูแน่ชัด (ยังไม่เห็นของจริง) → เก็บ log ไว้ดูรอบหน้า (bossGateProbe)
+  //   timeout: ตามเวลาบอส — ถ้าเลยเวลาที่คาดว่าบอสจะตาย (อยู่ 1-3 นาที) ยังเข้าไม่ได้ = เลิก (กันยืนรอเปล่า)
+  async function bossWaitGate(cur) {
+    const target = BOSS_NAV_TARGET[BOSS_MAP] || { x: 841, y: 445 };
+    const t0 = now(); let said = false, lastProbe = 0, lastNav = 0;
+    // เพดานรอ: lead + maxWait + เผื่อ 2 นาที (แต่ไม่เกิน 12 นาที) — ครอบเวลาบอสจริงได้ ไม่ยืนเปล่าทั้งวัน
+    const maxMs = clamp((clamp(cfg.bossLeadMin, 1, 60) + clamp(cfg.bossMaxWaitMin, 1, 30) + 2), 5, 12) * 60000;
+    while (enabled && (isOn('bossHunt') || mythicActive()) && now() - t0 < maxMs) {
+      if (bossMapId() !== cur) return true;                     // ประตูเปิด + เข้าได้แล้ว 🎉
+      if (!said) { said = true; say('🚪 ถึงปากถ้ำบอสแล้ว — ประตูล็อกจนถึงเวลา · จะพุ่งเข้าทันทีที่เปิด (บอสอยู่แค่ 1-3 นาที)'); bossEvent('🚪 รอหน้าประตูถ้ำ — เข้าถ้ำไม่ได้ก่อนเวลา (mechanic ใหม่)'); }
+      if (now() - lastProbe > 8000) { lastProbe = now(); bossGateProbe(now() - t0); }   // เก็บ mechanic (ข้อความ/countdown) ไว้ดูรอบหน้า
+      if (now() - lastNav > 1200) { lastNav = now(); try { gameWalker()?.navigate({ x: target.x, y: target.y, mapId: BOSS_MAP }); } catch {} }
+      await sleep(400);
+    }
+    return bossMapId() !== cur;
+  }
+  // 📋 v6.242: เก็บ "ข้อความ/นับถอยหลัง" ที่ปากประตูถ้ำ — ยังไม่รู้รูปแบบแน่ (ผู้ใช้บอกมี countdown+เตือน) → จดดิบไว้ดูของจริง
+  const BOSS_GATE_KEY = 'tokpla_boss_gate';
+  let bossGateRing = [];
+  try { const a = JSON.parse(W.localStorage.getItem(BOSS_GATE_KEY) || '[]'); if (Array.isArray(a)) bossGateRing = a.slice(-120); } catch {}
+  function bossGateProbe(waitedMs) {
+    try {
+      const cand = [];
+      for (const el of document.querySelectorAll('div,span,p,button,h1,h2,h3')) {
+        if (isBotUI(el) || el.children.length || el.offsetParent === null) continue;
+        const t = (el.textContent || '').trim();
+        // จับข้อความที่ "น่าจะเกี่ยวกับเวลาบอส/ประตู": มีตัวเลขเวลา หรือคำเกี่ยวกับบอส/ประตู/รอ
+        // ⚠️ ห้ามใช้ \b หลังคำไทย (นาที/วิ) — \b เป็น word-boundary แบบ ASCII ไม่ match ขอบอักษรไทย → "2 นาที" หลุด
+        if (t && t.length < 60 && (/\d+\s*[:.]\s*\d+|\d+\s*(วิ|นาที)|\d+\s*s\b|บอส|ประตู|ถ้ำ|รอ|เปิด|เวลา|ยังไม่/.test(t))) cand.push(t);
+      }
+      const o = { t: Date.now(), waited: Math.round(waitedMs / 1000), map: bossMapId(), txt: [...new Set(cand)].slice(0, 8) };
+      bossGateRing.push(o); if (bossGateRing.length > 120) bossGateRing.splice(0, bossGateRing.length - 120);
+      try { W.localStorage.setItem(BOSS_GATE_KEY, JSON.stringify(bossGateRing)); } catch {}
+    } catch {}
+  }
+  function bossGateReport() {
+    if (!bossGateRing.length) return '🚪 ยังไม่มีข้อมูลหน้าประตูถ้ำ — จะเก็บตอนบอทไปรอบอสรอบถัดไป (ไม่ต้องเปิดอะไร)';
+    const T = (ms) => new Date(ms).toLocaleTimeString('th-TH');
+    return '🚪 ข้อความหน้าประตูถ้ำบอส (เก็บดิบ ไว้หา mechanic จริง)\n\n'
+      + bossGateRing.slice(-20).map((o) => `${T(o.t)} (รอ ${o.waited}s · ${o.map}) → ${o.txt.join(' | ') || '(ไม่เจอข้อความ)'}`).join('\n');
   }
 
   // orb ที่ใช้ตีบอส (aria "ตีบอส" · สำรอง orb ตกปลาปกติ) — qBtn ข้าม UI บอทแล้ว
