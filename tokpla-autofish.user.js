@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.250
+// @version      6.251
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.250';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.251';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2972,6 +2972,7 @@
     if (orchestrating || busy) { if (resumeHome) clearBossState(); return; }
     orchestrating = true;
     let reachedCave = false;   // 🐛 v6.248: ไปถึงถ้ำจริงไหม — ใช้ตัดสินความยาวคูลดาวน์ตอนจบ (ดู finally)
+    let stamped = false;       // 🐛 v6.251: early-return ที่ตั้งคูลดาวน์เองแล้ว = ห้าม finally ไปตั้งทับ
     // 🐛 v6.117: บ้านต้องไม่ใช่ boss_cave — ถ้าเริ่มล่าตอนอยู่ในถ้ำแล้ว ใช้แมพฟาร์มล่าสุด/ที่ตั้ง/village
     const here = bossMapId();
     bossHome = resumeHome || cfg.bossHomeMap || (here && !isBossMap(here) ? here : bossLastMapId) || 'village';
@@ -2985,7 +2986,9 @@
           if (isOn('tgOn') && isOn('tgWarn')) void tgSend('⚠️ <b>ยกเลิกล่าบอส</b> — บอทเดินตัวละครไม่ได้ (ต้องเปิดแท็บเกมไว้หน้าสุด) · จะลองใหม่ใน 1 นาที');
           bossEvent('⚠️ ยกเลิกก่อนออกเดินทาง — เทสต์เดินตัวละครไม่ผ่าน (แท็บไม่โฟกัส/มีแผงเปิดค้าง?) · คูลดาวน์สั้น 60 วิ แล้วลองใหม่');
           // 👹 v6.199: ยกเลิก "ก่อนออกเดินทาง" = ยังไม่เจอบอสเลย → คูลดาวน์สั้น (เดิม 10 นาที = พลาดบอสทั้งรอบ)
-          bossReleaseAll(); bossPhase = 'idle'; clearBossState(); stampBossHunt(60000); orchestrating = false; return;
+          // 🐛 v6.251: ต้อง stamped=true — ไม่งั้น finally (v6.248) จะเรียก stampBossHunt ทับ · ถ้าบอสยังไม่โผล่
+          //   (อยู่บ้าน บอสอีก 2-3 นาที) finally จะตั้งคูลดาวน์เต็ม 10 นาที + disarm = พลาดทั้งรอบ (undo v6.199)
+          bossReleaseAll(); bossPhase = 'idle'; clearBossState(); stampBossHunt(60000); stamped = true; orchestrating = false; return;
         }
       }
       if (!resumeHome) {
@@ -3021,12 +3024,15 @@
       //   บอสอยู่แค่ 1-3 นาที → พลาดครั้งเดียว = **เสียทั้งรอบทันที ไม่มีโอกาสลองใหม่เลย**
       //   แก้: ไม่ถึงถ้ำ + บอสยังอยู่ = คูลดาวน์สั้น 90 วิ (arm ยังคาไว้ ตามดีไซน์ stampBossHunt เดิม) ลองซ้ำได้สูงสุด 2 ครั้ง
       //   จำกัด 2 ครั้งเพื่อกัน "เดินวนทั้งรอบ" ถ้าเส้นทางพังจริง — ครบแล้วกลับไปคูลดาวน์เต็มตามเดิม
-      const tm = bossTimerMin();
-      const bossStillLive = (tm != null && tm <= 1) || !!(raidBossState() || {}).present;
-      const retry = !resumeHome && !reachedCave && bossStillLive && bossTravelRetries < 2;
-      if (retry) { bossTravelRetries++; bossEvent(`🔁 ไปไม่ถึงถ้ำแต่บอสยังอยู่ — ลองใหม่ใน 90 วิ (ครั้งที่ ${bossTravelRetries}/2)`); }
-      else bossTravelRetries = 0;
-      stampBossHunt(retry ? 90000 : undefined);
+      // 🐛 v6.251: ข้ามถ้า early-return ตั้งคูลดาวน์เองไปแล้ว (เช่นคุมตัวละครไม่ได้ → 60 วิ + คง armed)
+      if (!stamped) {
+        const tm = bossTimerMin();
+        const bossStillLive = (tm != null && tm <= 1) || !!(raidBossState() || {}).present;
+        const retry = !resumeHome && !reachedCave && bossStillLive && bossTravelRetries < 2;
+        if (retry) { bossTravelRetries++; bossEvent(`🔁 ไปไม่ถึงถ้ำแต่บอสยังอยู่ — ลองใหม่ใน 90 วิ (ครั้งที่ ${bossTravelRetries}/2)`); }
+        else bossTravelRetries = 0;
+        stampBossHunt(retry ? 90000 : undefined);
+      }
       resumeTestAfterBoss();
     }
   }
