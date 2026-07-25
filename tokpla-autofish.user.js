@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.245
+// @version      6.246
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.245';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.246';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1573,7 +1573,21 @@
   //     ตี = orb ตีบอส → เกจ conic → กดแถบแดง (readGaugeWheel+fallback) · หลบ = กดปุ่ม "กระโดด" ตอน "🌀 บอสหมุน!" ·
   //     โดนตี HP ลดแต่ respawn 100% (ไม่ตายถาวร) · จบเมื่อบอสหาย/ตาย · ⚠️ เกจของบอทยังไม่ยืนยันสด (bossHunt ต้องเปิดให้ตีจริง)
   // ============================================================================
+  // 🐛 v6.246 (ผู้ใช้เจอสด 16:30 บอทไม่ตีบอส): เกมอัปเดต 25/7 **หมุนเวียนถ้ำบอส** — 13:30=boss_cave (ดุกนรก) · 16:30=naga_vortex (นาคสาป)
+  //   เดิม BOSS_MAP hardcode 'boss_cave' ที่ 16 จุด → อยู่ naga_vortex = ทุกจุดคิดว่า "ไม่ใช่ถ้ำบอส" → bossFight ออกจากลูป, ตายแล้วไม่กลับเข้า
+  //   แก้: isBossMap() รับ "เซ็ตถ้ำบอส" + เรียนรู้ถ้ำใหม่อัตโนมัติเมื่อเห็น raidBoss · BOSS_MAP คงไว้เป็น "เป้าเดินทาง default" (key ของ BOSS_NAV_TARGET)
   const BOSS_MAP = 'boss_cave';
+  const BOSS_MAPS_KEY = 'tokpla_boss_maps';
+  const bossMapSet = new Set(['boss_cave', 'naga_vortex']);
+  try { const a = JSON.parse(W.localStorage.getItem(BOSS_MAPS_KEY) || '[]'); if (Array.isArray(a)) a.forEach((m) => m && bossMapSet.add(m)); } catch {}
+  const isBossMap = (id) => !!id && bossMapSet.has(id);
+  function learnBossMap(id) {
+    if (!id || bossMapSet.has(id)) return;
+    bossMapSet.add(id);
+    try { W.localStorage.setItem(BOSS_MAPS_KEY, JSON.stringify([...bossMapSet])); } catch {}
+    logInfo(`👹 เรียนรู้ถ้ำบอสใหม่: ${id} (เกมหมุนเวียนถ้ำ) — จะตีได้ทุกถ้ำแล้ว`);
+    if (isOn('tgOn')) void tgSend(`👹 เจอถ้ำบอสใหม่: <b>${esc(id)}</b> — เพิ่มเข้าระบบแล้ว`);
+  }
   const BOSS_GRAPH_KEY = 'tokpla_boss_graph', BOSS_STATE_KEY = 'tokpla_boss_state';
   let bossPhase = 'idle';        // idle | travel | fight | return — persist กันหลุดตอนรีโหลด
   let bossHome = '';             // แมพบ้านที่จะกลับ (จำตอนเริ่มล่า)
@@ -2290,7 +2304,7 @@
       if (cur === targetMap && p && Math.abs(p.x - t.x) < 70 && Math.abs(p.y - t.y) < 70) { aw.cancel && aw.cancel(); return true; }
       // 🚪 v6.245: รอบ 13:30 เข้าได้ทาง A* → bossWaitGate (เส้นทางสำรอง) ไม่เคยรัน = /bossgate ว่างเปล่า
       //   ต้องเก็บข้อมูลหน้าประตูจากเส้นทางนี้ด้วย (ตอนเป้าคือถ้ำบอสและยังไปไม่ถึง)
-      if (targetMap === BOSS_MAP && cur !== BOSS_MAP && now() - lastGateProbe > 8000) { lastGateProbe = now(); bossGateProbe(now() - t0); }
+      if (isBossMap(targetMap) && !isBossMap(cur) && now() - lastGateProbe > 8000) { lastGateProbe = now(); bossGateProbe(now() - t0); }
       // นับว่า "นิ่ง" (ไม่ขยับ) กี่รอบ — ถ้านิ่งนานทั้งที่ยังไม่ถึง = สั่ง navigate ใหม่ (เผื่อ NPC/หลุด)
       if (lastP && p && Math.abs(p.x - lastP.x) < 3 && Math.abs(p.y - lastP.y) < 3) stillFor++; else stillFor = 0;
       lastP = p;
@@ -2318,7 +2332,7 @@
       recordBossGraph();
       let nextTarget = bossNextHop(cur, targetMap);
       // v6.139: ไปถ้ำบอสแต่ยังไม่รู้ route → มุ่งไป "village" ก่อน (boss_cave ต่อ village) → ถึง village = เรียน village→boss_cave (passive) แล้วไปต่อ
-      if (!nextTarget && targetMap === BOSS_MAP && cur !== 'village') nextTarget = bossNextHop(cur, 'village');
+      if (!nextTarget && isBossMap(targetMap) && cur !== 'village') nextTarget = bossNextHop(cur, 'village');
       const exits = bossMapExits();
       // ไม่รู้ทาง → heuristic: ลอง "หมู่บ้าน" (hub) ก่อน ไม่งั้นสำรวจ exit แรกที่ยังไม่เคยไป
       let exit = nextTarget ? exits.find((e) => e.targetMap === nextTarget) : null;
@@ -2342,7 +2356,7 @@
       await bossWalkTo(exit.x, exit.y + (exit.height ? 30 : 0), { thresh: 10, maxMs: 4000 });
       // 🚪 v6.242: ประตูถ้ำบอสล็อกจนถึงเวลา (mechanic ใหม่ที่ผู้ใช้แจ้ง) — บอสอยู่แค่ 1-3 นาที
       //   → ยืนปากประตูแล้ว "พุ่งเข้าถี่ๆ" รอประตูเปิด แทนรอ 6 วิ/รอบ (ของเดิมเข้าช้าไป ~1 นาที = พลาดบอส)
-      if (exit.targetMap === BOSS_MAP) { if (await bossWaitGate(cur)) { await sleep(1000); continue; } }
+      if (isBossMap(exit.targetMap)) { if (await bossWaitGate(cur)) { await sleep(1000); continue; } }
       else { await waitFor(() => bossMapId() !== cur, 6000, 300); }
       if (bossMapId() === cur) { say(`👹 เปลี่ยนแมพไม่สำเร็จที่ ${cur} — ลองใหม่`); await sleep(800); }
     }
@@ -2506,7 +2520,7 @@
       if (!isOn('bossHunt') && !bossSeen) break;
       const rb = raidBossState();
       const present = !!(rb && rb.present);
-      if (present) { bossSeen = true; goneAt = 0; if (!fightT0) fightT0 = now(); }
+      if (present) { bossSeen = true; goneAt = 0; if (!fightT0) fightT0 = now(); learnBossMap(bossMapId()); }   // 🐛 v6.246: เห็นบอสในฉาก = แมพนี้เป็นถ้ำบอส (เรียนรู้ถ้ำที่ 3+ เอง)
       // 🧪 v6.234: เดินนาฬิกา A/B ทุกรอบลูป (ไม่ใช่เฉพาะตอนมีเกจ) — บล็อกจะได้ปิดตรงเวลาแม้ช่วงนั้นมัวหลบ AoE
       //   แพงเฉพาะจังหวะสลับบล็อก (อ่านเลขดาเมจ 1 ครั้ง/15 วิ) · นอกนั้นแค่ floor+เทียบ
       // 🐛 v6.235: **ห้ามวัด A/B ตอนโหมดวัดเกจเปิดอยู่** — โหมดวัดบังคับกดทุกมุมที่ 300ms ทั้งไฟต์
@@ -2523,7 +2537,7 @@
       }
       if (rb && rb.dead) { killed = true; break; }
       // 💀 v6.149: ตายถูกส่งออกจากถ้ำ (บ่อน้ำหมู่บ้าน · เลือดหมดจากโดน AoE) → รอ respawn ~10 วิ แล้วกลับเข้าถ้ำสู้ต่อ (เดิมหลุดออก = จบเลย เสีย reward)
-      if (bossSeen && bossMapId() !== BOSS_MAP) {
+      if (bossSeen && !isBossMap(bossMapId())) {
         bossReleaseAll(); bossDodging = false; deaths++;
         // v6.157: หลุดออกจากถ้ำได้ 2 กรณี — ตายจริง (เลือดหมด→respawn ~10วิ) หรือเดินหลบทะลุปากทาง (แก้แล้วด้วย exit-clamp แต่กันเหนียว)
         //   HP ~0 = ตายจริงต้องรอเกิดใหม่ · HP ยังอยู่ = แค่เดินออก กลับได้เลย (ไม่เสีย 10 วิเปล่า)
@@ -2748,7 +2762,7 @@
   //   ตีบอสต้องมีเหยื่อติดเบ็ด (bossFight สลับเป็นเหยื่อจุดอ่อน) · เหยื่อหมดเกลี้ยง = ตีไม่ได้เลย = เสียรอบทั้งรอบ
   //   เดิมมีแต่ "ซื้อเหยื่อจุดอ่อน" ที่ return เงียบ 6 จุดเมื่อซื้อไม่ได้ → ไม่การันตีว่ามีเหยื่อจริง
   async function ensureBossBaitStock() {
-    if (bossMapId() === BOSS_MAP) return;
+    if (isBossMap(bossMapId())) return;
     const bt = cfg.bossBaitTier;
     busy = true;
     try {
@@ -2787,7 +2801,7 @@
   // ⏳ v6.163 (ผู้ใช้สั่ง): จบไฟต์แล้ว "อยู่ในถ้ำต่ออีก 20-30 วิ (สุ่ม)" ก่อนเดินกลับ/ทำอย่างอื่น
   //   สุ่มช่วง = จังหวะออกจากถ้ำไม่ซ้ำเป๊ะทุกรอบ · นอนเป็นช่วงละ 1 วิ เช็ค enabled → กดหยุดบอทแล้วออกได้ทันที ไม่ค้าง 30 วิ
   async function bossLinger() {
-    if (bossMapId() !== BOSS_MAP) return 0;   // หลุดออกจากถ้ำไปแล้ว (ตาย/เดินออก) = ไม่ต้องหน่วง
+    if (!isBossMap(bossMapId())) return 0;   // หลุดออกจากถ้ำไปแล้ว (ตาย/เดินออก) = ไม่ต้องหน่วง
     const ms = 20000 + Math.floor(Math.random() * 10001);
     say(`👹 อยู่ในถ้ำต่ออีก ~${Math.round(ms / 1000)} วิ ก่อนไปต่อ`);
     for (let left = ms; left > 0 && enabled; left -= 1000) await sleep(Math.min(1000, left));
@@ -2801,11 +2815,11 @@
     orchestrating = true;
     // 🐛 v6.117: บ้านต้องไม่ใช่ boss_cave — ถ้าเริ่มล่าตอนอยู่ในถ้ำแล้ว ใช้แมพฟาร์มล่าสุด/ที่ตั้ง/village
     const here = bossMapId();
-    bossHome = resumeHome || cfg.bossHomeMap || (here && here !== BOSS_MAP ? here : bossLastMapId) || 'village';
-    if (bossHome === BOSS_MAP) bossHome = 'village';   // กันเหนียว: บ้านห้ามเป็นถ้ำบอส
+    bossHome = resumeHome || cfg.bossHomeMap || (here && !isBossMap(here) ? here : bossLastMapId) || 'village';
+    if (isBossMap(bossHome)) bossHome = 'village';   // กันเหนียว: บ้านห้ามเป็นถ้ำบอส
     try {
       // 🛡️ v6.107: ถ้าอยู่ boss_cave อยู่แล้ว ไม่ต้องเดินไป (ข้ามเทสต์คุมตัว) · ไม่งั้นต้องคุมตัวละครได้ก่อน
-      if (!resumeHome && bossMapId() !== BOSS_MAP) {
+      if (!resumeHome && !isBossMap(bossMapId())) {
         say('👹 ใกล้เวลาบอส — ทดสอบว่าคุมตัวละครได้ก่อน...');
         if (!await bossCanControl()) {
           say('⚠️ ยกเลิกล่าบอส — เดินตัวละครไม่ได้ตอนนี้ (แท็บไม่โฟกัส/เกมไม่รับปุ่ม?) ลองใหม่ใน 1 นาที');
@@ -3004,7 +3018,7 @@
   //     แก้ให้ถูกทั้งสองเคส: หนีเฉพาะตอน "ติดจริง" = บอสไม่ได้กำลังจะมา (timer ไกล/อ่านไม่ได้ = return บ้านล้มเหลว บอสรอบหน้าห่างเป็นชั่วโมง)
   //     ถ้าเปิดล่าบอส + บอสใกล้ (<= รอสูงสุด+ไปก่อน) → รอในถ้ำ (เดี๋ยว bossHuntDue/bossFightHere จัดการ) ไม่หนี
   const strandedInBossCave = () => {
-    if (bossMapId() !== BOSS_MAP || bossPhase !== 'idle' || orchestrating || busy) return false;
+    if (!isBossMap(bossMapId()) || bossPhase !== 'idle' || orchestrating || busy) return false;
     if ((raidBossState() || {}).present) return false;   // มีบอส → ไม่หนี (tick เรียก bossFightHere ตีแทน)
     if (isOn('bossHunt')) {                                // v6.143: รอบอสที่ใกล้จะมา ห้ามหนี
       if (now() - bossTimerCacheAt > 5000) { bossTimerCacheAt = now(); bossTimerCache = bossTimerMin(); }
@@ -3040,7 +3054,7 @@
     if (orchestrating || busy) return;
     // ตั้งบ้านก่อนเซฟ state — ไม่งั้น bossHome ว่าง (เข้าตีโดยไม่ผ่าน runBossHunt) → รีโหลดกลางไฟต์แล้ว resume ไม่ทำงาน
     bossHome = cfg.bossHomeMap || bossLastMapId || 'village';
-    if (bossHome === BOSS_MAP) bossHome = 'village';
+    if (isBossMap(bossHome)) bossHome = 'village';
     orchestrating = true; bossPhase = 'fight'; saveBossState();
     try {
       say('👹 เจอบอสในถ้ำ — เข้าตี (เกจ→กดแถบแดง + กระโดดหลบ)');
@@ -3050,7 +3064,7 @@
       await claimBossMail(true);   // 📬 v6.171: รับรางวัลก่อนเดินกลับ (เหตุผลเดียวกับใน runBossHunt)
       // 👹 v6.139: หลังตีจบ เดินกลับแมพบ้าน — ฟาร์มต่อ (เช่น sea_dock ที่สถิติปลาเทพดี) + "เรียนรู้เส้นทาง" ระหว่างเดินผ่าน village
       //   → ครั้งหน้า runBossHunt auto-travel ไป boss_cave ได้เอง (แก้บั๊กบอทไม่รู้ route ต้องเดินเอง) · เดินไม่ได้ = ฟาร์มในถ้ำต่อ
-      if (bossMapId() === BOSS_MAP && bossHome && bossHome !== BOSS_MAP) {
+      if (isBossMap(bossMapId()) && bossHome && !isBossMap(bossHome)) {
         bossPhase = 'return'; saveBossState();
         say(`👹 ตีบอสจบ — เดินกลับ ${bossHome} (เรียนรู้เส้นทางไปด้วย)`);
         const back = await bossTravelTo(bossHome);
@@ -3324,7 +3338,7 @@
   let lastBossObs = 0, bossObsPrev = '', bossFightLog = [], bossObsHot = false, bossGaugeDom = '', lastGraphMap = '';
   function bossObserve() {
     try {
-      const cm = bossMapId(); if (cm && cm !== BOSS_MAP) bossLastMapId = cm;   // v6.117: จำแมพฟาร์มล่าสุด (ไว้เป็นบ้าน)
+      const cm = bossMapId(); if (cm && !isBossMap(cm)) bossLastMapId = cm;   // v6.117: จำแมพฟาร์มล่าสุด (ไว้เป็นบ้าน)
       // 👹 v6.139: เรียนรู้กราฟแมพ "passive" — บันทึก exit ของแมพปัจจุบันทุกครั้งที่เปลี่ยนแมพ (จากการเดินปกติ/ผู้ใช้เดินเอง)
       //   แก้บั๊ก bossTravelTo ไม่รู้ route (เช่น village→boss_cave) — เดิม recordBossGraph เรียกเฉพาะตอน hunt · ตอนนี้เรียนจากทุกการเดิน
       if (cm && cm !== lastGraphMap) { lastGraphMap = cm; recordBossGraph(); }
@@ -3448,7 +3462,7 @@
     lastMapLearnAt = now();
     try {
       const id = bossMapId(), nm = curMap;
-      if (!id || !nm || id === BOSS_MAP) return;
+      if (!id || !nm || isBossMap(id)) return;
       const m = JSON.parse(W.localStorage.getItem(MAP_NAME_KEY) || '{}');
       if (m[nm] !== id) { m[nm] = id; W.localStorage.setItem(MAP_NAME_KEY, JSON.stringify(m)); }
     } catch {}
@@ -3651,7 +3665,7 @@
       if (cur && best.lmValHr < cur.lmValHr * 1.25) return null;        // ดีกว่าไม่ถึง 25% = ไม่คุ้มเดิน
       name = best.map; id = mapIdOfName(best.map);
     }
-    if (!id || id === BOSS_MAP || id === bossMapId()) return null;      // ไม่รู้ id (จะรู้เองเมื่อเคยไป+learnMapName) / อยู่แล้ว
+    if (!id || isBossMap(id) || id === bossMapId()) return null;      // ไม่รู้ id (จะรู้เองเมื่อเคยไป+learnMapName) / อยู่แล้ว
     return { id, name };
   }
   async function runMythicMove(id, name) {
@@ -5807,7 +5821,7 @@
   const sceneNearPond = () => { try { const v = getPhaserScene()?.nearPond; return typeof v === 'boolean' ? v : null; } catch { return null; } };
   // 🗺️ v6.224: จำ "แมพที่เคยตกปลา" ไว้ — ใช้เดินกลับเมื่อตัวไปติดอยู่แมพที่ไม่มีบ่อ (เช่น fisher_town หลังทำธุระ/รีโหลด)
   const FISH_MAP_KEY = 'tokpla_last_fish_map';
-  const saveFishMap = (m) => { try { if (m && m !== BOSS_MAP && m !== 'fisher_town') W.localStorage.setItem(FISH_MAP_KEY, m); } catch {} };
+  const saveFishMap = (m) => { try { if (m && !isBossMap(m) && m !== 'fisher_town') W.localStorage.setItem(FISH_MAP_KEY, m); } catch {} };
   const lastFishMap = () => { try { return W.localStorage.getItem(FISH_MAP_KEY) || cfg.bossHome || 'lotus_marsh'; } catch { return cfg.bossHome || 'lotus_marsh'; } };
   let lastPondWalk = 0, lastPondSay = 0, pondWalkStart = 0;
   function walkToPondIfNeeded() {
@@ -5815,7 +5829,7 @@
     //   สมมติว่า "ล่าปลาเทพคุมตำแหน่งเอง" — **ผิด** มันคุมแค่ *เลือกแมพ* (runMythicMove) ไม่ได้คุม *ตำแหน่งในแมพ*
     //   → เปิดโหมดนี้ = ไม่มีใครพาเข้าบ่อ → ยืนค้างขึ้น "ปุ่มตกปลากดไม่ได้" ตลอดกาล (recoveryWatch ก็ไม่รีโหลด เพราะปุ่มมีอยู่แต่ disabled)
     //   แก้: "เดินเข้าบ่อในแมพเดียวกัน" ทำได้เสมอ · เฉพาะ "ข้ามแมพ" เท่านั้นที่ยอมให้โหมดล่าปลาเทพจัดการ (กันแย่งกันเดิน)
-    if (bossMapId() === BOSS_MAP) { pondWalkStart = 0; return false; }   // ถ้ำบอส — ระบบบอสจัดการเอง
+    if (isBossMap(bossMapId())) { pondWalkStart = 0; return false; }   // ถ้ำบอส — ระบบบอสจัดการเอง
     const near = sceneNearPond();
     if (near === null) { pondWalkStart = 0; return false; }   // อ่านไม่ได้ (กำลังโหลด/transition) = ไม่ยุ่ง
     const aw = gameWalker(); if (!aw) return false;
@@ -6576,7 +6590,10 @@ ${esc(reason)}
       //   บั๊ก: เดิมเช็คนี้อยู่ในสาขา idle (เข้าถึงเฉพาะตอนว่าง) → บอทตกปลารัวจนแทบไม่ได้ยิง = บอสมา 110 วิ ตกปลาเฉยๆ
       if (isOn('bossHunt') && bossPhase === 'idle' && now() - lastBossHereChk > 800) {
         lastBossHereChk = now();
-        if (bossMapId() === BOSS_MAP && (raidBossState() || {}).present) { void bossFightHere(); return requestAnimationFrame(tick); }
+        // 🐛 v6.246: เห็นบอสในฉาก = แมพนี้เป็นถ้ำบอส (เรียนรู้ก่อน gate — ไม่งั้นถ้ำที่ 3+ ที่ยังไม่รู้จะติด catch-22)
+        const _present = (raidBossState() || {}).present;
+        if (_present) learnBossMap(bossMapId());
+        if (isBossMap(bossMapId()) && _present) { void bossFightHere(); return requestAnimationFrame(tick); }
       }
       const state = gameState();
       if (state !== 'bite') biteAt = 0;      // ออกจากจังหวะปลาฮุบ = ล้างตัวจับเวลารีแอค
@@ -8883,7 +8900,7 @@ ${esc(reason)}
     if (btnByText('▶ กลับเข้าเกม') || btnByText('กลับเข้าเกม')) { doReload('เด้งออกจากเกม (พักจอ)'); return; }
     // 👹 v6.112: อยู่ในถ้ำบอส = แมพตกปกติไม่ได้ → "ไม่คืบหน้า/ไม่พร้อม" เป็นเรื่องปกติ ไม่ใช่ค้าง
     //   ห้ามรีโหลด (respawn ถ้ำเดิม = วนเปล่า อย่างที่ผู้ใช้เจอ) — ให้ escapeBossCave เดินออกแทน
-    if (bossMapId() === BOSS_MAP) { notReadySince = 0; return; }
+    if (isBossMap(bossMapId())) { notReadySince = 0; return; }
     // (safeGuard) เกมไม่พร้อม/โหลดค้าง/หน้าไม่ใช่สนามตก นานเกิน 60 วิ → รีโหลด (เร็วกว่ารอ stuck)
     if (enabled && !busy && !orchestrating && !detectGameReady()) {
       if (!notReadySince) notReadySince = now();
