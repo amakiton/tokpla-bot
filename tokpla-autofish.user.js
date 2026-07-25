@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.248
+// @version      6.249
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.248';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.249';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1114,7 +1114,15 @@
       // 🧭 v6.247: ตรวจ/แก้ "ถ้ำบอสที่รู้จัก" ด้วยมือ — เกมหมุนเวียนถ้ำ ถ้าบอทเรียนช้าจะได้ใส่เองทัน
       case 'bosscaves': case 'caves': {
         const a = (args[0] || '').toLowerCase();
-        if (a === 'add' && args[1]) { learnBossMap(args[1]); reply(`👹 เพิ่มถ้ำ <b>${esc(args[1])}</b> แล้ว`); break; }
+        // v6.249: force=true (ผู้ใช้สั่งเอง = ข้ามบัญชีดำได้) + รายงาน "ผลจริง" ไม่ใช่ตอบสำเร็จลอยๆ
+        if (a === 'add' && args[1]) {
+          const had = isBossMap(args[1]);
+          const ok = learnBossMap(args[1], true);
+          reply(had ? `👹 <b>${esc(args[1])}</b> อยู่ในรายการอยู่แล้ว (${bossMapSet.size} ถ้ำ)`
+            : ok ? `👹 เพิ่มถ้ำ <b>${esc(args[1])}</b> แล้ว (รวม ${bossMapSet.size} ถ้ำ)`
+            : `⚠️ เพิ่ม <b>${esc(args[1])}</b> ไม่สำเร็จ`);
+          break;
+        }
         if (a === 'reset') {
           bossMapSet.clear(); ['boss_cave', 'naga_vortex'].forEach((m) => bossMapSet.add(m));
           try { W.localStorage.setItem(BOSS_MAPS_KEY, JSON.stringify([...bossMapSet])); } catch {}
@@ -1609,13 +1617,18 @@
     try { const f = W.localStorage.getItem(FISH_MAP_KEY); if (f) s.add(f); if (cfg.bossHomeMap) s.add(cfg.bossHomeMap); } catch {}
     return s;
   };
-  function learnBossMap(id) {
-    if (!id || bossMapSet.has(id)) return;
-    if (bossMapNever().has(id)) { logInfo(`🛡️ ปฏิเสธการเรียน "${id}" เป็นถ้ำบอส (เป็นฮับ/แมพฟาร์ม/บ้าน — เรียนเข้าไปจะทำบอทค้างถาวร)`); return; }
+  // 🐛 v6.249: `force` = ผู้ใช้สั่งเองผ่าน /bosscaves add — **ต้องข้ามบัญชีดำได้**
+  //   บั๊กที่ v6.247 สร้างขึ้น: บัญชีดำกันการเรียนอัตโนมัติ (ดี) แต่ไปกันคำสั่งมือของผู้ใช้ด้วย (ไม่ดี)
+  //   ซ้ำร้าย /bosscaves add ตอบ "เพิ่มถ้ำแล้ว" ทุกกรณีโดยไม่ดูผลจริง = **โกหกผู้ใช้**
+  //   นี่คือทางหนีทีไล่ที่ตั้งใจให้ใช้ตอนบอทเรียนไม่ทัน — พังเงียบตรงจังหวะที่ต้องพึ่งมันที่สุด
+  function learnBossMap(id, force) {
+    if (!id || bossMapSet.has(id)) return !!id;
+    if (!force && bossMapNever().has(id)) { logInfo(`🛡️ ปฏิเสธการเรียน "${id}" เป็นถ้ำบอส (เป็นฮับ/แมพฟาร์ม/บ้าน — เรียนเข้าไปจะทำบอทค้างถาวร) · ถ้าแน่ใจว่าถูก สั่งเองด้วย /bosscaves add ${id}`); return false; }
     bossMapSet.add(id);
     try { W.localStorage.setItem(BOSS_MAPS_KEY, JSON.stringify([...bossMapSet])); } catch {}
     logInfo(`👹 เรียนรู้ถ้ำบอสใหม่: ${id} (เกมหมุนเวียนถ้ำ) — จะตีได้ทุกถ้ำแล้ว`);
     if (isOn('tgOn')) void tgSend(`👹 เจอถ้ำบอสใหม่: <b>${esc(id)}</b> — เพิ่มเข้าระบบแล้ว`);
+    return true;
   }
   // 🧭 v6.247: "ถ้ำบอสที่ใช้งานรอบนี้คือถ้ำไหน" — ตอบจาก **ประตูจริงในเกม** ไม่ใช่ค่าคงที่
   //   ต้นเหตุที่ v6.246 ยังแก้ไม่จบ: isBossMap() รับหลายถ้ำแล้วก็จริง แต่ "เป้าหมายการเดินทาง" ยัง hardcode BOSS_MAP
