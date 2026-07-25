@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.257
+// @version      6.258
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.257';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.258';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4335,10 +4335,24 @@
     return cards;
   }
 
+  // 🐛 v6.258 (ผู้ใช้เจอสด: "บอทขายปลาไม่ได้" — ต้นตอสุดท้ายของลูกโซ่ทั้งเส้น):
+  //   เดิมสแกนเฉพาะ `<span>` — เกมย้ายตัวเลขความจุไปไว้ใน **`<div>`** แล้ว (ยืนยัน DOM จริง: `<div>🎒350/350</div>`)
+  //   → readBagCount() คืน null ตลอด → runSell รอ waitFor(readBagCount) จนหมดเวลา → พิมพ์ "เปิดกระเป๋าไม่สำเร็จ"
+  //     **ทั้งที่กระเป๋าเปิดอยู่จริง** → ไม่เคยขายปลาเลย → เต็ม 350/350 → วนไปเมือง → เด้ง "ถึงจุดหมายเควส" รัว
+  //   แก้: สแกนทุก element ที่เป็นไปได้ + ไม่ผูกกับชนิดแท็ก · ยอมรับทั้งแบบมีและไม่มีเว้นวรรค ("🎒350/350")
+  //   📌 บทเรียนซ้ำ: อย่าผูก selector กับ "ชนิดแท็ก" หรือช่องว่างในข้อความ — เกมเปลี่ยนได้ทุกอัปเดต
   function readBagCount() {
-    for (const el of document.querySelectorAll('span')) {
-      const m = /🎒\s*(\d+)\s*\/\s*(\d+)/.exec(el.textContent);
-      if (m) return { count: +m[1], slots: +m[2] };
+    for (const el of document.querySelectorAll('span,div,p')) {
+      if (el.children.length) continue;                 // เอาเฉพาะใบสุดท้าย กัน element แม่ที่รวมข้อความลูกหลายอัน
+      const m = /🎒\s*([\d,]+)\s*\/\s*([\d,]+)/.exec(el.textContent || '');
+      if (m) return { count: +m[1].replace(/,/g, ''), slots: +m[2].replace(/,/g, '') };
+    }
+    // สำรอง: element แม่ (เกมอาจห่อ 🎒 กับตัวเลขไว้คนละ node ลูก)
+    for (const el of document.querySelectorAll('div,span')) {
+      const t = (el.textContent || '');
+      if (t.length > 40) continue;
+      const m = /🎒\s*([\d,]+)\s*\/\s*([\d,]+)/.exec(t);
+      if (m) return { count: +m[1].replace(/,/g, ''), slots: +m[2].replace(/,/g, '') };
     }
     return null;
   }
