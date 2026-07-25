@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.258
+// @version      6.259
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.258';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.259';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -7416,7 +7416,18 @@ ${esc(reason)}
               const canStorage = isOn('npcStorageOn') && !storagePaused();
               if ((canEssence || canStorage) && !orchestrating && !busy) {
                 bagFullTries = 0; lastNpcErrandAt = 0; lastNpcCheckAt = 0;   // ปลดคูลดาวน์ให้ไปเมืองได้ทันที
-                say('🎒 กระเป๋าเต็ม (ปลาล็อกอยู่) — ไประบายเข้าคลัง/แลกแก่นที่เมืองประมงก่อน');
+                // 🐛 v6.259: ข้อความเดิมฟันธงว่า "ปลาล็อกอยู่" ทุกครั้ง — **วินิจฉัยผิดและพาหลงทาง**
+                //   เจอจริง 25/7: กระเป๋าเต็ม 350/350 แต่ **ล็อกรวม 0 ตัว** · ต้นตอจริงคือเปิดกระเป๋าไม่ได้ (ขายไม่ได้)
+                //   → รายงาน "ตัวเลขจริง" แทนการเดาสาเหตุ: ล็อกกี่ตัว ขายได้กี่ตัว เข้าเกณฑ์ฝากกี่ชนิด
+                const _bagInfo = (() => {
+                  try {
+                    const cs = readBag().filter((c) => c.rarity != null || c.lockedCount > 0);
+                    const lock = cs.reduce((s, c) => s + (c.lockedCount || 0), 0);
+                    const sellable = cs.reduce((s, c) => s + Math.max(0, (c.count || 0) - (c.lockedCount || 0)), 0);
+                    return cs.length ? ` (ล็อก ${lock} · ขายได้ ${sellable})` : ' (อ่านกระเป๋าไม่ได้ — อาจเปิดกระเป๋าไม่สำเร็จ)';
+                  } catch { return ''; }
+                })();
+                say(`🎒 กระเป๋าเต็ม${_bagInfo} — ไประบายเข้าคลัง/แลกแก่นที่เมืองประมงก่อน`);
                 // v6.169: เหตุการณ์ระดับ "เกือบหยุดบอท" ต้องแจ้ง TG (เดิมเงียบ — ผู้ใช้ไม่รู้ว่าเกือบตาย)
                 if (isOn('tgOn') && isOn('tgWarn')) void tgSend('⚠️ <b>กระเป๋าเต็ม + ปลาถูกล็อกขายไม่ได้</b> — บอทกำลังไประบายเข้าคลังลุงคลัง/ยายแก่นเอง · ถ้าเกิดบ่อย ให้เช็คว่า "ระดับที่ฝาก/แลก" ครอบคลุมระดับที่ล็อกไม่ขายหรือยัง');
                 void runTownErrands({ storage: canStorage, essence: canEssence });
