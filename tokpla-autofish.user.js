@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.259
+// @version      6.260
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.259';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.260';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -6267,6 +6267,21 @@
     return m || cfg.bossHomeMap || 'lotus_marsh';
   };
   let lastPondWalk = 0, lastPondSay = 0, pondWalkStart = 0;
+  // 🐛 v6.260 (ผู้ใช้อัดวิดีโอมา 2 รอบ: "ถึงจุดหมายเควสแล้ว เด้งรัวไม่หยุด"):
+  //   หลักฐานจากคลิป — ตัวละคร **อยู่จุดเดิมเป๊ะ 16 วินาที** · `บอท: เปิด — 0 / ∞` (ไม่เหวี่ยงเลย) · toast เด้งซ้ำ
+  //   สาเหตุ: สั่ง `navigate()` ไปจุดที่ A* หาเส้นไม่ได้ (ติดน้ำ/กำแพง) → เกมสแนปเป็น "ถึงแล้ว" ทันที
+  //     → เด้ง toast "ถึงจุดหมายเควสแล้ว" ทุกครั้ง · บอทเห็นว่ายังไม่ nearPond เลยสั่งซ้ำทุก 4 วิ = **วนจนครบ 45 วิ**
+  //     → ยอมแพ้ → ตกไม่ได้ → recoveryWatch รีโหลดหน้า → เกิดใหม่ทุก ~4-6 นาที (ตรงกับสถิติรีโหลด 51 ครั้ง)
+  //   แก้: จำตำแหน่งก่อนสั่ง — ถ้าสั่งแล้ว "ตัวไม่ขยับ" ให้ **เปลี่ยนจุดเป้าหมาย** แทนการยิงจุดเดิมซ้ำ
+  //   (จุดสำรองไล่จากใกล้กลางบ่อออกไป — บ่อมี castRadius กว้าง ยืนตรงไหนก็เหวี่ยงได้ ขอแค่เดินถึง)
+  let pondTryIdx = 0, pondLastPos = null, pondStuckN = 0;
+  const pondTargets = (fz) => [
+    { x: fz.x, y: fz.y + 120 },                     // เดิม (ใต้กลางบ่อ)
+    { x: fz.x, y: fz.y + 240 },                     // ถอยลงมาอีก (ฝั่งตรงข้ามน้ำ)
+    { x: fz.x - 200, y: fz.y + 160 },               // เยื้องซ้าย
+    { x: fz.x + 200, y: fz.y + 160 },               // เยื้องขวา
+    { x: fz.x, y: fz.y },                           // กลางบ่อตรงๆ (บางแมพยืนได้)
+  ];
   function walkToPondIfNeeded() {
     // 🐛 v6.231 (ผู้ใช้เจอสด: ค้างที่ sea_dock ไม่ตกปลาเลย): เดิมกันโหมดล่าปลาเทพออกทั้งฟังก์ชัน
     //   สมมติว่า "ล่าปลาเทพคุมตำแหน่งเอง" — **ผิด** มันคุมแค่ *เลือกแมพ* (runMythicMove) ไม่ได้คุม *ตำแหน่งในแมพ*
@@ -6278,7 +6293,8 @@
     const aw = gameWalker(); if (!aw) return false;
     const curMap = bossMapId();
     const fz = bossFishingZone();
-    if (near === true) { pondWalkStart = 0; saveFishMap(curMap); return false; }   // อยู่ริมบ่อแล้ว — จำแมพนี้เป็น "แมพตกปลา"
+    // v6.260: ถึงบ่อแล้ว = ล้างสถานะการไล่จุดเป้าหมายทั้งหมด (ไม่งั้นรอบหน้าเริ่มจากจุดสำรองที่ค้างไว้)
+    if (near === true) { pondWalkStart = 0; pondTryIdx = 0; pondStuckN = 0; pondLastPos = null; saveFishMap(curMap); return false; }   // อยู่ริมบ่อแล้ว — จำแมพนี้เป็น "แมพตกปลา"
     // near === false: ไม่ได้อยู่ริมบ่อ
     if (fz) {
       // แมพนี้ "มีบ่อ" แต่ตัวอยู่ไกล → เดินเข้าบ่อ (หลังรีโหลด/เก็บหีบ/กลับจากบอส)
@@ -6286,8 +6302,20 @@
       // 🛡️ v6.220: เดินนานเกิน 45 วิ ยังไม่ถึงบ่อ (A* ไม่เจอ/ติดกำแพง) → ปล่อยตรรกะเดิม (เตือน→รีโหลด) จัดการ
       if (now() - pondWalkStart > 45000) return false;
       if (now() - lastPondWalk < 4000) return true;                   // กำลังเดินอยู่ อย่าสั่ง navigate ซ้ำถี่
+      // 🐛 v6.260: เช็คก่อนว่า "รอบที่แล้วสั่งไปแล้วตัวขยับไหม" — ไม่ขยับ = A* ไปจุดนั้นไม่ได้
+      const _p = bossPlayerXY();
+      if (_p && pondLastPos && Math.abs(_p.x - pondLastPos.x) < 4 && Math.abs(_p.y - pondLastPos.y) < 4) {
+        pondStuckN++;
+        if (pondStuckN >= 2) {                                        // นิ่ง 2 รอบติด (~8 วิ) = เปลี่ยนจุดเป้าหมาย
+          pondStuckN = 0;
+          pondTryIdx = (pondTryIdx + 1) % pondTargets(fz).length;
+          logInfo(`🎣 เดินเข้าบ่อไม่ขยับ (A* ไปจุดนั้นไม่ได้) → เปลี่ยนจุดเป้าหมายเป็นแบบที่ ${pondTryIdx + 1}/${pondTargets(fz).length}`);
+        }
+      } else pondStuckN = 0;
+      pondLastPos = _p ? { x: _p.x, y: _p.y } : null;
       lastPondWalk = now();
-      try { aw.navigate({ x: fz.x, y: fz.y + 120, mapId: curMap }); } catch {}
+      const _t = pondTargets(fz)[pondTryIdx] || { x: fz.x, y: fz.y + 120 };
+      try { aw.navigate({ x: Math.round(_t.x), y: Math.round(_t.y), mapId: curMap }); } catch {}
       if (now() - lastPondSay > 30000) { lastPondSay = now(); logInfo('🎣 ตัวละครไม่ได้อยู่ริมบ่อ (หลังรีโหลด/เก็บหีบ/กลับจากบอส) → เดินกลับบ่อเอง'); }
       return true;
     }
