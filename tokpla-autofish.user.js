@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.244
+// @version      6.245
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.244';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.245';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -140,7 +140,7 @@
     // ⏱️ v6.244: 15→7 วิ — บอสหลังเกมอัปเดต 25/7 ตายใน ~27 วิ (HP 306k→48k) · บล็อก 15 วิ = ได้ 1 บล็อก/ไฟต์ (วัดจริง)
     //   7 วิ = ~3 บล็อก/ไฟต์ ครบ 3 กลยุทธ์ในไฟต์เดียว · ยังยาวพอครอบ lag เลข "⚔️ ของเรา" (~1.35 วิ) ได้ ~5 จังหวะ
     gaugeABBlockSec: 7,          // ความยาวช่วงละกลยุทธ์ (วินาที)
-    gaugeABFights: 6,            // วัดกี่ไฟต์แล้วปิดเอง + สรุปผล (สลับหัวท้ายทุกไฟต์ กันอคติช่วงต้น/ท้ายไฟต์)
+    gaugeABFights: 9,            // วัดกี่ไฟต์แล้วปิดเอง + สรุปผล · v6.245: 6→9 — ไฟต์ยุคใหม่สั้น (27 วิ ≈ 2-3 บล็อก) 9 ไฟต์ ≈ แขนละ ~7 บล็อก
     rodSwitchOn: true,           // 🎣 v6.190+: สลับเบ็ด "ผ่านกระเป๋า" (เลือกชิ้นที่ดาเมจบอสสูงสุดตอนตีบอส · โบนัสปลาสูงสุดตอนฟาร์ม)
                                  //   (คอมเมนต์เดิมบอก "ปิดไว้" เป็นของยุค v6.189 ที่ใช้ปุ่ม G ซึ่งสลับได้แค่ tier — เลิกใช้แล้ว)
     bossRodId: '',               // 🎣 v6.174: UUID "ชิ้นเบ็ด" ที่ใช้ตอนตีบอส (เช่นชิ้นที่ติดหินดาเมจบอส) · ว่าง = ไม่สลับ
@@ -405,8 +405,9 @@
         // v6.84: 'gameauto' ใน v6.81-6.83 เป็นค่าที่ระบบบังคับ (โหมด bot ยังพัง) ไม่ใช่ตัวเลือกผู้ใช้
         // → เอนจิน bot ใช้ได้แล้ว ย้ายให้ครั้งเดียว (หลังจากนี้ผู้ใช้เลือกเองใน UI ระบบเคารพเสมอ)
         if (!('fishModeV684' in old)) { if (old.fishMode === 'gameauto') c.fishMode = 'bot'; c.fishModeV684 = true; }
-        // ⏱️ v6.244: หดบล็อก A/B 15→7 วิ ให้เข้ากับบอสยุคใหม่ (ตายใน ~27 วิ) — แก้เฉพาะค่าเริ่มต้นเดิมของผม
+        // ⏱️ v6.244/6.245: หดบล็อก A/B 15→7 วิ + เพิ่มไฟต์ 6→9 ให้เข้ากับบอสยุคใหม่ (ตายใน ~27 วิ) — แก้เฉพาะค่าเริ่มต้นเดิมของผม
         if (old.gaugeABBlockSec === 15) c.gaugeABBlockSec = DEFAULTS.gaugeABBlockSec;
+        if (old.gaugeABFights === 6) c.gaugeABFights = DEFAULTS.gaugeABFights;
         // 🕐 v6.240: แก้ตารางบอสที่ v6.230 ตั้งค่าเริ่มต้นไว้ผิด ('01:30' + ทุก 180 นาที = งอกรอบผี 01:30/04:30/07:30)
         //   ป้ายในเกมบอกเอง + สถิติ 20 ไฟต์ยืนยัน: มีแค่ 10:30/13:30/16:30/19:30/22:30
         //   เขียนทับเฉพาะเมื่อค่ายังเป็น "ค่าเริ่มต้นที่ผิดของผม" — ถ้าผู้ใช้เคยแก้เองไว้ ไม่แตะ
@@ -1797,7 +1798,8 @@
       const [w1, w2] = ranked;
       const diff = (G[w1].dps / G[w2].dps - 1) * 100;
       // n น้อย = ยังไม่ฟันธง · เกณฑ์ 10% กันตัดสินจากความผันผวนปกติ (ข้อมูลจริงแกว่ง ~±20%)
-      const enough = GAB_ARMS.every((m) => G[m].n >= 8);
+      // v6.245: เกณฑ์ 8→6 บล็อก/แขน — บอสยุคใหม่ไฟต์สั้น (2-3 บล็อก/ไฟต์) · 9 ไฟต์ ≈ 6-7/แขน พอฟันธงที่ diff ≥10%
+      const enough = GAB_ARMS.every((m) => G[m].n >= 6);
       verdict = diff < 10
         ? `🤝 ${GAB_NAME[w1]} กับ ${GAB_NAME[w2]} ต่างกันแค่ ${diff.toFixed(1)}% = แทบเท่ากัน${enough ? ' — เลือกแบบไหนก็ได้' : ' · ข้อมูลยังน้อย'}`
         : `🏆 ${GAB_NAME[w1]} ชนะ (+${diff.toFixed(1)}% เหนืออันดับ 2)${enough ? ' — ข้อมูลพอแล้ว ใช้แบบนี้ประจำได้' : ' · ยังน้อย รออีกสักไฟต์'}`;
@@ -2026,6 +2028,15 @@
         if (/โผล่แล้ว|กำลังโผล่|มาแล้ว/.test(t)) return 0;
       }
     } catch {}
+    // 🚪 v6.245: countdown ใหม่ของเกม (แพตช์ 25/7) — dialog หน้าประตูถ้ำ: "รอบต่อไปเปิดในอีก" + "4 นาที 32 วิ"
+    //   แม่นระดับวินาที และโผล่ตอนยืนหน้าประตู (จังหวะที่ตัวนับ "บอสถัดไป" มักไม่มีบนจอ) — bossTimerDom เดิมอ่านไม่ออกเลย
+    //   ⚠️ ป้ายกับตัวเลขอยู่คนละ text node (TreeWalker ข้างบนเห็นทีละก้อน) → ต้องอ่านจาก element รวม (gameTextMatch)
+    const gate = (() => {
+      const m = gameTextMatch(/รอบต่อไปเปิดในอีก\s*(?:(\d+)\s*นาที)?\s*(?:(\d+)\s*วิ)?/);
+      if (!m || (!m[1] && !m[2])) return null;
+      return +(m[1] || 0);   // ปัดลงเป็นนาที (ทริกเร็วกว่าเล็กน้อย = ปลอดภัยกว่าไปสาย — ธรรมเนียมเดียวกับ MM:SS ข้างบน)
+    })();
+    if (gate != null) return gate;
     const chip = bossTimerChipMin();   // 🐯 v6.170: ไม่เจอป้ายแบบข้อความ → ลองอ่าน "chip โหมดย่อ" (MM:SS)
     if (chip != null) return chip;
     // เหลือทางเดียวจริงๆ ค่อยเชื่อป้าย "ถึงรอบบอสแล้ว" (v6.173: ไม่ให้ชนะตัวนับอีกต่อไป)
@@ -2273,9 +2284,13 @@
     const t = BOSS_NAV_TARGET[targetMap] || { x: 700, y: 500 };
     const t0 = now(); let lastNav = 0, lastP = null, stillFor = 0;
     // 🐛 v6.221: anyMode = ผู้เรียกที่ไม่ใช่บอส/ปลาเทพ (ธุระเมือง NPC) — เดิม no-op เงียบเมื่อ bossHunt ปิด → ธุระเมืองพัง + วน bag-full
+    let lastGateProbe = 0;
     while (enabled && (anyMode || isOn('bossHunt') || mythicActive()) && now() - t0 < maxMs) {
       const cur = bossMapId(), p = bossPlayerXY();
       if (cur === targetMap && p && Math.abs(p.x - t.x) < 70 && Math.abs(p.y - t.y) < 70) { aw.cancel && aw.cancel(); return true; }
+      // 🚪 v6.245: รอบ 13:30 เข้าได้ทาง A* → bossWaitGate (เส้นทางสำรอง) ไม่เคยรัน = /bossgate ว่างเปล่า
+      //   ต้องเก็บข้อมูลหน้าประตูจากเส้นทางนี้ด้วย (ตอนเป้าคือถ้ำบอสและยังไปไม่ถึง)
+      if (targetMap === BOSS_MAP && cur !== BOSS_MAP && now() - lastGateProbe > 8000) { lastGateProbe = now(); bossGateProbe(now() - t0); }
       // นับว่า "นิ่ง" (ไม่ขยับ) กี่รอบ — ถ้านิ่งนานทั้งที่ยังไม่ถึง = สั่ง navigate ใหม่ (เผื่อ NPC/หลุด)
       if (lastP && p && Math.abs(p.x - lastP.x) < 3 && Math.abs(p.y - lastP.y) < 3) stillFor++; else stillFor = 0;
       lastP = p;
@@ -3416,9 +3431,14 @@
   function mythicActive() { return isOn('mythicHunt') && !testRunning; }
   const MYTHIC_RAR = new Set(['legendary', 'mythic']);
   // จำนวนปลาเทพ (legendary+mythic) ที่ได้ตั้งแต่เริ่มล่ารอบนี้ — ใช้ใน heartbeat/สถานะ
+  // ⚡ v6.245: cache 5 วิ — v6.241 เอาไปใส่ใน badgeText ซึ่งถูกเรียกทุกเฟรม แต่ฟังก์ชันนี้ไล่ recs ~2,000 รายการ/ครั้ง
+  let mrcCache = 0, mrcCacheAt = -1e9, mrcCacheSince = -1;
   function mythicRoundCount() {
-    const since = mythicStartAt || 0; let n = 0;
+    const since = mythicStartAt || 0;
+    if (now() - mrcCacheAt < 5000 && mrcCacheSince === since) return mrcCache;
+    let n = 0;
     for (const t of Object.keys(profit.recs || {})) for (const r of (profit.recs[t] || [])) if ((r.at || 0) >= since && MYTHIC_RAR.has(r.rarity)) n++;
+    mrcCache = n; mrcCacheAt = now(); mrcCacheSince = since;
     return n;
   }
   // เรียนรู้ "ชื่อแมพบน HUD ↔ id ใน Phaser" อัตโนมัติ — สถิติ (recs) เก็บชื่อ แต่ระบบเดินข้ามแมพใช้ id
