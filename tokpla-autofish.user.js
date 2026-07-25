@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.242
+// @version      6.243
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.242';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.243';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2421,10 +2421,13 @@
       logInfo('👹 ปิดการสลับเบ็ดไว้ — ใช้เบ็ดที่ใส่อยู่ตีบอส');
     }
     let prevBaitTier = null;
-    if (cfg.bossBaitTier > 0 && currentBait() && currentBait().tier !== cfg.bossBaitTier) {
-      prevBaitTier = currentBait().tier;
+    // 🐛 v6.243: เดิมมีเงื่อนไข `currentBait() &&` → **เหยื่อหมด (currentBait null) = ข้ามการสลับ = ตีบอสไม่ได้** (ผู้ใช้เจอ)
+    //   ใหม่: สลับเป็นเหยื่อจุดอ่อนแม้ตอนนี้ไม่มีเหยื่อติดเบ็ด — cycleTo จะ equip ให้ (ensureBossBaitStock ซื้อมารอแล้ว)
+    const cb0 = currentBait();
+    if (cfg.bossBaitTier > 0 && cb0?.tier !== cfg.bossBaitTier) {
+      prevBaitTier = cb0 ? cb0.tier : null;
       busy = true;
-      try { say(`👹 สลับเหยื่อจุดอ่อนขั้น ${cfg.bossBaitTier} (x1.5 ดาเมจ)`); await cycleTo('เลือกเหยื่อ', cfg.bossBaitTier, () => currentBait()?.tier); } catch {}
+      try { say(`👹 สลับเหยื่อจุดอ่อนขั้น ${cfg.bossBaitTier} (x1.5 ดาเมจ)${cb0 ? '' : ' [เหยื่อเพิ่งหมด — ติดเบ็ดใหม่]'}`); await cycleTo('เลือกเหยื่อ', cfg.bossBaitTier, () => currentBait()?.tier); } catch {}
       finally { busy = false; }
     }
     gameEscape();   // ⎋ v6.165: ล้าง dialog/หน้าต่างค้างก่อนเริ่มตี (popup ตกปลา/ร้าน/story ฤๅษีเงา บังปุ่มตี+ยึด input)
@@ -2701,25 +2704,52 @@
   // 👹 v6.134: ซื้อเหยื่อจุดอ่อนบอสให้พร้อม "ก่อน" เดินเข้าถ้ำ — ในถ้ำบอสไม่มีร้าน ซื้อไม่ได้
   //   (เดิม bossFight แค่ "สลับ" ไปขั้นจุดอ่อน ถ้าไม่มีในกระเป๋า = ตีด้วยเหยื่อผิด ไม่ได้ดาเมจ x1.5)
   //   1 แพ็ค (100 ชิ้น) พอตีบอส 1 ตัว (~110 วิ) เหลือเผื่อรอบถัดไป · ราคาถูก (ขั้น2 = ~1,200🪙)
+  // 🛒 ซื้อเหยื่อ 1 แพ็คจากแถวร้าน — คืน true ถ้าซื้อสำเร็จ (helper ใช้ซ้ำใน ensureBossBaitStock)
+  async function buyBaitRow(r) {
+    if (!r || r.lockedLv || !r.addBtn || r.addBtn.disabled) return false;
+    fireClick(r.addBtn); await sleep(300);
+    const buy = btnByText('ซื้อเลย!') || btnByText('เหรียญไม่พอ');
+    if (!buy || buy.disabled || /เหรียญไม่พอ/.test(buy.textContent)) return false;
+    fireClick(buy);
+    const done = await waitFor(() => { const t = document.body.innerText; if (t.includes('✅ ซื้อสำเร็จ!')) return 'ok'; if (t.includes('❌')) return 'fail'; return null; }, 8000);
+    if (done === 'ok') { profit.life.baitCost += baitUnit(r.tier) * PACK_SIZE; saveProfit(); return true; }
+    return false;
+  }
+  // 👹 เตรียมเหยื่อ "ก่อนเข้าถ้ำบอส" (ในถ้ำซื้อไม่ได้) — v6.243 เสริม safety net หลังผู้ใช้เจอ "เหยื่อหมด ตีบอสไม่ได้"
+  //   ตีบอสต้องมีเหยื่อติดเบ็ด (bossFight สลับเป็นเหยื่อจุดอ่อน) · เหยื่อหมดเกลี้ยง = ตีไม่ได้เลย = เสียรอบทั้งรอบ
+  //   เดิมมีแต่ "ซื้อเหยื่อจุดอ่อน" ที่ return เงียบ 6 จุดเมื่อซื้อไม่ได้ → ไม่การันตีว่ามีเหยื่อจริง
   async function ensureBossBaitStock() {
+    if (bossMapId() === BOSS_MAP) return;
     const bt = cfg.bossBaitTier;
-    if (!(bt > 0) || bossMapId() === BOSS_MAP) return;
     busy = true;
     try {
-      if (!await openShop()) return;
+      if (!await openShop()) { await sleep(600); if (!await openShop()) { say('👹 เปิดร้านเตรียมเหยื่อบอสไม่ได้ — เข้าถ้ำด้วยเหยื่อที่มี'); return; } }
       await shopTab('🪱 เหยื่อ'); await sleep(300);
-      const row = shopRows().find((r) => r.tier === bt);
-      if (!row) { say(`👹 หาเหยื่อจุดอ่อนขั้น ${bt} ในร้านไม่เจอ — ตีด้วยเหยื่อปัจจุบัน`); await closeShop(); return; }
-      if (row.lockedLv) { say(`👹 เหยื่อจุดอ่อนขั้น ${bt} ยังไม่ปลดล็อก (Lv.${row.lockedLv}) — ตีด้วยเหยื่อปัจจุบัน`); await closeShop(); return; }
-      if ((row.stock || 0) >= 100) { await closeShop(); return; }   // มีพอแล้ว (≥1 แพ็ค)
-      if (!row.addBtn || row.addBtn.disabled) { await closeShop(); return; }
-      fireClick(row.addBtn); await sleep(300);
-      const buy = btnByText('ซื้อเลย!') || btnByText('เหรียญไม่พอ');
-      if (!buy || buy.disabled || /เหรียญไม่พอ/.test(buy.textContent)) { say(`👹 เงินไม่พอซื้อเหยื่อจุดอ่อนขั้น ${bt} — ตีด้วยเหยื่อปัจจุบัน`); await closeShop(); return; }
-      fireClick(buy);
-      const done = await waitFor(() => { const t = document.body.innerText; if (t.includes('✅ ซื้อสำเร็จ!')) return 'ok'; if (t.includes('❌')) return 'fail'; return null; }, 8000);
-      if (done === 'ok') { profit.life.baitCost += baitUnit(bt) * PACK_SIZE; saveProfit(); say(`👹 เตรียมเหยื่อจุดอ่อนขั้น ${bt} (1 แพ็ค) พร้อมล่าบอส`); }
-      await sleep(300); await closeShop();
+      let rows = shopRows().filter((r) => r.tier);
+      // 1) เหยื่อจุดอ่อน (เดิม): ซื้อถ้ายังไม่ถึง 1 แพ็ค
+      if (bt > 0) {
+        const wr = rows.find((r) => r.tier === bt);
+        if (!wr) say(`👹 หาเหยื่อจุดอ่อนขั้น ${bt} ในร้านไม่เจอ`);
+        else if (wr.lockedLv) say(`👹 เหยื่อจุดอ่อนขั้น ${bt} ยังไม่ปลดล็อก (Lv.${wr.lockedLv})`);
+        else if ((wr.stock || 0) < 100) {
+          if (await buyBaitRow(wr)) say(`👹 เตรียมเหยื่อจุดอ่อนขั้น ${bt} (1 แพ็ค) พร้อมล่าบอส`);
+          else if ((wr.stock || 0) === 0) say(`👹 ซื้อเหยื่อจุดอ่อนขั้น ${bt} ไม่ได้ (เงินไม่พอ?) — จะเช็คเหยื่อสำรอง`);
+        }
+      }
+      // 2) 🛡️ SAFETY (v6.243): การันตี "มีเหยื่ออย่างน้อย 1 ขั้น" ก่อนเข้าถ้ำ — ไม่งั้นตีบอสไม่ได้เลย
+      rows = shopRows().filter((r) => r.tier);                          // อ่านใหม่หลังซื้อ
+      const total = rows.reduce((s, r) => s + (r.stock || 0), 0);       // เหยื่อรวมทุกขั้นในกระเป๋า
+      if (!currentBait() && total < 50) {                               // ไม่มีเหยื่อติดเบ็ด + แทบหมดทุกขั้น
+        const cheap = rows.filter((r) => !r.lockedLv && r.addBtn && !r.addBtn.disabled).sort((a, b) => a.tier - b.tier)[0];
+        if (cheap && await buyBaitRow(cheap)) {
+          say(`👹 ⚠️ เหยื่อหมด — ซื้อสำรองขั้น ${cheap.tier} 1 แพ็ค (กันตีบอสไม่ได้)`);
+          if (isOn('tgOn') && isOn('tgWarn')) void tgSend(`👹 เหยื่อหมด — ซื้อสำรองขั้น ${cheap.tier} ก่อนตีบอส (กันตีไม่ได้)`);
+        } else {
+          say('👹 🔴 เหยื่อหมดและซื้อไม่ได้ — บอสรอบนี้อาจตีไม่ได้!');
+          if (isOn('tgOn')) void tgSend('🔴 <b>เหยื่อหมด + ซื้อไม่ได้</b> — บอสรอบนี้อาจตีไม่ได้ (เช็คเงิน/เหยื่อในร้าน)');
+        }
+      }
+      await sleep(200); await closeShop();
     } catch (e) { logErr('เตรียมเหยื่อบอสล้มเหลว', e); await closeShop(); }
     finally { busy = false; }
   }
