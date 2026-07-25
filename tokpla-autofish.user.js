@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.263
+// @version      6.264
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.263';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.264';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1684,6 +1684,14 @@
         }
       }
       const pm = txt.match(/เฟส\s*(\d)/); if (pm) out.phase = +pm[1];
+      // 🐛 v6.264: `name` ถูกประกาศไว้แต่**ไม่เคยมีใครเขียนค่า** → สถิติ `bossName` เป็น null ทุกไฟต์
+      //   HUD เรียงเป็น [ไอคอน][ชื่อบอส][เฟส N] → ดึงข้อความก่อนคำว่า "เฟส" (ยืนยันจากวิดีโอ: "หมึกยักษ์ท่าเรือ เฟส 3 · เกราะแตก!")
+      //   ต้องรู้ชื่อบอสถึงจะวิเคราะห์ได้ว่า "บอสตัวไหนใช้โหมดไหน / จุดอ่อนอะไร" (ตารางมาจากเซิร์ฟเวอร์ ฝังไว้ล่วงหน้าไม่ได้)
+      const nm = txt.match(/([^\n]{2,28}?)\s*เฟส\s*\d/);
+      if (nm) {
+        const cand = nm[1].replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}️‍]/gu, '').trim();
+        if (cand.length >= 2 && cand.length <= 24 && !/\d{2,}|บอท|โหมด/.test(cand)) out.name = cand;
+      }
       const hm = txt.match(/([\d,]{2,12})\s*\/\s*([\d,]{2,12})/); if (hm) { out.hp = +hm[1].replace(/,/g, ''); out.hpMax = +hm[2].replace(/,/g, ''); }
     } catch {}
     bossHudCache = out; bossHudCacheAt = now();
@@ -2777,6 +2785,10 @@
     let fightMap = '';   // 🧭 v6.247: ถ้ำที่สู้อยู่จริง (จำตอนเห็นบอส) — ใช้พากลับเข้าถ้ำ "ใบเดิม" หลังตาย
     // 👊 v6.252: โหมดตีของบอสรอบนี้ + ตัวนับไว้พิสูจน์ว่าระบบใหม่ทำงาน (ไฟต์ 19:29 ได้ 0.1% เพราะไม่รู้ว่าต้องเข้าประชิด)
     let bossHitMode = null, meleeApproaches = 0, chargeShots = 0, meleeSaid = false;
+    // 🐛 v6.264: ไฟต์ 22:30 เผยว่าสถิติใหม่ของ v6.252 **เก็บผิดจังหวะจนใช้ไม่ได้** —
+    //   `weakTiers: []` (อ่านตอนจบไฟต์ = HUD หายไปแล้ว) · `baitUsed: null` (อ่านหลังสลับเหยื่อคืนเป็นเหยื่อฟาร์มแล้ว)
+    //   → ต้อง "จับภาพตอนกำลังสู้จริง" แล้วเก็บไว้ ไม่ใช่ไปอ่านย้อนตอนจบ
+    let snapWeak = [], snapWeakNames = [], snapBait = null, snapBossName = null, snapHpMax = null;
     // 🛡️ v6.175: เดิมเงื่อนไขลูปมี isOn('bossHunt') → **ปิดโหมดล่าบอสกลางไฟต์ = ทิ้งบอสทันที**
     //   เจอสด 16:30:14: เข้าตีตอน 16:30:00 แล้วโดนตัดจบใน 14 วิ ("กดเกจ 0") ทั้งที่บอสยืนอยู่ตรงหน้า
     //   ซ้ำร้าย พอเปิดโหมดใหม่ ขา "เข้าถ้ำ" ชนกับขา "กลับบ้าน" → แมพเด้ง ถ้ำ↔บ่อตกปลา 6 รอบ โดนตีฟรีจน HP เหลือ 16%
@@ -2933,6 +2945,11 @@
       //   melee  = ต้องเข้าใกล้ ≤60px ก่อนฟาด · charge = กดค้าง 1.8 วิแล้วปล่อย (x2) · cast = แบบเดิม (เกจ)
       if (present) {
         const meta = bossHudMeta();
+        // 🐛 v6.264: จับภาพข้อมูลไฟต์ "ตอนบอสยังอยู่" — จบไฟต์แล้ว HUD หาย อ่านย้อนไม่ได้
+        if (!snapWeak.length && meta.weakTiers.length) { snapWeak = meta.weakTiers.slice(); snapWeakNames = meta.weakNames.slice(); }
+        if (snapBait == null) snapBait = currentBait()?.tier ?? null;
+        if (snapBossName == null && meta.name) snapBossName = meta.name;
+        if (snapHpMax == null && meta.hpMax) snapHpMax = meta.hpMax;
         if (meta.hitMode && meta.hitMode !== bossHitMode) {
           bossHitMode = meta.hitMode;
           bossEvent(`👊 โหมดตีบอสรอบนี้: ${meta.hitMode === 'melee' ? 'เข้าประชิดแล้วฟาด (≤60px)' : meta.hitMode === 'charge' ? 'กดค้างชาร์จ 1.8 วิ (x2)' : 'ปาเบ็ด (เกจแบบเดิม)'}${meta.weakNames.length ? ` · จุดอ่อน: ${meta.weakNames.join('+')}` : ''}`);
@@ -3041,9 +3058,10 @@
       gVel: Math.round(Math.abs(gVel)), map: bossMapId() || BOSS_MAP,
       durMs: fightT0 ? Math.round(now() - fightT0) : 0,
       // 👊 v6.252: จดโหมดตี + จุดอ่อนที่เกมประกาศ + เหยื่อที่ใช้จริง → ไฟต์หน้าเทียบได้ว่าโหมดไหน/เหยื่อไหนคุ้ม
+      // v6.264: ใช้ค่าที่ "จับภาพตอนกำลังสู้" — อ่านตอนนี้ไม่ได้แล้ว (HUD หาย + สลับเหยื่อคืนไปแล้ว)
       hitMode: bossHitMode, approaches: meleeApproaches, charges: chargeShots,
-      bossName: bossHudMeta().name || null,
-      weakTiers: bossHudMeta().weakTiers.slice(), baitUsed: currentBait()?.tier ?? null,
+      bossName: snapBossName, weakTiers: snapWeak, weakNames: snapWeakNames,
+      baitUsed: snapBait, bossHpMax: snapHpMax,
     });
     if (isOn('tgOn')) void tgSend(`👹 <b>จบสู้บอส</b> ${esc(outcome)}\n${esc(stat)}\nกำลังกลับไปฟาร์ม`);
     say(`👹 ${outcome}`);
