@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.261
+// @version      6.262
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.261';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.262';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2420,6 +2420,22 @@
     gameEscape();   // ⎋ v6.165: story dialog (เช่น "ฤๅษีเงา") ยึด input ระหว่างเดินทาง = ตัวไม่เดิน — ล้างก่อนเสมอ
     const aw = gameWalker(); if (!aw) return false;
     const t = BOSS_NAV_TARGET[targetMap] || { x: 700, y: 500 };
+    // 🐛 v6.262: จุดเป้าหมายสำรอง — บทเรียนเดียวกับ v6.260 (เดินเข้าบ่อ)
+    //   ถ้า A* หาเส้นไปจุดนั้นไม่ได้ เกมสแนปเป็น "ถึงแล้ว" โดยตัวไม่ขยับ → เดิมยิงจุดเดิมซ้ำจนหมด maxMs
+    //   เคสที่เจ็บสุด: **ตายกลางไฟต์บอสแล้วกลับเข้าถ้ำ** (ให้เวลาแค่ 60 วิ) — ยิงจุดเดิมเปล่าจนหมดเวลา = เลิกสู้ทั้งรอบ
+    //   ใหม่: นิ่งซ้ำ ๆ → หมุนไปจุดสำรอง · ถ้าอยู่ในแมพเป้าหมายแล้วให้ใช้ "โซนจริงของแมพ" (แม่นกว่าค่าคงที่ที่เดาไว้)
+    const navTargets = () => {
+      const out = [t];
+      try {
+        if (bossMapId() === targetMap) {            // อยู่ในแมพแล้ว = อ่านโซนจริงได้
+          const fz = bossFishingZone(); if (fz) out.push({ x: fz.x, y: fz.y + 120 }, { x: fz.x, y: fz.y });
+          for (const z of (bossMapExits() || [])) if (z.x != null) out.push({ x: z.x, y: z.y - 120 });
+        }
+      } catch {}
+      out.push({ x: t.x, y: t.y + 200 }, { x: t.x - 200, y: t.y }, { x: t.x + 200, y: t.y }, { x: 700, y: 500 });
+      return out;
+    };
+    let navIdx = 0, stuckRounds = 0;
     const t0 = now(); let lastNav = 0, lastP = null, stillFor = 0;
     // 🐛 v6.221: anyMode = ผู้เรียกที่ไม่ใช่บอส/ปลาเทพ (ธุระเมือง NPC) — เดิม no-op เงียบเมื่อ bossHunt ปิด → ธุระเมืองพัง + วน bag-full
     let lastGateProbe = 0;
@@ -2438,8 +2454,19 @@
       if (lastP && p && Math.abs(p.x - lastP.x) < 3 && Math.abs(p.y - lastP.y) < 3) stillFor++; else stillFor = 0;
       lastP = p;
       if ((!aw.walking || stillFor >= 6) && now() - lastNav > 2500) {
+        // 🐛 v6.262: สั่งไปแล้วตัวยังนิ่ง = จุดนั้นเดินไปไม่ได้ → หมุนไปจุดสำรอง (อย่ายิงจุดเดิมซ้ำจนหมดเวลา)
+        if (stillFor >= 6) {
+          stuckRounds++;
+          if (stuckRounds >= 2) {
+            stuckRounds = 0;
+            const list = navTargets();
+            navIdx = (navIdx + 1) % list.length;
+            logInfo(`🧭 เดินไป ${targetMap} ไม่ขยับ (A* ไปจุดนั้นไม่ได้) → เปลี่ยนจุดเป้าหมายเป็นแบบที่ ${navIdx + 1}/${list.length}`);
+          }
+        } else stuckRounds = 0;
         lastNav = now(); stillFor = 0;
-        let ok = false; try { ok = aw.navigate({ x: t.x, y: t.y, mapId: targetMap }); } catch {}
+        const nt = navTargets()[navIdx] || t;
+        let ok = false; try { ok = aw.navigate({ x: Math.round(nt.x), y: Math.round(nt.y), mapId: targetMap }); } catch {}
         if (!ok) { if (bossNavArrived(targetMap)) return true; return false; }   // หาเส้นไม่ได้ → ให้ fallback ทำต่อ (ยกเว้นถึงแล้ว)
       }
       await sleep(400);
