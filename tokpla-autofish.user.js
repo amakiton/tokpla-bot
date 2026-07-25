@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.252
+// @version      6.253
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.252';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.253';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4533,7 +4533,31 @@
 
   // ================= ร้านค้า: ซื้อเหยื่อ + อ่านอุปกรณ์ =================
 
-  const shopTab = async (label) => { const t = btnByText(label); if (t) { fireClick(t); await sleep(300); } };
+  // 🐛 v6.253 (ผู้ใช้เจอสด 25/7 19:38 — บอทหยุดตกปลา 15+ นาที "เปลี่ยนเหยื่อไม่หยุด"):
+  //   **เกมเปลี่ยนอิโมจิแท็บร้าน** 🪱→🐛 (เหยื่อ) และ 🛟→⭕ (ทุ่น) · shopTab เดิมจับด้วย startsWith('🪱 เหยื่อ')
+  //   → หาแท็บไม่เจอ → ไม่สลับแท็บ → ร้านค้างที่แท็บ "🎣 เบ็ด" → shopRows คืนแถว **เบ็ด** 8 แถว
+  //   → หา "เหยื่อขั้น 5" ไม่เจอตลอดกาล → ensureGear ตั้ง needBuy ซ้ำ = วนสลับเหยื่อรัว ไม่เหวี่ยงเลย
+  //   บทเรียนซ้ำรอย v6.104/v6.105: **ห้ามผูก selector กับอิโมจิ** เกมเปลี่ยนได้ทุกอัปเดต
+  //   → จับจาก "คำไทย" อย่างเดียว + จำกัดความยาวข้อความ (แท็บสั้น) + ข้าม UI บอทเอง (กฎเหล็ก #7)
+  //   ⚠️ ต้องจำกัดความยาว เพราะแผงบอทมีหัวข้อ '🪱 เหยื่อ & อุปกรณ์' ที่เป็น <button> (บั๊ก v6.105)
+  const SHOP_TAB_WORD = { 'เหยื่อ': 'เหยื่อ', 'เบ็ด': 'เบ็ด', 'ทุ่น': 'ทุ่น', 'ยา': 'ยา', 'ชุด': 'ชุด', 'ทรงผม': 'ทรงผม' };
+  let shopTabMissAt = 0;
+  const shopTab = async (label) => {
+    // รับได้ทั้งแบบเก่า ('🪱 เหยื่อ') และคำไทยล้วน ('เหยื่อ') — ดึงเฉพาะคำไทยออกมาใช้
+    const word = (String(label).match(/[฀-๿]+/g) || []).join('') || String(label);
+    const key = Object.keys(SHOP_TAB_WORD).find((k) => word.includes(k)) || word;
+    const t = [...document.querySelectorAll('button')].find((b) => {
+      if (isBotUI(b) || !b.offsetParent) return false;
+      const s = (b.textContent || '').trim();
+      return s.length <= 14 && s.includes(key);      // แท็บร้านสั้นเสมอ ("🐛 เหยื่อ") · หัวข้อแผงบอทยาวกว่า
+    }) || btnByText(label);                          // เผื่อรูปแบบเดิมยังใช้ได้
+    if (t) { fireClick(t); await sleep(300); return true; }
+    if (now() - shopTabMissAt > 60000) {             // ฟ้อง 1 ครั้ง/นาที — เดิมเงียบสนิทจนวนลูปไม่มีใครรู้
+      shopTabMissAt = now();
+      logWarn(`🏪 หาแท็บร้าน "${key}" ไม่เจอ (เกมเปลี่ยนชื่อ/อิโมจิแท็บ?) — การซื้อของแท็บนี้จะไม่สำเร็จ`);
+    }
+    return false;
+  };
 
   // 🆕 v6.104: เกมใหม่มีปุ่ม "ย่อแผงเมนูเก็บข้างจอ" — ย่อแล้วปุ่ม กระเป๋า/ร้านค้า/เควส/จดหมาย **หายจาก DOM ทั้งหมด**
   //   (เหลือแค่ "กางแผงเมนู") → ทุกงานที่ต้องเปิดเมนูต้องกางก่อน ไม่งั้น qBtn คืน null = ขาย/ซื้อ/เควส/จดหมาย พังเงียบ
@@ -5668,6 +5692,19 @@
           if (isOn('useBaitStock') && drainTier && targetBait() === drainTier) {
             say(`🪱 สต๊อกเหยื่อขั้น ${drainTier} หมดแล้ว — หากองถัดไป/กลับโหมดปกติ`);
             drainTier = 0; void scanDrainTier();
+          } else if (autoBuyEff() && now() < baitBuyFailUntil) {
+            // 🐛 v6.253 (ผู้ใช้เจอสด 25/7 19:38-19:53 — บอทหยุดตกปลา 15 นาที เหยื่อสลับไปมาไม่หยุด):
+            //   เดิมสาขา autoBuy ตั้ง needBuy แล้วพูดซ้ำ **โดยไม่มีทางออก** → พอระบบซื้อพังเอง
+            //   (ซื้อไม่ได้ 3 ครั้งติด → baitBuyFailUntil พัก 5 นาที) บอทก็ยังยืนยันจะใช้ขั้นที่ไม่มีของ
+            //   = วน cycleTo สลับเหยื่อรัวตลอด ไม่เหวี่ยงสักครั้ง (log ซ้ำ 25 ครั้ง/นาที · casts ค้างที่ 27)
+            //   ตรรกะ fallback ที่ถูก (v6.198) มีอยู่แล้วข้างล่าง แต่ถูก gate ไว้ให้ทำงานเฉพาะตอน "ปิดซื้อ" เท่านั้น
+            //   → ระบบซื้อกำลังถูกพัก = สภาพเดียวกับปิดซื้อทุกประการ ต้องตกด้วยของที่มีเหมือนกัน
+            baitBlockTier = targetBait(); baitBlockUntil = Math.max(baitBuyFailUntil, now() + 60000);
+            const eqB = currentBait();
+            if (eqB && eqB.tier != null && (eqB.stock == null || eqB.stock > 0)) {
+              say(`🪱 ไม่มีเหยื่อขั้น ${targetBait()} + ระบบซื้อถูกพักอยู่ → ตกด้วยขั้น ${eqB.tier} (${BAIT_TIERS[eqB.tier - 1]?.name ?? '?'}) ที่มีอยู่แทน จนกว่าจะซื้อได้`);
+              if (isOn('tgOn') && isOn('tgWarn')) void tgSend(`🪱 <b>เหยื่อขั้น ${targetBait()} หมด</b> + ซื้อไม่ได้ → ตกด้วยขั้น ${eqB.tier} ที่มีอยู่ไปก่อน (ไม่หยุดตกปลา)`);
+            }
           } else if (autoBuyEff()) {
             needBuy = true;   // ให้ไปซื้อขั้นนี้มาก่อน แล้วค่อยสลับใหม่รอบหน้า
             say(`ไม่มีเหยื่อขั้น ${targetBait()} เหลืออยู่ — จะแวะซื้อให้`);
