@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.254
+// @version      6.255
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.254';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.255';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4175,14 +4175,40 @@
          + `   พลังงาน ${eDrop != null ? `${b.eFirst}%→${b.eLast}% (${ePer}%/ตัว)` : '—'} · เหยื่อ ${tierStr}\n`
          + `   rarity: ${rarStr}`;
   }
+  // 🔬 v6.255: เดิมรายงานบอกแค่ "กำไร/ตัว" กับ "ตัว/ชม" แยกกัน แล้วเขียนท้ายว่า "เงิน/ชม = คูณกันเอง"
+  //   → ผู้ใช้ต้องคูณเลขเอง และ **ตัวเลขที่ควรใช้ตัดสินใจจริงๆ ไม่เคยถูกแสดง** · คำนวณให้เลย
+  //   + เตือน 2 กรณีที่ทำให้ "เทียบกันไม่ได้" ซึ่งเดิมเงียบสนิท:
+  //     (ก) เก็บข้อมูลคนละยุค (เกมแพตช์ 25/7 เปลี่ยนราคาปลา/บอสทั้งระบบ) — ช่วงเวลาไม่ทับกันเลย = เทียบไม่ได้
+  //     (ข) ใช้เหยื่อคนละขั้นเป็นหลัก — เหยื่อคนละขั้นได้ปลาคนละราคา ไม่ใช่ผลของ "โหมด"
+  const modeCoinPerHr = (b) => {
+    if (!b || !b.n) return null;
+    const mins = (b.since && b.lastAt > b.since) ? (b.lastAt - b.since) / 60000 : 0;
+    if (mins <= 0.5) return null;
+    return Math.round(((b.rev - b.baitCost) / b.n) * (b.n / mins * 60));
+  };
+  const modeTopTier = (b) => { const e = Object.entries(b.tier || {}).sort((x, y) => y[1] - x[1])[0]; return e ? +e[0] : null; };
   function modeCompareText() {
     const b = modeStats.bot, g = modeStats.gameauto;
     let verdict = '';
     if (b.n >= 5 && g.n >= 5) {
       const bNet = (b.rev - b.baitCost) / b.n, gNet = (g.rev - g.baitCost) / g.n;
+      const bHr = modeCoinPerHr(b), gHr = modeCoinPerHr(g);
       verdict = `\n\n📌 สรุปต่อตัว: กำไร บอท ${signed(bNet)} vs เกมออโต้ ${signed(gNet)}🪙 · แรร์+ บอท ${Math.round(rareCount(b.rar)/b.n*100)}% vs ${Math.round(rareCount(g.rar)/g.n*100)}%`;
+      if (bHr != null && gHr != null) {
+        const win = bHr >= gHr ? '🤖 บอทตกเอง' : '🎮 เกมออโต้';
+        const ratio = Math.min(bHr, gHr) > 0 ? (Math.max(bHr, gHr) / Math.min(bHr, gHr)).toFixed(1) : '∞';
+        verdict += `\n💰 **เงิน/ชม. (ตัวเลขที่ควรใช้ตัดสิน): บอท ${bHr.toLocaleString()} vs เกมออโต้ ${gHr.toLocaleString()}🪙 → ${win} ชนะ ${ratio} เท่า**`;
+      }
+      // ⚠️ เตือนเมื่อเทียบกันไม่ได้จริง
+      const noOverlap = b.since && g.lastAt && (b.since > g.lastAt || g.since > b.lastAt);
+      if (noOverlap) {
+        const d = (t) => new Date(t).toLocaleDateString('th-TH');
+        verdict += `\n⚠️ **ข้อมูลคนละช่วงเวลา** (บอท ${d(b.since)}-${d(b.lastAt)} · เกมออโต้ ${d(g.since)}-${d(g.lastAt)}) — เกมแพตช์ระหว่างนั้นได้ ตัวเลขอาจเทียบกันไม่ตรง`;
+      }
+      const bt = modeTopTier(b), gt = modeTopTier(g);
+      if (bt && gt && bt !== gt) verdict += `\n⚠️ **ใช้เหยื่อคนละขั้นเป็นหลัก** (บอทขั้น ${bt} · เกมออโต้ขั้น ${gt}) — ส่วนต่างอาจมาจากเหยื่อ ไม่ใช่โหมด`;
     }
-    return `🔬 เทียบโหมดตกปลา (สะสมถาวร · พลังไม่เกี่ยวแรร์ · แรร์=กดโดนดาว)\n\n${cmpModeLine('bot')}\n\n${cmpModeLine('gameauto')}${verdict}\n\nℹ️ ตกโหมดบอทสักพัก→สลับเกมออโต้สักพัก→เทียบ · เงิน/ชม.จริง = กำไร/ตัว × ตัว/ชม · กด ♻️ ล้างเริ่มนับใหม่`;
+    return `🔬 เทียบโหมดตกปลา (สะสมถาวร · พลังไม่เกี่ยวแรร์ · แรร์=กดโดนดาว)\n\n${cmpModeLine('bot')}\n\n${cmpModeLine('gameauto')}${verdict}\n\nℹ️ ตกโหมดบอทสักพัก→สลับเกมออโต้สักพัก→เทียบ · กด ♻️ ล้างเริ่มนับใหม่`;
   }
   function resetModeCmp() { modeStats = { v: 1, bot: newModeBucket(), gameauto: newModeBucket() }; saveModeStats(); }
 
@@ -4714,9 +4740,13 @@
 
   async function bagOpenRodTab() {
     if (!rodGroupCards().length) { await openBagUI(); await sleep(500); }
-    const tab = [...document.querySelectorAll('button')].find((b) =>
-      !isBotUI(b) && b.offsetParent && /🎣เบ็ด/.test(b.textContent || ''));
+    // 🐛 v6.255: เดิมจับ /🎣เบ็ด/ (อิโมจิ+ไม่มีเว้นวรรค) — เกมเปลี่ยนแท็บกระเป๋าเป็น "เบ็ด10 ชิ้น" (ไม่มีอิโมจิ)
+    //   → หาแท็บไม่เจอ = **สลับเบ็ดบอส/ฟาร์มพังเงียบ** (ตีบอสด้วยเบ็ดฟาร์ม / ฟาร์มด้วยเบ็ดบอส)
+    //   ใช้ findUiTab ตัวกลางเดียวกับร้าน/กระเป๋า (ตัดอิโมจิ + รองรับจำนวนต่อท้าย)
+    const tab = findUiTab('เบ็ด')
+      || [...document.querySelectorAll('button')].find((b) => !isBotUI(b) && b.offsetParent && /🎣\s*เบ็ด/.test(b.textContent || ''));
     if (tab) { tab.click(); await sleep(450); }
+    else logWarn('🎣 หาแท็บ "เบ็ด" ในกระเป๋าไม่เจอ — สลับเบ็ดไม่ได้');
     return !!rodGroupCards().length;
   }
 
