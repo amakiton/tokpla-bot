@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.247
+// @version      6.248
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.247';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.248';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3433,7 +3433,7 @@
     //   home จะเป็น fisher_town → บรรทัดเดินกลับข้ามตัวเอง (`home !== 'fisher_town'`) = **ไม่เดินกลับเลย ค้างในเมืองที่ไม่มีบ่อ**
     //   เจอจริงใน log: 23:23:34 → บ่อตกปลา แล้วเด้งกลับ → เมืองชาวประมง แล้วขึ้น "ปุ่มตกปลากดไม่ได้" รัวๆ
     const here = bossMapId();
-    const home = (here && here !== 'fisher_town') ? here : (lastFishMap() || cfg.bossHome || 'village');
+    const home = (here && here !== 'fisher_town') ? here : (lastFishMap() || cfg.bossHomeMap || 'village');   // v6.248: cfg.bossHome ไม่มีจริง (dead code)
     try {
       // 🔗 B (v6.155): มาเมืองทีเดียว = ทำ "ทุกบริการที่เปิด" เลย (ไม่ต้องรอ threshold แยกของแต่ละอัน) —
       //   เช่น trip นี้ถูก trigger เพราะแก่นครบ → ฝาก legendary ที่มี + สุ่มหิน ไปเลยในคราวเดียว (แม้ legendary ยังไม่ครบ min)
@@ -5967,7 +5967,23 @@
   // 🗺️ v6.224: จำ "แมพที่เคยตกปลา" ไว้ — ใช้เดินกลับเมื่อตัวไปติดอยู่แมพที่ไม่มีบ่อ (เช่น fisher_town หลังทำธุระ/รีโหลด)
   const FISH_MAP_KEY = 'tokpla_last_fish_map';
   const saveFishMap = (m) => { try { if (m && !isBossMap(m) && m !== 'fisher_town') W.localStorage.setItem(FISH_MAP_KEY, m); } catch {} };
-  const lastFishMap = () => { try { return W.localStorage.getItem(FISH_MAP_KEY) || cfg.bossHome || 'lotus_marsh'; } catch { return cfg.bossHome || 'lotus_marsh'; } };
+  // 🐛 v6.248 (ผู้ใช้เจอสด 25/7 — บอทค้าง 1.5 ชม. ตกปลาไม่ได้เลย): **ตัวเขียนกันไว้ แต่ตัวอ่านไม่กัน**
+  //   ค่าที่เก็บไว้ตอน v6.245 คือ `naga_vortex` (ยุคนั้นเป็นแค่แมพตกปลาธรรมดา) → v6.246 เพิ่มมันเข้าเซ็ตถ้ำบอส
+  //   → ค่าเก่าในสตอเรจกลายเป็นพิษย้อนหลังทันที: บอทติดที่ fisher_town แล้วพยายามเดินกลับไป "ตกปลาที่ถ้ำบอส"
+  //     ซึ่งประตูล็อกนอกรอบบอส = เข้าไม่ได้ตลอดกาล → วนสั่ง navigate ทุก 4 วิ ไม่ได้ปลาสักตัว (log ซ้ำทุก 20 วิ)
+  //   บทเรียน: เกณฑ์ที่ "เปลี่ยนได้ทีหลัง" (isBossMap เป็นเซ็ตที่โตขึ้นเรื่อยๆ) ต้องตรวจ **ตอนอ่าน** ด้วยเสมอ
+  //     ไม่ใช่เชื่อว่าตอนเขียนกันไว้แล้วจบ — ข้อมูลเก่าถูกเขียนตอนเกณฑ์ยังไม่มี
+  //   + แก้ `cfg.bossHome` (คีย์ไม่มีจริง — ของจริงคือ `bossHomeMap`) ที่ทำให้ fallback นี้เป็น dead code มาตลอด
+  const lastFishMap = () => {
+    let m = null;
+    try { m = W.localStorage.getItem(FISH_MAP_KEY); } catch {}
+    if (m && (isBossMap(m) || m === 'fisher_town')) {
+      logInfo(`🗺️ แมพบ้านที่จำไว้ (${m}) ใช้ไม่ได้แล้ว — เป็นถ้ำบอส/แมพไม่มีบ่อ · ล้างทิ้งแล้วกลับไป ${cfg.bossHomeMap || 'lotus_marsh'}`);
+      try { W.localStorage.removeItem(FISH_MAP_KEY); } catch {}
+      m = null;
+    }
+    return m || cfg.bossHomeMap || 'lotus_marsh';
+  };
   let lastPondWalk = 0, lastPondSay = 0, pondWalkStart = 0;
   function walkToPondIfNeeded() {
     // 🐛 v6.231 (ผู้ใช้เจอสด: ค้างที่ sea_dock ไม่ตกปลาเลย): เดิมกันโหมดล่าปลาเทพออกทั้งฟังก์ชัน
