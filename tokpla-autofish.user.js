@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.251
+// @version      6.252
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.251';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.252';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1641,6 +1641,54 @@
     for (const e of bossMapExits()) if (isBossMap(e.targetMap)) return e.targetMap;
     return BOSS_MAP;
   }
+  // ============================================================================
+  // 👊 v6.252 — ระบบบอสใหม่ (ถอดจากบันเดิลเกมจริง + วิดีโอที่ผู้ใช้อัดมา 25/7 19:31)
+  //   ⛔ ต้นเหตุที่รอบ 19:29 ได้ดาเมจแค่ 109 (0.1%) และ "กดเกจ 0": **เกมเปลี่ยนวิธีตีบอสทั้งระบบ**
+  //   เกมมี 3 โหมดตีบอส แยก "ต่อบอสแต่ละตัว" (ค่าจากเซิร์ฟเวอร์ → getRaidBossMeta(bossId).hitMode):
+  //     • cast   "🎣 ตีด้วยการปาเบ็ดใส่บอส"        = แบบเดิม (กด orb → เกจ)
+  //     • melee  "👊 เดินเข้าไปใกล้แล้วกดฟาด"      = **ต้องเข้าใกล้ก่อน** ไม่งั้นขึ้น "ไกลไป!" และดาเมจ 0
+  //     • charge "⚡ กดค้างชาร์จแล้วปล่อย"          = กดค้างจนเต็มแล้วปล่อย (เต็ม = แรง x2)
+  //   ค่าจริงจาก tuning ในบันเดิล: raidMeleeRange=60 · raidChargeFullMs=1800 · raidBossBodyW=360 · raidBossBodyH=420
+  //   ⚠️ ตารางบอส (ชื่อ/โหมด/จุดอ่อน) มาจาก **เซิร์ฟเวอร์** ไม่ได้ฝังในบันเดิล → บอท **ต้องอ่านจาก HUD ตอนสู้**
+  //      ห้าม hardcode ว่าบอสตัวไหนใช้โหมดไหน (เกมเพิ่มบอสใหม่ได้ตลอด — บทเรียนเดียวกับถ้ำหมุนเวียน)
+  //   HUD ตอนสู้มีครบ: ชื่อบอส · "เฟส N" · "จุดอ่อน: <ชื่อเหยื่อ> <ชื่อเหยื่อ> (x1.5)" · ชิปบอกโหมดตี · HP "n / max"
+  const BOSS_MELEE_RANGE = 60;      // ระยะที่เกมยอมให้ฟาดโดน (tuning.raidMeleeRange)
+  const BOSS_CHARGE_MS = 1800;      // กดค้างเท่านี้ = ชาร์จเต็ม x2 (tuning.raidChargeFullMs)
+  let bossHudCache = null, bossHudCacheAt = 0;
+  // อ่าน meta ของบอสรอบนี้จาก HUD — cache 1 วิ (สแกน DOM แพง แต่ค่าพวกนี้เปลี่ยนช้า ยกเว้น HP)
+  function bossHudMeta(force) {
+    if (!force && bossHudCache && now() - bossHudCacheAt < 1000) return bossHudCache;
+    const out = { hitMode: null, weakTiers: [], weakNames: [], phase: null, hp: null, hpMax: null, name: null, tooFar: false };
+    try {
+      const txt = (document.body.innerText || '');
+      // โหมดตี — จับจากข้อความชิป (คีย์ i18n raid.hitMode.*) · ไม่มีชิป = cast (ค่า default ของเกมเอง)
+      if (/เดินเข้าไปใกล้แล้วกดฟาด|Walk up close/i.test(txt)) out.hitMode = 'melee';
+      else if (/กดค้างชาร์จแล้วปล่อย|Hold to charge/i.test(txt)) out.hitMode = 'charge';
+      else if (/ปาเบ็ดใส่บอส|Cast your line at the boss/i.test(txt)) out.hitMode = 'cast';
+      // "ไกลไป!" = เกมบอกเองว่าเรายังไกลเกินฟาด (ground truth ดีกว่าคำนวณระยะเอง)
+      out.tooFar = /ไกลไป|Too far/i.test(txt);
+      // จุดอ่อน: "จุดอ่อน: 🐛 ไส้เดือน 🐌 หนอนทอง (x1.5)" → หาเหยื่อที่ชื่อ "ตรงหรือใกล้เคียง" ในตาราง 8 ขั้น
+      const wm = txt.match(/จุดอ่อน[:：]?\s*([^\n]{0,80}?)\s*\(\s*x?1\.5\s*\)/);
+      if (wm) {
+        const seg = wm[1];
+        for (const b of BAIT_TIERS) {
+          // ชื่อในเกมอาจย่อ ("หนอนทอง" vs "หนอนทองคำ") → นับว่าตรงถ้าเป็นสตริงย่อยของกันและกัน
+          const core = b.name.replace(/^มัด|สด$|คำ$/g, '');
+          if (seg.includes(b.name) || (core.length >= 4 && seg.includes(core))) {
+            if (!out.weakTiers.includes(b.tier)) { out.weakTiers.push(b.tier); out.weakNames.push(b.name); }
+          }
+        }
+        // ⚠️ "ไส้เดือน" (ขั้น1) เป็นสตริงย่อยของ "มัดไส้เดือนอ้วน" (ขั้น2) → ถ้าจับได้ทั้งคู่แต่ข้อความไม่มีคำว่า "มัด"/"อ้วน" ให้ตัดขั้น2 ทิ้ง
+        if (out.weakTiers.includes(1) && out.weakTiers.includes(2) && !/มัด|อ้วน/.test(seg)) {
+          const i = out.weakTiers.indexOf(2); out.weakTiers.splice(i, 1); out.weakNames.splice(i, 1);
+        }
+      }
+      const pm = txt.match(/เฟส\s*(\d)/); if (pm) out.phase = +pm[1];
+      const hm = txt.match(/([\d,]{2,12})\s*\/\s*([\d,]{2,12})/); if (hm) { out.hp = +hm[1].replace(/,/g, ''); out.hpMax = +hm[2].replace(/,/g, ''); }
+    } catch {}
+    bossHudCache = out; bossHudCacheAt = now();
+    return out;
+  }
   const BOSS_GRAPH_KEY = 'tokpla_boss_graph', BOSS_STATE_KEY = 'tokpla_boss_state';
   let bossPhase = 'idle';        // idle | travel | fight | return — persist กันหลุดตอนรีโหลด
   let bossHome = '';             // แมพบ้านที่จะกลับ (จำตอนเริ่มล่า)
@@ -2601,10 +2649,27 @@
     // 🐛 v6.243: เดิมมีเงื่อนไข `currentBait() &&` → **เหยื่อหมด (currentBait null) = ข้ามการสลับ = ตีบอสไม่ได้** (ผู้ใช้เจอ)
     //   ใหม่: สลับเป็นเหยื่อจุดอ่อนแม้ตอนนี้ไม่มีเหยื่อติดเบ็ด — cycleTo จะ equip ให้ (ensureBossBaitStock ซื้อมารอแล้ว)
     const cb0 = currentBait();
-    if (cfg.bossBaitTier > 0 && cb0?.tier !== cfg.bossBaitTier) {
+    // 🎯 v6.252 (ผู้ใช้ถามตรงๆ ว่า "บอสคนละตัว เหยื่อคนละแบบ บอทใช้ถูกไหม" — คำตอบเดิมคือ **ไม่ถูก**):
+    //   เดิมใช้ `cfg.bossBaitTier` ค่าเดียวกับบอสทุกตัว · หลักฐาน 25/7 19:29 บอส "หมึกยักษ์ท่าเรือ"
+    //   HUD ประกาศจุดอ่อน = "ไส้เดือน (ขั้น1) + หนอนทอง (ขั้น6)" แต่บอทตั้งไว้ขั้น 4 = ไม่ได้ x1.5 เลย
+    //   ใหม่: อ่านจุดอ่อนจาก HUD ของรอบนั้น → เลือกขั้นที่ "มีของอยู่ในกระเป๋า" ก่อน ไม่มีก็เลือกขั้นถูกสุด
+    //   (ค่าที่ผู้ใช้ตั้งเองยังใช้เป็น fallback เมื่ออ่าน HUD ไม่ได้ · 0 = ไม่สลับเลย ตามเดิม)
+    let wantBait = cfg.bossBaitTier;
+    const hudMeta = bossHudMeta(true);
+    if (hudMeta.weakTiers.length) {
+      // เหยื่อที่ติดเบ็ดอยู่ตรงจุดอ่อนแล้ว = ไม่ต้องสลับ (ประหยัดเวลา+ไม่เสี่ยง cycleTo พลาดกลางไฟต์)
+      // ไม่งั้นเลือก "ขั้นถูกสุดในบรรดาจุดอ่อน" — ถ้าไม่มีของ cycleTo จะสลับไม่สำเร็จเอง แล้วใช้เหยื่อเดิมตีต่อ (ไม่พัง)
+      const pick = (cb0 && hudMeta.weakTiers.includes(cb0.tier)) ? cb0.tier : hudMeta.weakTiers.slice().sort((a, b) => a - b)[0];
+      if (pick && pick !== cfg.bossBaitTier) {
+        say(`🎯 จุดอ่อนบอสรอบนี้ = ${hudMeta.weakNames.join(' / ')} → ใช้ขั้น ${pick} (ที่ตั้งไว้เอง ${cfg.bossBaitTier})`);
+        bossEvent(`🎯 จุดอ่อนที่เกมประกาศ: ${hudMeta.weakNames.join(' + ')} → เลือกขั้น ${pick} · ตั้งเองไว้ ${cfg.bossBaitTier}`);
+      }
+      if (pick) wantBait = pick;
+    }
+    if (wantBait > 0 && cb0?.tier !== wantBait) {
       prevBaitTier = cb0 ? cb0.tier : null;
       busy = true;
-      try { say(`👹 สลับเหยื่อจุดอ่อนขั้น ${cfg.bossBaitTier} (x1.5 ดาเมจ)${cb0 ? '' : ' [เหยื่อเพิ่งหมด — ติดเบ็ดใหม่]'}`); await cycleTo('เลือกเหยื่อ', cfg.bossBaitTier, () => currentBait()?.tier); } catch {}
+      try { say(`👹 สลับเหยื่อจุดอ่อนขั้น ${wantBait} (x1.5 ดาเมจ)${cb0 ? '' : ' [เหยื่อเพิ่งหมด — ติดเบ็ดใหม่]'}`); await cycleTo('เลือกเหยื่อ', wantBait, () => currentBait()?.tier); } catch {}
       finally { busy = false; }
     }
     gameEscape();   // ⎋ v6.165: ล้าง dialog/หน้าต่างค้างก่อนเริ่มตี (popup ตกปลา/ร้าน/story ฤๅษีเงา บังปุ่มตี+ยึด input)
@@ -2661,6 +2726,8 @@
     let orbWasDisabled = false, orbDisabledAt = 0;   // 🎥 v6.239: วัดคูลดาวน์ปุ่มตีบอส (กด→ดับ→ติดใหม่)
     let fightT0 = 0, lastContrib = { dmg: null, pct: null };   // 📊 v6.195: จับเวลาไฟต์ (ตั้งตอนเห็นบอสครั้งแรก) + อ่านดาเมจล่าสุด
     let fightMap = '';   // 🧭 v6.247: ถ้ำที่สู้อยู่จริง (จำตอนเห็นบอส) — ใช้พากลับเข้าถ้ำ "ใบเดิม" หลังตาย
+    // 👊 v6.252: โหมดตีของบอสรอบนี้ + ตัวนับไว้พิสูจน์ว่าระบบใหม่ทำงาน (ไฟต์ 19:29 ได้ 0.1% เพราะไม่รู้ว่าต้องเข้าประชิด)
+    let bossHitMode = null, meleeApproaches = 0, chargeShots = 0, meleeSaid = false;
     // 🛡️ v6.175: เดิมเงื่อนไขลูปมี isOn('bossHunt') → **ปิดโหมดล่าบอสกลางไฟต์ = ทิ้งบอสทันที**
     //   เจอสด 16:30:14: เข้าตีตอน 16:30:00 แล้วโดนตัดจบใน 14 วิ ("กดเกจ 0") ทั้งที่บอสยืนอยู่ตรงหน้า
     //   ซ้ำร้าย พอเปิดโหมดใหม่ ขา "เข้าถ้ำ" ชนกับขา "กลับบ้าน" → แมพเด้ง ถ้ำ↔บ่อตกปลา 6 รอบ โดนตีฟรีจน HP เหลือ 16%
@@ -2813,6 +2880,38 @@
         else { try { getPhaserScene()?.player?.tryJump?.(); } catch {} }
         await sleep(300); continue;
       }
+      // (1.5) 👊 v6.252: โหมดตีของบอสรอบนี้ — อ่านจาก HUD ทุกครั้ง (เกมกำหนดต่อบอส ห้ามเดา)
+      //   melee  = ต้องเข้าใกล้ ≤60px ก่อนฟาด · charge = กดค้าง 1.8 วิแล้วปล่อย (x2) · cast = แบบเดิม (เกจ)
+      if (present) {
+        const meta = bossHudMeta();
+        if (meta.hitMode && meta.hitMode !== bossHitMode) {
+          bossHitMode = meta.hitMode;
+          bossEvent(`👊 โหมดตีบอสรอบนี้: ${meta.hitMode === 'melee' ? 'เข้าประชิดแล้วฟาด (≤60px)' : meta.hitMode === 'charge' ? 'กดค้างชาร์จ 1.8 วิ (x2)' : 'ปาเบ็ด (เกจแบบเดิม)'}${meta.weakNames.length ? ` · จุดอ่อน: ${meta.weakNames.join('+')}` : ''}`);
+        }
+        // 👊 melee: เดินเข้าไปให้ถึงก่อน แล้วค่อยฟาด — ไม่งั้นกดเท่าไรก็ดาเมจ 0 (บทเรียน 19:29)
+        if (bossHitMode === 'melee' && rb && rb.x != null && _sc && _sc.player) {
+          const d = Math.hypot(rb.x - _sc.player.x, rb.y - _sc.player.y);
+          // เชื่อ "ไกลไป!" ของเกมก่อน (ground truth) · ไม่มีข้อความก็ใช้ระยะจาก tuning เผื่อขอบตัวบอส
+          const needCloser = meta.tooFar || d > BOSS_MELEE_RANGE * 2.2;
+          if (needCloser) {
+            const dirs = [];
+            const ddx = rb.x - _sc.player.x, ddy = rb.y - _sc.player.y;
+            if (ddx > 8) dirs.push('right'); else if (ddx < -8) dirs.push('left');
+            if (ddy > 8) dirs.push('down'); else if (ddy < -8) dirs.push('up');
+            bossMoveDirs(dirs); meleeApproaches++;
+            if (!meleeSaid) { meleeSaid = true; logInfo(`👊 โหมดประชิด — เดินเข้าหาบอส (ห่าง ${Math.round(d)}px, ต้อง ≤${BOSS_MELEE_RANGE})`); }
+            await sleep(120); continue;   // เดินก่อน ยังไม่ต้องกด
+          }
+          bossReleaseAll();   // ถึงระยะแล้ว = หยุดเดิน (ไม่งั้นเดินทะลุเลยบอสไป)
+        }
+        // ⚡ charge: กดค้างจนเต็มแล้วปล่อย — ทำเป็นจังหวะของตัวเอง ไม่ผ่านลูปเกจ
+        if (bossHitMode === 'charge' && orb && !orb.disabled && now() - lastPress > 300) {
+          lastPress = now(); lastBossPressAt = Date.now();
+          orbDown(orb); await sleep(BOSS_CHARGE_MS + 150); orbUp(orb);
+          chargeShots++; gaugePresses++; if (gabBlock) gabBlock.p++;
+          continue;
+        }
+      }
       // (2) ⚙️ เกจโผล่ (กำลังตี) → กดตอนเข็มเข้าแถบแดง [a0,a1] (เกจบอส=conic เหมือนตกปลา · readGaugeWheel มี fallback)
       const g = readGaugeWheel();
       if (g && g.ang != null) {
@@ -2892,6 +2991,10 @@
       hpEnd: hpEnd != null ? Math.round(hpEnd) : null,
       gVel: Math.round(Math.abs(gVel)), map: bossMapId() || BOSS_MAP,
       durMs: fightT0 ? Math.round(now() - fightT0) : 0,
+      // 👊 v6.252: จดโหมดตี + จุดอ่อนที่เกมประกาศ + เหยื่อที่ใช้จริง → ไฟต์หน้าเทียบได้ว่าโหมดไหน/เหยื่อไหนคุ้ม
+      hitMode: bossHitMode, approaches: meleeApproaches, charges: chargeShots,
+      bossName: bossHudMeta().name || null,
+      weakTiers: bossHudMeta().weakTiers.slice(), baitUsed: currentBait()?.tier ?? null,
     });
     if (isOn('tgOn')) void tgSend(`👹 <b>จบสู้บอส</b> ${esc(outcome)}\n${esc(stat)}\nกำลังกลับไปฟาร์ม`);
     say(`👹 ${outcome}`);
