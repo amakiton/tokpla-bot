@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.262
+// @version      6.263
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.262';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.263';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2554,7 +2554,7 @@
       // 🚪 v6.242: ประตูถ้ำบอสล็อกจนถึงเวลา (mechanic ใหม่ที่ผู้ใช้แจ้ง) — บอสอยู่แค่ 1-3 นาที
       //   → ยืนปากประตูแล้ว "พุ่งเข้าถี่ๆ" รอประตูเปิด แทนรอ 6 วิ/รอบ (ของเดิมเข้าช้าไป ~1 นาที = พลาดบอส)
       if (gateToCave) {
-        if (await bossWaitGate(cur, exit.targetMap)) {
+        if (await bossWaitGate(cur, exit.targetMap, exit)) {   // v6.263: ส่งพิกัดปากประตูไปด้วย (ใช้เดินชนตอน A* พาไม่ได้)
           // 🎯 v6.247 (ตาข่ายกันตกตัวจริง): ทะลุประตูถ้ำบอสเข้ามาแล้ว → **แมพที่ยืนอยู่ตอนนี้คือถ้ำบอส**
           //   เรียนรู้ตรงนี้ ไม่ใช่รอ raidBoss โผล่ (v6.246) — เพราะบอทมาถึงก่อนบอสเกิดตาม bossLeadMin
           //   ถ้าไม่เรียนตอนนี้: isBossMap เป็นเท็จ → ลูปข้างบนคิดว่ายังไม่ถึง → เดินออกจากถ้ำไปหาถ้ำอื่น = พลาดทั้งรอบ
@@ -2574,17 +2574,39 @@
   //   ⚠️ ยังไม่รู้รูปแบบ countdown/ข้อความหน้าประตูแน่ชัด (ยังไม่เห็นของจริง) → เก็บ log ไว้ดูรอบหน้า (bossGateProbe)
   //   timeout: ตามเวลาบอส — ถ้าเลยเวลาที่คาดว่าบอสจะตาย (อยู่ 1-3 นาที) ยังเข้าไม่ได้ = เลิก (กันยืนรอเปล่า)
   //   🐛 v6.247: เดิม hardcode BOSS_MAP ทั้งพิกัดและ mapId → รอบที่ถ้ำ active ไม่ใช่ boss_cave = สั่งเกมพาไปถ้ำผิดใบทุก 1.2 วิ
-  async function bossWaitGate(cur, toMap) {
+  //   🐛 v6.263 (ผู้ใช้เห็นสด 22:30 — **บอทยืนเฉยหลังประตูเปิด จนต้องกดเดินเข้าเอง**):
+  //     หลักฐานจากการเฝ้าดูสด: 22:29:58 ประตูล็อก → 22:30:01 ประตูเปิด (ข้อความหาย) → **22:30:04 ตัวยังอยู่ (119,510) ไม่ขยับ**
+  //     → ผู้ใช้กดเดินเอง 22:30:07 → เข้าถ้ำ 22:30:10 · ตอนเข้าไป HP บอสเหลือ 16,005/36,000 (คนอื่นตีไปครึ่ง) = เสียดาเมจ/รางวัล
+  //     ต้นตอ: ยิง `navigate({mapId: dest})` ไป**พิกัดข้างในถ้ำ** (841,445) ซ้ำทุก 1.2 วิ — ถ้า A* วางเส้นข้ามแมพไม่ได้
+  //       ตัวจะไม่ขยับเลย และไม่มีตัวตรวจว่า "สั่งแล้วขยับไหม" (บั๊กตระกูลเดียวกับ v6.260/v6.262 ที่แก้ไปแล้ว 3 จุด)
+  //     แก้: สลับ 2 วิธีทุกรอบ — (1) navigate ข้ามแมพแบบเดิม (2) **เดินชนปากประตูตรงๆ ด้วย WASD** (วิธีที่ใช้ได้แน่ตอนประตูเปิด)
+  //       + ตรวจ "ตัวขยับไหม" ถ้านิ่ง 2 รอบติดให้สลับวิธีทันที · ผู้เรียกส่งพิกัดประตู (exit) มาให้แล้ว
+  async function bossWaitGate(cur, toMap, exitZone) {
     const dest = toMap || bossActiveCave();
     const target = BOSS_NAV_TARGET[dest] || BOSS_NAV_TARGET[BOSS_MAP] || { x: 841, y: 445 };
     const t0 = now(); let said = false, lastProbe = 0, lastNav = 0;
+    let useWalk = false, stuckN = 0, lastPos = null;
     // เพดานรอ: lead + maxWait + เผื่อ 2 นาที (แต่ไม่เกิน 12 นาที) — ครอบเวลาบอสจริงได้ ไม่ยืนเปล่าทั้งวัน
     const maxMs = clamp((clamp(cfg.bossLeadMin, 1, 60) + clamp(cfg.bossMaxWaitMin, 1, 30) + 2), 5, 12) * 60000;
     while (enabled && (isOn('bossHunt') || mythicActive()) && now() - t0 < maxMs) {
       if (bossMapId() !== cur) return true;                     // ประตูเปิด + เข้าได้แล้ว 🎉
       if (!said) { said = true; say('🚪 ถึงปากถ้ำบอสแล้ว — ประตูล็อกจนถึงเวลา · จะพุ่งเข้าทันทีที่เปิด (บอสอยู่แค่ 1-3 นาที)'); bossEvent('🚪 รอหน้าประตูถ้ำ — เข้าถ้ำไม่ได้ก่อนเวลา (mechanic ใหม่)'); }
       if (now() - lastProbe > 8000) { lastProbe = now(); bossGateProbe(now() - t0); }   // เก็บ mechanic (ข้อความ/countdown) ไว้ดูรอบหน้า
-      if (now() - lastNav > 1200) { lastNav = now(); try { gameWalker()?.navigate({ x: target.x, y: target.y, mapId: dest }); } catch {} }
+      // 🐛 v6.263: ตรวจว่า "สั่งไปแล้วตัวขยับไหม" — นิ่ง 2 รอบติด = วิธีนี้ใช้ไม่ได้ ให้สลับไปอีกวิธี
+      const _p = bossPlayerXY();
+      if (_p && lastPos && Math.abs(_p.x - lastPos.x) < 4 && Math.abs(_p.y - lastPos.y) < 4) {
+        if (++stuckN >= 2) { stuckN = 0; useWalk = !useWalk; logInfo(`🚪 หน้าประตู: ${useWalk ? 'สลับไปเดินชนปากประตูเอง (WASD)' : 'สลับกลับไปใช้ A* ข้ามแมพ'}`); }
+      } else stuckN = 0;
+      lastPos = _p ? { x: _p.x, y: _p.y } : null;
+      if (now() - lastNav > 1200) {
+        lastNav = now();
+        if (useWalk && exitZone && exitZone.x != null) {
+          // เดินชนปากประตูตรงๆ — วิธีที่ได้ผลแน่เมื่อประตูเปิดแล้ว (ไม่พึ่ง A* ข้ามแมพ)
+          void bossWalkTo(exitZone.x, exitZone.y + (exitZone.height ? 30 : 0), { thresh: 12, maxMs: 1100 });
+        } else {
+          try { gameWalker()?.navigate({ x: target.x, y: target.y, mapId: dest }); } catch {}
+        }
+      }
       await sleep(400);
     }
     return bossMapId() !== cur;
