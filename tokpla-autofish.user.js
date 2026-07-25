@@ -2958,6 +2958,7 @@
     //   ถ้ายังค้างในถ้ำ strandedInBossCave จะพาออกเอง) กัน tokpla_boss_state ค้างข้ามวัน
     if (orchestrating || busy) { if (resumeHome) clearBossState(); return; }
     orchestrating = true;
+    let reachedCave = false;   // 🐛 v6.248: ไปถึงถ้ำจริงไหม — ใช้ตัดสินความยาวคูลดาวน์ตอนจบ (ดู finally)
     // 🐛 v6.117: บ้านต้องไม่ใช่ boss_cave — ถ้าเริ่มล่าตอนอยู่ในถ้ำแล้ว ใช้แมพฟาร์มล่าสุด/ที่ตั้ง/village
     const here = bossMapId();
     bossHome = resumeHome || cfg.bossHomeMap || (here && !isBossMap(here) ? here : bossLastMapId) || 'village';
@@ -2984,6 +2985,7 @@
         const reached = await bossTravelTo(bossActiveCave());   // v6.247: ถ้ำที่ active รอบนี้ (ไม่ใช่ boss_cave ตายตัว)
         if (!reached) { say('👹 ไปถ้ำบอสไม่สำเร็จ — กลับบ้าน'); bossEvent('❌ เดินไปถ้ำไม่สำเร็จ — กลับบ้าน'); }
         else {
+          reachedCave = true;
           bossPhase = 'fight'; saveBossState();
           bossWrongRound = false;
           await bossFight(cfg.bossMaxWaitMin);
@@ -2999,7 +3001,21 @@
       say(back ? `👹 กลับถึง ${bossHome} — ฟาร์มต่อ` : `👹 กลับบ้านไม่สำเร็จ (อยู่ ${bossMapId()}) — ฟาร์มที่นี่ไปก่อน`);
       if (isOn('tgOn')) void tgSend(back ? `🎣 กลับมาฟาร์มต่อที่ ${bossHome}` : `⚠️ กลับแมพเดิมไม่สำเร็จ — อยู่ ${bossMapId()}`);
     } catch (e) { logErr('ล่าบอสล้มเหลว', e); }
-    finally { bossReleaseAll(); bossPhase = 'idle'; clearBossState(); orchestrating = false; lastCast = now(); pendingCast = 0; stampBossHunt(); resumeTestAfterBoss(); }
+    finally {
+      bossReleaseAll(); bossPhase = 'idle'; clearBossState(); orchestrating = false; lastCast = now(); pendingCast = 0;
+      // 🐛 v6.248 (หลักฐานจริง 25/7 16:30): เดินไปถ้ำไม่สำเร็จ → โดนคูลดาวน์ **เต็ม 10 นาที เท่ากับล่าสำเร็จ**
+      //   log ฟ้องตรงๆ: 16:30:14 "❌ เดินไปถ้ำไม่สำเร็จ" → 16:30:17 "ถึงเวลาล่าแล้ว (บอสอีก 0 นาที) แต่ยังไม่ไป — คูลดาวน์ เหลืออีก 598 วิ"
+      //   บอสอยู่แค่ 1-3 นาที → พลาดครั้งเดียว = **เสียทั้งรอบทันที ไม่มีโอกาสลองใหม่เลย**
+      //   แก้: ไม่ถึงถ้ำ + บอสยังอยู่ = คูลดาวน์สั้น 90 วิ (arm ยังคาไว้ ตามดีไซน์ stampBossHunt เดิม) ลองซ้ำได้สูงสุด 2 ครั้ง
+      //   จำกัด 2 ครั้งเพื่อกัน "เดินวนทั้งรอบ" ถ้าเส้นทางพังจริง — ครบแล้วกลับไปคูลดาวน์เต็มตามเดิม
+      const tm = bossTimerMin();
+      const bossStillLive = (tm != null && tm <= 1) || !!(raidBossState() || {}).present;
+      const retry = !resumeHome && !reachedCave && bossStillLive && bossTravelRetries < 2;
+      if (retry) { bossTravelRetries++; bossEvent(`🔁 ไปไม่ถึงถ้ำแต่บอสยังอยู่ — ลองใหม่ใน 90 วิ (ครั้งที่ ${bossTravelRetries}/2)`); }
+      else bossTravelRetries = 0;
+      stampBossHunt(retry ? 90000 : undefined);
+      resumeTestAfterBoss();
+    }
   }
 
   // 📬 v6.158: รับรางวัลบอสจากจดหมายอัตโนมัติ — บอสตายจะเด้ง dialog "รางวัลส่งเข้าจดหมายแล้ว" (ปุ่ม "📬 เปิดจดหมาย")
@@ -3142,6 +3158,7 @@
   //   แก้: ล่าจบ (เจอหรือไม่เจอบอสก็ตาม) = ปลด arm · ต้อง "เห็นตัวนับรอบใหม่ > lead" ก่อน ถึงจะ arm กลับ
   //   → ป้ายค้าง 0 นาทีไม่มีวันปลุกการล่าซ้ำได้อีก · persist ข้ามรีโหลด (ป้ายค้างอยู่นานกว่าอายุหน้าเว็บ)
   let bossWrongRound = false;   // v6.203: ไฟต์ล่าสุดจบเพราะ "มาผิดรอบ" (ไม่ได้สู้) → ข้าม linger/เมล์
+  let bossTravelRetries = 0;    // v6.248: นับครั้งที่ "ไปไม่ถึงถ้ำแต่บอสยังอยู่" — จำกัดการลองซ้ำไม่ให้วนทั้งรอบ
   let bossArmed = true;
   try { bossArmed = W.localStorage.getItem('tokpla_boss_armed') !== '0'; } catch {}
   const setBossArmed = (v) => { bossArmed = v; try { W.localStorage.setItem('tokpla_boss_armed', v ? '1' : '0'); } catch {} };
