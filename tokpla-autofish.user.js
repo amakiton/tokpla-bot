@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.253
+// @version      6.254
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.253';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.254';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4540,21 +4540,31 @@
   //   บทเรียนซ้ำรอย v6.104/v6.105: **ห้ามผูก selector กับอิโมจิ** เกมเปลี่ยนได้ทุกอัปเดต
   //   → จับจาก "คำไทย" อย่างเดียว + จำกัดความยาวข้อความ (แท็บสั้น) + ข้าม UI บอทเอง (กฎเหล็ก #7)
   //   ⚠️ ต้องจำกัดความยาว เพราะแผงบอทมีหัวข้อ '🪱 เหยื่อ & อุปกรณ์' ที่เป็น <button> (บั๊ก v6.105)
-  const SHOP_TAB_WORD = { 'เหยื่อ': 'เหยื่อ', 'เบ็ด': 'เบ็ด', 'ทุ่น': 'ทุ่น', 'ยา': 'ยา', 'ชุด': 'ชุด', 'ทรงผม': 'ทรงผม' };
+  //   🐛 v6.254: **แท็บกระเป๋าก็เปลี่ยนด้วย** — เกมตัดอิโมจิออกแล้วต่อจำนวนท้าย:
+  //     `🐟 ปลา` → `ปลา235 ชิ้น` · `🎒 ของใช้` → `ของใช้261 ชิ้น` (ยืนยันจาก DOM จริงบน VPS)
+  //     → `btnByText('🎒 ของใช้')` (startsWith) พังทั้งหมด = กินกาแฟ/ยาไม่ได้, เปิดแท็บปลาไม่ได้
+  //   → ทำตัวหาแท็บกลางตัวเดียวใช้ทั้งร้านและกระเป๋า: **ตัดอิโมจิ/ช่องว่างทิ้งแล้วเทียบ "ขึ้นต้นด้วยคำไทย"**
+  //     ทนทั้ง "เปลี่ยนอิโมจิ" และ "ต่อจำนวนท้าย" · ข้าม UI บอทเอง (กฎเหล็ก #7)
+  const tabWordOf = (label) => (String(label).match(/[฀-๿]+/g) || []).join('') || String(label);
+  const stripDeco = (s) => String(s).replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}️‍]/gu, '').trim();
+  function findUiTab(label) {
+    const key = tabWordOf(label);
+    const cands = [...document.querySelectorAll('button')].filter((b) => !isBotUI(b) && b.offsetParent);
+    // ⚠️ รอบแรกต้อง "เป๊ะ" — ไม่งั้น findUiTab('ปลา') ไปโดนการ์ดปลาในกระเป๋า ("ปลาคาร์ปทองคำ ×3") แทนแท็บ
+    //   รูปแบบแท็บที่เจอจริง: "เหยื่อ" (ร้าน) · "ปลา235 ชิ้น" / "ของใช้261 ชิ้น" (กระเป๋า)
+    const exact = new RegExp('^' + key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(\\s*[\\d,]+\\s*ชิ้น)?$');
+    const hit = cands.find((b) => exact.test(stripDeco(b.textContent || '')));
+    if (hit) return hit;
+    // สำรอง: ขึ้นต้นด้วยคำนั้นและข้อความสั้นพอที่จะเป็นแท็บ (กันไปโดนชื่อไอเทมยาวๆ)
+    return cands.find((b) => { const s = stripDeco(b.textContent || ''); return s.startsWith(key) && s.length <= key.length + 10; }) || null;
+  }
   let shopTabMissAt = 0;
   const shopTab = async (label) => {
-    // รับได้ทั้งแบบเก่า ('🪱 เหยื่อ') และคำไทยล้วน ('เหยื่อ') — ดึงเฉพาะคำไทยออกมาใช้
-    const word = (String(label).match(/[฀-๿]+/g) || []).join('') || String(label);
-    const key = Object.keys(SHOP_TAB_WORD).find((k) => word.includes(k)) || word;
-    const t = [...document.querySelectorAll('button')].find((b) => {
-      if (isBotUI(b) || !b.offsetParent) return false;
-      const s = (b.textContent || '').trim();
-      return s.length <= 14 && s.includes(key);      // แท็บร้านสั้นเสมอ ("🐛 เหยื่อ") · หัวข้อแผงบอทยาวกว่า
-    }) || btnByText(label);                          // เผื่อรูปแบบเดิมยังใช้ได้
+    const t = findUiTab(label) || btnByText(label);   // เผื่อรูปแบบเดิมยังใช้ได้
     if (t) { fireClick(t); await sleep(300); return true; }
     if (now() - shopTabMissAt > 60000) {             // ฟ้อง 1 ครั้ง/นาที — เดิมเงียบสนิทจนวนลูปไม่มีใครรู้
       shopTabMissAt = now();
-      logWarn(`🏪 หาแท็บร้าน "${key}" ไม่เจอ (เกมเปลี่ยนชื่อ/อิโมจิแท็บ?) — การซื้อของแท็บนี้จะไม่สำเร็จ`);
+      logWarn(`🏪 หาแท็บ "${tabWordOf(label)}" ไม่เจอ (เกมเปลี่ยนชื่อ/อิโมจิแท็บ?) — งานที่ต้องใช้แท็บนี้จะไม่สำเร็จ`);
     }
     return false;
   };
@@ -4996,8 +5006,8 @@
       await ensureMenuOpen();   // v6.104: เมนูถูกย่อ = ปุ่มกระเป๋าหายจาก DOM
       if (!(await openBagUI())) return false;
       await sleep(700);
-      const tab = btnByText('🎒 ของใช้');
-      if (!tab) { await closeMenu(); return false; }
+      const tab = findUiTab('ของใช้') || btnByText('🎒 ของใช้');   // v6.254: เกมเปลี่ยนเป็น "ของใช้261 ชิ้น"
+      if (!tab) { logWarn('🎒 หาแท็บ "ของใช้" ในกระเป๋าไม่เจอ — กินกาแฟ/ยาไม่ได้'); await closeMenu(); return false; }
       fireClick(tab); await sleep(450);
       const item = [...document.querySelectorAll('button')].find((b) =>
         nameRe.test(b.getAttribute('aria-label') || '') || nameRe.test(b.textContent || ''));
@@ -8257,7 +8267,7 @@ ${esc(reason)}
       rb.style.cssText = 'padding:5px 10px;border-radius:7px;border:1px solid #4a5568;background:#2d3748;color:#e2e8f0;font-size:11px;cursor:pointer;margin:2px 3px 6px 0;';
       rb.addEventListener('click', async () => {
         rb.disabled = true;
-        try { await openBagUI(); await sleep(600); const ft = btnByText('🐟ปลา') || btnByText('🐟 ปลา'); if (ft) { fireClick(ft); await sleep(500); } } catch {}
+        try { await openBagUI(); await sleep(600); const ft = findUiTab('ปลา') || btnByText('🐟ปลา') || btnByText('🐟 ปลา'); if (ft) { fireClick(ft); await sleep(500); } } catch {}   // v6.254: เกมเปลี่ยนเป็น "ปลา235 ชิ้น"
         const t = fishRarityReport();
         try { console.log('[Tokpla Bot]\n' + t); } catch {}
         showTextModal('🏷️ ระดับปลาที่บอทเห็น', t);
