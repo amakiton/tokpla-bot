@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.268
+// @version      6.269
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.268';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.269';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -309,6 +309,7 @@
     energyPauseMaxSec: 90,       // ...สูงสุด
   };
 
+  let cfgNeedsSave = false;   // 💾 v6.269: ตั้งโดย loadCfg เมื่อ migration เปลี่ยนค่าจริง (ดูเหตุผลที่นั่น)
   let cfg = loadCfg();
   let enabled = false;
   let busy = false;       // กำลังเปิดกระเป๋า/ขายอยู่ — หยุดตกชั่วคราว
@@ -429,6 +430,12 @@
         if (!('testMode' in old)) c.testMode = old.testGameAuto ? 'both' : 'bot';
         // v6.101: testBuff (bool) → testBuffMode ('plain'/'buff'/'both') — เดิม true=ทั้งคู่ · false=ไม่ใช้ยาอย่างเดียว
         if (!('testBuffMode' in old)) c.testBuffMode = old.testBuff === false ? 'plain' : 'both';
+        // 💾 v6.269: เดิม `return c` เฉยๆ = **ผลของ migration ไม่เคยถูกเซฟ** → รันซ้ำทุกครั้งที่รีโหลด
+        //   อันตรายจริง: ธงกันซ้ำ (bagHeavyMigrated / fishModeV684 …) ก็ไม่ถูกเซฟไปด้วย ธงเลยไม่มีวัน "ติด"
+        //   → ถ้าผู้ใช้ตั้ง sellAtPct = 85 เองวันหลัง รีโหลดครั้งถัดไปจะถูกลากลง 75 ทุกครั้ง = "ตั้งค่าแล้วไม่จำ"
+        //   (คลาสเดียวกับบั๊กที่คอมเมนต์ข้างบนเตือนไว้เอง — เคารพค่าที่ผู้ใช้ตั้งเสมอ)
+        //   แก้: ถ้า migration เปลี่ยนอะไรจริง ให้ตั้งธงไว้ แล้ว init เซฟทับครั้งเดียวหลังโหลดเสร็จ
+        try { if (JSON.stringify(c) !== JSON.stringify({ ...DEFAULTS, ...old })) cfgNeedsSave = true; } catch { cfgNeedsSave = true; }
         return c;
       }
     } catch {}
@@ -442,6 +449,10 @@
     if (restoring) return;
     try { W.localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); } catch {}
   }
+  // 💾 v6.269: flush ผล migration ลง storage ครั้งเดียว — ต้องอยู่ "หลัง" นิยาม saveCfg/restoring
+  //   (เรียกตรงจุด loadCfg ไม่ได้: `restoring` เป็น let ที่ประกาศทีหลัง → ชน TDZ แล้วโดน catch กลืนเงียบ
+  //    = เหมือนไม่ได้แก้อะไรเลย · เป็นกับดักที่มองไม่เห็นถ้าไม่ไล่ลำดับการประกาศ)
+  if (cfgNeedsSave) { cfgNeedsSave = false; saveCfg(); }
 
   // ===== คำนวณกำไรแบบ "ต่อชิ้น" (ไม่มีแบทช์แล้ว) =====
   // ต้นทุนคิด "ต่อเหวี่ยง" (เหวี่ยงติด = ใช้เหยื่อ 1 ชิ้น แม้ปลาหลุด/ไม่ติด) · รายได้คิด "ต่อติดปลา"
