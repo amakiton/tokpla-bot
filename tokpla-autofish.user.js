@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.293
+// @version      6.294
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.293';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.294';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -362,6 +362,8 @@
   let pauseUntil = 0;     // พักรอพลัง ⚡ ถึงเวลาไหน
   let awayAt = 0;         // ปุ่มตกปลาถูกปิด (ยืนไกลบ่อ) ตั้งแต่เมื่อไร
   let bagFullTries = 0;   // เจอกระเป๋าเต็มแล้วขายไม่ออกกี่ครั้งติด
+  let bagSlotsCache = 0;  // 🛡️ v6.294: จำนวนช่องกระเป๋าล่าสุด (จาก readBagCount) — ให้ pickSpecies กันปลาลุงหยัดไม่ให้เต็มกระเป๋า
+  let yadBagWarned = false, yadCapWarned = false;   // v6.294: เตือนครั้งเดียว (กระเป๋าเล็กเกิน / สะสมเกินเพดาน)
   // 🏬 v6.223: คลังลุงคลังเต็ม → พักระบบฝากถึงเวลานี้ (กันวนไปเมืองฝากไม่ได้ไม่จบ)
   // 🐛 v6.237: เก็บเป็น **เวลานาฬิกา (Date.now)** + persist ลง localStorage
   //   เดิมเป็นตัวแปรในหน่วยความจำอิง performance.now() → **รีโหลดทีไรการพัก 30 นาทีหายหมด**
@@ -4164,7 +4166,7 @@
       if (!(await openBagUI())) return res;   // v6.167: มีคีย์ลัด B เป็นทางสำรองในตัว
       if (!(await waitFor(() => readBagCount(), 3000))) { await closeMenu(); return res; }
       await sleep(250);
-      const bc = readBagCount(); if (bc && bc.slots > 0) { res.bagPct = bc.count / bc.slots * 100; lastBagPct = res.bagPct; }   // 🛡️ C: ความเต็มกระเป๋า (v6.165: จำไว้ให้ npcErrandCheck ตัดสินว่า "วิกฤต" ไหม)
+      const bc = readBagCount(); if (bc && bc.slots > 0) { res.bagPct = bc.count / bc.slots * 100; lastBagPct = res.bagPct; bagSlotsCache = bc.slots; }   // 🛡️ C: ความเต็มกระเป๋า (v6.165: จำไว้ให้ npcErrandCheck ตัดสินว่า "วิกฤต" ไหม)
       const stoMin = rarityRank(cfg.npcStorageRarity), essMin = rarityRank(cfg.npcEssenceRarity);
       for (const c of readBag()) {
         if (c.rarity == null) continue;                       // อ่านสีไม่ออก = ข้าม (กันฝาก/แลกผิดตัว)
@@ -7713,7 +7715,7 @@
         const afterRaw = (yadReadPanel() || {}).raw || '';
         const okNow = yadReadOffers().find((x) => x.reward === o.reward && x.need === o.need);
         if (afterRaw !== beforeRaw || (okNow && !okNow.canExchange)) {
-          traded++;
+          traded++; yadCapWarned = false;   // v6.294: แลกสำเร็จ = เพดานเตือนรีอาร์มได้
           say(`🎣 แลกสำเร็จ: ${o.fish}×${o.need} → ${o.reward}×${o.rewardQty} (เข้ากล่องจดหมาย)`);
           bossEvent(`🎣 แลกลุงหยัด: ${o.fish}×${o.need} → ${o.reward}×${o.rewardQty}`);
           if (isOn('tgOn')) void tgSend(`🎣 <b>แลกลุงหยัด</b> ${esc(o.fish)}×${o.need} → ${esc(o.reward)}×${o.rewardQty}`);
@@ -7776,9 +7778,32 @@
       // v6.292: ล็อกเฉพาะปลาของ "รางวัลที่เลือกไว้" (yadKeepMap) · ถ้ายังไม่รู้ข้อเสนอ ใช้ wants เดิมกันเหนียว
       const keepM = yadKeepMap();
       const src = Object.keys(keepM).length ? keepM : yadWants();
+      // 🛡️ v6.294: ตาข่ายกัน "ปลาที่กันไว้ทำกระเป๋าเต็มจนบอทหยุด" (ผู้ใช้ถามตรง: ปลาหยุดสะสมชนระบบขาย)
+      //   ต้นเหตุที่ต้องกัน: ปลาแลกขายไม่ได้ + ต้องครบ N ก่อนแลก → ถ้ากระเป๋าเล็กกว่า N ปลาจะเต็มก่อนถึงเป้า
+      //   → เกม "กระเป๋าเต็ม" → ขายไม่ออก (กันหมด) → stopBot (ดู tick 8674) · ระบบแลกกลายเป็นตัวฆ่าบอท
+      const BUF = 25;                                   // เผื่อที่ว่างให้ตกปลา+ขายปลาอื่นได้ระหว่างสะสม
+      const slots = bagSlotsCache || 0;                 // อัปเดตจาก readBagCount ทุกครั้งที่เปิดกระเป๋า
+      const autoT = isOn('yadAutoTrade');
       for (const [sp, need] of Object.entries(src)) {
         const have = sellableOf.get(sp) || 0;
-        if (have > 0) keep(sp, `ลุงหยัดต้องการ ${need} ตัว (มี ${have})`);
+        if (have <= 0) continue;
+        // (ก) กระเป๋าเล็กเกินกว่าจะสะสมถึงเป้าแลก → กันไปก็เต็มค้างเปล่าๆ แล้วบอทหยุด → ไม่กัน (ปล่อยขายปกติ) + เตือน
+        if (slots > 0 && need + BUF > slots) {
+          if (!yadBagWarned) {
+            yadBagWarned = true;
+            logWarn(`🎣 กระเป๋า ${slots} ช่อง เล็กเกินกว่าจะสะสม "${sp}" ให้ถึง ${need} ตัว (เผื่อที่ว่าง ${BUF}) — บอทจะ "ไม่กัน" ${sp} ไว้ (ปล่อยขายตามปกติ กันกระเป๋าเต็มจนบอทหยุด) · แก้: ขยายกระเป๋า หรือเลือกรางวัลที่ใช้ปลาน้อยกว่า`);
+            if (isOn('tgOn') && isOn('tgWarn')) void tgSend(`🎣 <b>กระเป๋าเล็กเกินไปสำหรับแลกลุงหยัด</b> — ต้องสะสม ${esc(sp)} ${need} ตัว แต่กระเป๋ามี ${slots} ช่อง · บอทปล่อยขายตามปกติกันบอทหยุด (ขยายกระเป๋า/เลือกรางวัลที่ใช้ปลาน้อยกว่า)`);
+          }
+          continue;   // ไม่กัน sp นี้
+        }
+        // (ข) กันไว้จน "เป้า + เผื่อ" — พอถึงเป้า (need) ระบบแลกอัตโนมัติจะพาไปแลกก่อนถึงเพดานนี้
+        //     เกินเพดาน (แลกไม่ทำงาน/ปิดแลกอัตโนมัติ+ไม่ไปแลกเอง) → ปล่อยขายส่วนเกิน กันกระเป๋าเต็มค้าง
+        const cap = need + BUF;
+        if (have < cap) keep(sp, `ลุงหยัดต้องการ ${need} ตัว (มี ${have})`);
+        else if (!yadCapWarned) {
+          yadCapWarned = true;
+          logWarn(`🎣 "${sp}" สะสม ${have} ตัวเกินเพดาน ${cap} (เป้าแลก ${need}) แต่ยังไม่ถูกแลก — ปล่อยขายกันกระเป๋าเต็มค้าง · ${autoT ? 'เช็คว่าระบบเดินไปแลกติดปัญหาไหม (ดู log)' : 'เปิด "เดินไปแลกเอง" หรือไปแลกเองก่อนกระเป๋าเต็ม'}`);
+        }
       }
     }
     let want = all;
@@ -7956,6 +7981,7 @@
       await sleep(250);   // รอ React วาดการ์ดให้ครบ
 
       const bag = readBagCount();
+      if (bag && bag.slots > 0) bagSlotsCache = bag.slots;   // v6.294: จำช่องกระเป๋าให้ pickSpecies กันปลาลุงหยัดล้น
       const total = readTotalCoins();
       const cards = readBag();
 
@@ -9793,7 +9819,7 @@ ${esc(reason)}
           'รางวัลที่จะแลก',
           offs.length ? 'เลือกว่าจะสะสมปลาไปแลกอะไร · "ทุกข้อเสนอ" = แลกอันไหนครบก่อนแลกอันนั้น (เก็บปลาถึงจำนวนมากสุด)'
             : '⚠️ ยังไม่มีข้อเสนอให้เลือก — เดินไปคุยกับลุงหยัดที่ท่าเรือทะเลแล้วกด E สักครั้งก่อน แล้วเปิดแผงนี้ใหม่',
-          selectInput('yadReward', opts),
+          selectInput('yadReward', opts, () => { yadBagWarned = false; yadCapWarned = false; }),
         ));
         panel.appendChild(row(
           'เดินไปแลกเอง (อัตโนมัติ)',
@@ -10675,6 +10701,7 @@ ${esc(reason)}
       await sleep(250);
 
       const bag = readBagCount();
+      if (bag && bag.slots > 0) bagSlotsCache = bag.slots;   // v6.294: จำช่องกระเป๋าให้ pickSpecies กันปลาลุงหยัดล้น
       const total = readTotalCoins();
       const cards = readBag();
       const { want, locked, rarityOf } = pickSpecies(cards);
