@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.300
+// @version      6.301
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.300';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.301';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -388,6 +388,7 @@
   let loginAlerted = false;    // แจ้งเรื่องเด้งไป login ไปแล้วหรือยัง
   let paused = false;          // พักชั่วคราว (บอทยังเปิด แต่ไม่ตก)
   let lastQuestCheck = 0;      // เช็คเควสครั้งล่าสุดเมื่อไร
+  let lastFarmRodAt = 0;       // 🎣 v6.301: เช็ค/สลับ "เบ็ดฟาร์ม" ตอนฟาร์มปกติครั้งล่าสุด (เดิมสลับเฉพาะหลังตีบอส = ฟาร์มไม่เคยสลับ)
   let lastTimeSellAt = 0;      // เช็คขายแบบอิงเวลา (โหมด gameauto/off ที่ตัวนับ casts ไม่ขยับ) ครั้งล่าสุด
   let gameAutoSayAt = 0;       // ประกาศ "เปิดตกปลาอัตโนมัติของเกม" ครั้งล่าสุด (throttle กันสแปมตอน restart หลัง maintenance)
   let lastGameCatchPoll = 0;   // อ่านผลตกจาก state เกม (โหมด gameauto) ครั้งล่าสุด — throttle ~100ms
@@ -3572,7 +3573,7 @@
     // 🎣 v6.190: คืนเบ็ด — เลือกชิ้นที่ "โบนัสปลา" สูงสุดกลับมาฟาร์ม (ไม่อิง UUID เดิมแล้ว)
     if (isOn('rodSwitchOn')) {
       busy = true;
-      try { say('🎣 สลับกลับเบ็ดสำหรับฟาร์ม'); await equipRodBy('farm'); }
+      try { say('🎣 สลับกลับเบ็ดสำหรับฟาร์ม'); await equipRodBy('farm'); lastFarmRodAt = now(); }   // v6.301: กัน idle-check สแกนซ้ำทันทีหลังบอส
       catch (e) { logErr('เลือกเบ็ดฟาร์มล้มเหลว', e); }
       finally { busy = false; }
     }
@@ -5822,6 +5823,18 @@
   }
 
   async function closeBagUI() { try { gameEscape(); } catch {} await sleep(250); }
+
+  // 🎣 v6.301 (ผู้ใช้เจอสด: เลือกเบ็ดบอสไว้ เปิดบอทฟาร์ม แล้วบอทไม่สลับเป็นเบ็ดฟาร์ม):
+  //   เดิม equipRodBy('farm') ถูกเรียก **เฉพาะหลังตีบอสจบ** (bossFight return) เท่านั้น → ฟาร์มปกติไม่มีอะไรเรียก = ไม่เคยสลับ
+  //   แก้: ให้ tick เรียกตัวนี้ตอนฟาร์ม (ตอนเริ่ม + เป็นระยะ) — เลือกเบ็ดโบนัสปลาสูงสุดจากค่าหิน (ตามที่ผู้ใช้เลือก "ออโต้")
+  //   ครอบ busy กันชนงานอื่น + เว้นช่วงยาว (เปิดกระเป๋าสแกน = สะดุดการตกไม่กี่วิ ไม่ควรถี่)
+  async function farmRodSwitch() {
+    if (busy || orchestrating || !isOn('rodSwitchOn')) return;
+    busy = true;
+    try { await equipRodBy('farm'); }
+    catch (e) { logErr('สลับเบ็ดฟาร์มล้มเหลว', e); }
+    finally { busy = false; lastCast = now(); pendingCast = 0; }
+  }
 
   async function openShop() {
     await ensureMenuOpen();
@@ -8635,6 +8648,15 @@ ${esc(reason)}
         void npcErrandCheck();
         // 🎣 v6.292: ปลาครบตามข้อเสนอลุงหยัดที่เลือก → เดินไปแลกที่ท่าเรือทะเลแล้วกลับ (self-throttle นับกระเป๋าทุก 5 นาที · คูลดาวน์ 8 นาที)
         void yadTradeCheck();
+        // 🎣 v6.301 (ผู้ใช้เจอสด): สลับ "เบ็ดฟาร์ม" (ค่าหินโบนัสปลาสูงสุด) ตอนฟาร์ม — ตอนเริ่ม + ทุก 20 นาที
+        //   เดิม equipRodBy('farm') ถูกเรียกเฉพาะหลังตีบอส → เลือกเบ็ดบอสไว้แล้วเปิดบอทฟาร์ม = ไม่เคยสลับกลับเบ็ดฟาร์ม
+        //   ต้อง rodSwitchOn + ว่างจริง + ไม่ทดสอบ/ไม่ล่าบอส · lastFarmRodAt เริ่ม 0 → รันตอนเริ่มฟาร์มทันที
+        if (isOn('rodSwitchOn') && !testRunning && !busy && !orchestrating && bossPhase === 'idle'
+            && now() - lastFarmRodAt > 20 * 60000) {
+          lastFarmRodAt = now();
+          void farmRodSwitch();
+          return requestAnimationFrame(tick);
+        }
 
         // 🛡️ v6.217: กันหน้าต่างหีบ (รางวัล/คูลดาวน์) ค้างบังจอหลังจบทริป → ตกปลาต่อไม่ได้ (บั๊ก v6.216)
         //   จำกัดเฉพาะ ~60 วิ หลังเพิ่งไปเก็บหีบ (กันเผลอปิด dialog อื่นที่บังเอิญมีปุ่ม "ปิด" เหมือนกัน)
@@ -9111,6 +9133,7 @@ ${esc(reason)}
     if (!enabled && bossPhase !== 'idle') { bossReleaseAll(); bossPhase = 'idle'; clearBossState(); }   // 👹 ปิดบอท = ยกเลิกล่าบอส
     if (enabled) {
       casts = 0; lastCheck = 0; earned = 0; sessionOff.clear();
+      lastFarmRodAt = 0;   // 🎣 v6.301: เปิดบอท = เช็ค/สลับเบ็ดฟาร์มทันที (กันค้างเบ็ดบอสที่เลือกไว้ก่อนเปิด)
       sessRev = 0; sessBait = 0; sessCatches = 0;   // รีเซ็ตสถิติเซสชัน (ยอดสะสม life ไม่แตะ)
       sessionStart = now(); lastHeartbeat = now(); lastProgressAt = now();
       curMap = scanMap();   // 🗺️ สแกนแมพก่อนเริ่มตก
