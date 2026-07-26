@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.276
+// @version      6.277
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.276';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.277';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1789,7 +1789,7 @@
     return 0;
   }
   let bossHudCache = null, bossHudCacheAt = 0;
-  let weakParseWarned = false, rodPinWarned = false;   // v6.276: เตือน "อ่านจุดอ่อนไม่ออก" ครั้งเดียวต่อเซสชัน (bossHudMeta ถูกเรียกถี่มาก)
+  let weakParseWarned = false, rodPinWarned = false, hpStockNullSaid = false;   // v6.276: เตือน "อ่านจุดอ่อนไม่ออก" ครั้งเดียวต่อเซสชัน (bossHudMeta ถูกเรียกถี่มาก)
   // อ่าน meta ของบอสรอบนี้จาก HUD — cache 1 วิ (สแกน DOM แพง แต่ค่าพวกนี้เปลี่ยนช้า ยกเว้น HP)
   function bossHudMeta(force) {
     if (!force && bossHudCache && now() - bossHudCacheAt < 1000) return bossHudCache;
@@ -2606,7 +2606,7 @@
       out.push({ x: t.x, y: t.y + 200 }, { x: t.x - 200, y: t.y }, { x: t.x + 200, y: t.y }, { x: 700, y: 500 });
       return out;
     };
-    let navIdx = 0, stuckRounds = 0, navFails = 0;   // v6.274: navFails = navigate() หาเส้นไม่ได้ติดกันกี่ครั้ง
+    let navIdx = 0, stuckRounds = 0, navFails = 0, rotations = 0;   // v6.274 navFails = navigate() หาเส้นไม่ได้ · v6.277 rotations = หมุนจุดเพราะตัวไม่ขยับ
     const t0 = now(); let lastNav = 0, lastP = null, stillFor = 0;
     // 🐛 v6.221: anyMode = ผู้เรียกที่ไม่ใช่บอส/ปลาเทพ (ธุระเมือง NPC) — เดิม no-op เงียบเมื่อ bossHunt ปิด → ธุระเมืองพัง + วน bag-full
     let lastGateProbe = 0;
@@ -2632,7 +2632,17 @@
             stuckRounds = 0;
             const list = navTargets();
             navIdx = (navIdx + 1) % list.length;
+            rotations++;
             logInfo(`🧭 เดินไป ${targetMap} ไม่ขยับ (A* ไปจุดนั้นไม่ได้) → เปลี่ยนจุดเป้าหมายเป็นแบบที่ ${navIdx + 1}/${list.length}`);
+            // 🐛 v6.277: หมุนครบทุกจุด 2 รอบแล้วยัง "ไม่ขยับ" เลย = A* ใช้ไม่ได้จากตรงนี้จริงๆ — เลิกเร็วดีกว่ารอหมดงบ
+            //   หลักฐาน 16:26:08→16:27:38: กิน **90 วินาทีเต็ม** หมุนจุด 11 ครั้ง ตัวไม่ขยับสักครั้ง
+            //   แล้วพอสลับไป "เดินเอง (WASD)" กลับถึงปากถ้ำใน ~52 วิ = วิธีสำรองใช้ได้ แต่ถูกให้เริ่มช้าไป 90 วิ
+            //   ออกจากรอบบอสตรงเวลาเป็นเรื่องคอขวด (บอสอยู่แค่ 3-6 นาที) → ทุกวินาทีมีค่า
+            if (rotations >= list.length * 2) {
+              bossNavFail = `A* สั่งแล้วตัวไม่ขยับ ครบทุกจุด ${list.length} จุด × 2 รอบ (${Math.round((now() - t0) / 1000)} วิ) — ส่งต่อให้วิธีเดินเอง`;
+              logInfo(`🧭 ${bossNavFail}`);
+              return false;
+            }
           }
         } else stuckRounds = 0;
         lastNav = now(); stillFor = 0;
@@ -3348,6 +3358,12 @@
         }
         await sleep(30);   // ถี่พอจับเข็ม
       } else if (orb && !orb.disabled && now() - lastEngage > 220) {
+        // 🐛 v6.277: สาขานี้ "ไม่มีเกจ + ปุ่มกดได้ = เริ่มตีครั้งใหม่" เดิม **ไม่เช็คว่าอยู่ในถ้ำหรือเปล่า**
+        //   หลักฐาน: สถิติไฟต์ 16:30 บันทึก `map: village · hits: 107 · outcome: noshow` และรอบ 13:30 `hits: 498`
+        //   = บอทยืนกดปุ่มนอกถ้ำหลายร้อยครั้งระหว่างรอบอส · `bossHitOrb()` นอกถ้ำไปโดนปุ่มอื่น (ปุ่มตกปลา)
+        //   ผลเสีย 2 ชั้น: ① กดมั่วในเมือง ② สถิติ `hits` เฟ้อจนเทียบข้ามไฟต์ไม่ได้เลย
+        //   → ตีได้เฉพาะตอนอยู่ในถ้ำบอสจริงเท่านั้น
+        if (!isBossMap(bossMapId())) { await sleep(200); continue; }
         if (bossDisabledNow()) { stunSkips++; await sleep(120); continue; }
         lastEngage = now(); lastBossPressAt = Date.now(); fireClick(orb); hits++;   // ไม่มีเกจ + ปุ่มกดได้ = เริ่มตีครั้งใหม่ (คลิก orb ตีบอส)
         if (gabBlock) gabBlock.p++;                   // v6.235: นับด้วย ไม่งั้นคอลัมน์ "กด/วิ" ต่ำกว่าจริง
@@ -3482,8 +3498,14 @@
       await shopTab('🧪 ยา'); await sleep(350);
       const { row, stock } = hpPotionStock();
       if (!row) { logWarn('❤️ หา "กาแฟเข้ม" ในร้านไม่เจอ — ข้ามการตุนยา (เกมอาจเปลี่ยนชื่อ/ย้ายแท็บ)'); return; }
-      if (stock == null) { logWarn('❤️ อ่านจำนวนยาที่มีไม่ออก — ไม่ซื้อ (กันซื้อซ้ำจนเงินหมด)'); return; }
-      let need = keep - stock;
+      // 🐛 v6.277 (เห็นสด 16:26:04 — ทั้งรอบไม่ได้ซื้อยาเลยสักขวด):
+      //   เดิม `stock == null → ไม่ซื้อ` ตั้งใจกันเงินรั่ว **แต่กันผิดจุด** — แถวร้านไม่โชว์ "มี N" ตอนเรามี 0 ชิ้น
+      //   → null = "ไม่มีของ" ซึ่งเป็นเวลาที่ *ต้องซื้อที่สุด* กลับกลายเป็นเงื่อนไขห้ามซื้อ = ระบบไม่เคยทำงานเลย
+      //   ปลอดภัยที่จะตีเป็น 0 เพราะเพดานเงินคุมไว้แล้ว 2 ชั้น (ซื้อสูงสุด 2 ขวด/รอบ = 5,000 🪙)
+      //   ไม่ใช่การผ่อนการ์ดทิ้ง — ย้ายการกันเงินรั่วไปอยู่ที่ "เพดานจำนวน" ซึ่งเชื่อถือได้กว่าการอ่านตัวเลขจาก DOM
+      const have = stock == null ? 0 : stock;
+      if (stock == null && !hpStockNullSaid) { hpStockNullSaid = true; logInfo('❤️ แถวยาไม่โชว์จำนวนที่มี — ถือว่ามี 0 (เพดานซื้อคุมไว้แล้ว)'); }
+      let need = keep - have;
       if (need <= 0) return;                                   // มีพอแล้ว — ไม่ต้องเสียเงิน
       const cap = clamp(cfg.bossHpPotionMaxBuy || 2, 1, HP_POTION_HOLD_MAX);
       if (need > cap) need = cap;                              // เพดานต่อรอบล่า
@@ -3503,7 +3525,7 @@
       if (bought) {
         const cost = bought * HP_POTION_PRICE;
         profit.life.potionCost += cost; saveProfit(); refreshProfit();   // นับเป็นต้นทุนจริง ไม่ให้กำไรดูสวยเกิน
-        say(`❤️ ตุนยาฟื้นเลือด ${bought} ขวด (−${cost.toLocaleString()} 🪙) — มี ${stock + bought}/${keep} พร้อมเข้าถ้ำ`);
+        say(`❤️ ตุนยาฟื้นเลือด ${bought} ขวด (−${cost.toLocaleString()} 🪙) — มี ${have + bought}/${keep} พร้อมเข้าถ้ำ`);
         // การซื้อ = เสียเงินจริง → แจ้งเสมอ ไม่ขึ้นกับ tgTrade (ธรรมเนียมเดียวกับ v6.182 ตอนซื้อเหยื่อ)
         if (isOn('tgOn')) void tgSend(`❤️ ซื้อยาฟื้นเลือด ${bought} ขวด (<b>${cost.toLocaleString()} 🪙</b>) ก่อนล่าบอส`);
       }
@@ -3546,8 +3568,8 @@
       await shopTab('🧪 ยา'); await sleep(300);
       const { row, stock } = stewShopRow();
       if (!row) { logWarn('🍲 หา "ต้มปลาร้อน" ในร้านไม่เจอ — ข้าม (เกมอาจเปลี่ยนชื่อ/ย้ายแท็บ)'); return; }
-      if (stock == null) { logWarn('🍲 อ่านจำนวนต้มปลาร้อนที่มีไม่ออก — ไม่ซื้อ (กันซื้อซ้ำ)'); return; }
-      if (stock > 0) return;                                    // มีในกระเป๋าอยู่แล้ว เดี๋ยวกินตอน drinkBossStew
+      // v6.277: เหตุผลเดียวกับกาแฟเข้ม — null = ไม่มีของ ไม่ใช่ "อ่านไม่ได้" · เพดาน 1 ถ้วย/รอบ + 2/วัน คุมเงินอยู่แล้ว
+      if ((stock ?? 0) > 0) return;                             // มีในกระเป๋าอยู่แล้ว เดี๋ยวกินตอน drinkBossStew
       const add = [...row.querySelectorAll('button')].find((b) => /ใส่ตะกร้า/.test(b.textContent) && !b.disabled);
       if (!add) { logInfo('🍲 ซื้อต้มปลาร้อนไม่ได้ (อาจครบโควตา 2/วันของเกมแล้ว)'); return; }
       fireClick(add); await sleep(300);
