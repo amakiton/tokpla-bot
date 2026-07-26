@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.286
+// @version      6.287
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.286';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.287';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -8044,6 +8044,16 @@ ${esc(reason)}
     // 👹 เฝ้าบันทึกบอส — v6.109: ทำงาน "แม้บอทปิด" (เป็นแค่การอ่านสถานะ ปลอดภัย · ไม่กระทำใดๆ)
     //   v6.111: ตอนมีบอส (context) จับถี่ 350ms (เกจหมุนเร็ว 1 วิพลาด) · แมพปกติ 1.2 วิ (ประหยัด)
     if (now() - lastBossObs > (bossObsHot ? 350 : 1200)) { lastBossObs = now(); bossObserve(); }
+    // 🎣 v6.286 (แก้ v6.287): เฝ้าดูแผงลุงหยัด — **ต้องทำงานแม้บอทปิด**
+    //   เดิมวางไว้ใต้ `if (enabled ...)` ซึ่งผิด: ผู้ใช้มักเดินไปคุย NPC เองตอนปิดบอท (เกิดจริง 19:00)
+    //   = ตัวเฝ้าไม่เคยได้รัน เลยไม่มีวันเรียนรู้รายการ · อันนี้เป็นการ "อ่านอย่างเดียว" ไม่กดอะไรเลย
+    //   จึงปลอดภัยที่จะรันตลอด แบบเดียวกับ bossObserve (v6.109) ที่ทำงานแม้บอทปิดด้วยเหตุผลเดียวกัน
+    if (isOn('npcYad') && now() - lastYadChk > 2000) {
+      lastYadChk = now();
+      const r = yadReadPanel();
+      if (r && Object.keys(r.map).length) yadSaveWants(r.map);
+      else if (r && !yadPanelWarned) { yadPanelWarned = true; logWarn(`🎣 เปิดแผงลุงหยัดแล้วแต่แกะรายการไม่ออก — ข้อความจริง: ${JSON.stringify(r.raw)}`); }
+    }
     if (enabled && !busy && !orchestrating) {
       // 👹 v6.138: เช็ค "ยึดถ้ำบอส" ก่อนคิดตกปลา — ถ้ำบอสมีบ่อตกปลาด้วย บอสโผล่มาบอทต้องตีทันที ไม่ใช่ตกปลาแทน
       //   บั๊ก: เดิมเช็คนี้อยู่ในสาขา idle (เข้าถึงเฉพาะตอนว่าง) → บอทตกปลารัวจนแทบไม่ได้ยิง = บอสมา 110 วิ ตกปลาเฉยๆ
@@ -8300,15 +8310,6 @@ ${esc(reason)}
         //   ไม่เปลี่ยนพฤติกรรม (พัก = ผู้ใช้อยากคุมเอง ห้ามบอทเดินเอง) แต่ต้อง **ส่งเสียงเตือน** ไม่ใช่เงียบหาย
         if (paused) { warnPausedNearBoss(); updateBadge(); return requestAnimationFrame(tick); }
 
-        // 🎣 v6.286: เฝ้าดูแผงลุงหยัด — ใครก็ตามที่เปิดแผง (บอทหรือผู้ใช้เดินไปคุยเอง) บอทจะอ่านรายการแล้วจำ
-        //   ทำแบบ "อ่านอย่างเดียว" ไม่กดอะไร = ปลอดภัย และได้ข้อมูลจริงโดยไม่ต้องเดา
-        //   ตั้งใจไม่ให้บอทเดินไปหาลุงเอง จนกว่าจะรู้ว่ารายการคืออะไรและคุ้มไหม (ดูเหตุผลใน CHANGELOG)
-        if (isOn('npcYad') && now() - lastYadChk > 3000) {
-          lastYadChk = now();
-          const r = yadReadPanel();
-          if (r && Object.keys(r.map).length) yadSaveWants(r.map);
-          else if (r && !yadPanelWarned) { yadPanelWarned = true; logWarn(`🎣 เปิดแผงลุงหยัดแล้วแต่แกะรายการไม่ออก — ข้อความจริง: ${JSON.stringify(r.raw)}`); }
-        }
         // 🛡️ v6.218: ยามเฝ้าป๊อบอัพค้างทั่วไป — "ควรตกได้แต่ตกไม่ได้เพราะมี dialog ค้าง ≥3 วิ" → เคลียร์อัตโนมัติ
         //   จุดเดียวคุมทุกฟีเจอร์ (หีบ/รางวัล/error) แทนการไล่แก้ทีละป๊อบอัพ · ไม่แตะหน้าต่างรับรางวัล (auto-claim จัดการ)
         if (popupWatchdog()) return requestAnimationFrame(tick);
