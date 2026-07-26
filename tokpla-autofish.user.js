@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.272
+// @version      6.273
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.272';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.273';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2560,7 +2560,14 @@
   const gameWalker = () => { try { const sc = getPhaserScene(); return sc && sc.autoWalker && typeof sc.autoWalker.navigate === 'function' ? sc.autoWalker : null; } catch { return null; } };
   async function bossGameNavTo(targetMap, maxMs = 90000, anyMode = false) {
     gameEscape();   // ⎋ v6.165: story dialog (เช่น "ฤๅษีเงา") ยึด input ระหว่างเดินทาง = ตัวไม่เดิน — ล้างก่อนเสมอ
-    const aw = gameWalker(); if (!aw) return false;
+    // 🐛 v6.273 (เห็นสด 16:32:31): ตายกลางไฟต์ → เกมย้ายแมพ+สร้างฉากใหม่ → `gameWalker()` ยังไม่พร้อมชั่วครู่
+    //   เดิม `return false` ทันที → ผู้เรียกพิมพ์ "กลับเข้าถ้ำไม่สำเร็จ — เลิกสู้" **ทั้งที่รอบบอสยังเหลืออีกหลายนาที**
+    //   (ให้งบมา 60 วิ แต่ใช้ไป 0 วิ) · รอให้ฉากพร้อมก่อนค่อยยอมแพ้ — ช่วยทุกผู้เรียก ไม่ใช่แค่ขาตายแล้วกลับ
+    let aw = gameWalker();
+    if (!aw) {
+      aw = await waitFor(() => gameWalker(), Math.min(8000, maxMs), 250);
+      if (!aw) return false;
+    }
     const t = BOSS_NAV_TARGET[targetMap] || { x: 700, y: 500 };
     // 🐛 v6.262: จุดเป้าหมายสำรอง — บทเรียนเดียวกับ v6.260 (เดินเข้าบ่อ)
     //   ถ้า A* หาเส้นไปจุดนั้นไม่ได้ เกมสแนปเป็น "ถึงแล้ว" โดยตัวไม่ขยับ → เดิมยิงจุดเดิมซ้ำจนหมด maxMs
@@ -2926,6 +2933,7 @@
     // 📊 v6.191: วัด HP จริงตลอดไฟต์ (start→ต่ำสุด→จบ) + นับ "ค้างหลบ" (ปากทางกินทิศหลบหมด)
     //   ผู้ใช้ยืนยัน: เกมไม่ฟื้นเลือด → ทางรอดเดียวคือหลบไม่ให้โดน · ต้องรู้ว่าเสียเลือดตรงไหนก่อนปรับ
     let hpStart = null, hpMin = 101, lastHpChk = 0, aoeStalls = 0, gaugeZonesLogged = false;
+    let aoeSelfHits = 0;   // v6.273: นับครั้งที่วง AoE ทับตัวพอดี (ต้องใช้ทิศสำรอง) — ไว้ดูว่าเกิดบ่อยแค่ไหน
     let orbWasDisabled = false, orbDisabledAt = 0;   // 🎥 v6.239: วัดคูลดาวน์ปุ่มตีบอส (กด→ดับ→ติดใหม่)
     let fightT0 = 0, lastContrib = { dmg: null, pct: null };   // 📊 v6.195: จับเวลาไฟต์ (ตั้งตอนเห็นบอสครั้งแรก) + อ่านดาเมจล่าสุด
     let fightMap = '';   // 🧭 v6.247: ถ้ำที่สู้อยู่จริง (จำตอนเห็นบอส) — ใช้พากลับเข้าถ้ำ "ใบเดิม" หลังตาย
@@ -3092,7 +3100,32 @@
         //   เดิม 0.7/1.3 ต้องวิ่งเลยเส้นเยอะ = ช้า/ไม่ทัน deadline (โดยเฉพาะวงโผล่ไกล) → ตาย · 0.9/1.12 = วิ่งน้อยลง ถึงเร็วขึ้น
         const safe = green ? dist < zone.r * 0.9 : dist > zone.r * 1.12;
         if (!safe) {
-          const gx = green ? dx : -dx, gy = green ? dy : -dy;     // เขียว=เข้าหาศูนย์ · แดง=ทิศตรงข้าม
+          let gx = green ? dx : -dx, gy = green ? dy : -dy;       // เขียว=เข้าหาศูนย์ · แดง=ทิศตรงข้าม
+          // 🐛 v6.273 (เห็นสดรอบ 16:31 — บอทตายเพราะอันนี้): เกม **วางวงแดงทับตัวเราพอดี** ได้
+          //   log จริง: `หนีวงแดง วง@855,708 · ตัว@855,708 ระยะ0` ซ้ำๆ ขณะ HP 100→84→68→51→35→19→3→ตาย
+          //   ระยะ 0 = dx,dy = 0 → gx,gy = 0 → เทียบ `>6`/`<-6` เป็น false ทั้งคู่ → dirs=[] → **ยืนนิ่งกิน AoE**
+          //   (อาการเดียวกับบั๊ก NaN ของ v6.265 เป๊ะ แต่คนละต้นเหตุ — ตอนนั้นแก้แค่ "อ่านพิกัดให้ได้" ไม่ได้เผื่อกรณีนี้)
+          //   วงทับตัว = หนีทางไหนก็ได้ ขอแค่ "ออกไปให้พ้นรัศมี" → ต้องมีทิศสำรอง ห้ามปล่อยเป็นศูนย์
+          if (!green && Math.hypot(gx, gy) < 10) {
+            // ① ถอยห่างจากบอสก่อน (ได้ประโยชน์สองต่อ: พ้นวง + ออกจากระยะสกิลบอส)
+            let fx = 0, fy = 0;
+            if (rb && rb.x != null) { fx = _sc.player.x - rb.x; fy = _sc.player.y - rb.y; }
+            // ② บอสทับตัวอีก → หนีออกจากจุดกลางสนามที่เรียนรู้ไว้ (ไปทางที่โล่งกว่า)
+            if (Math.hypot(fx, fy) < 10 && aoeSamples.length) {
+              const mx = aoeSamples.reduce((s, a) => s + a[0], 0) / aoeSamples.length;
+              const my = aoeSamples.reduce((s, a) => s + a[1], 0) / aoeSamples.length;
+              fx = _sc.player.x - mx; fy = _sc.player.y - my;
+            }
+            // ③ ยังหาทิศไม่ได้ → หมุนไล่ 4 ทิศทแยง (สลับทุกครั้ง กันเลือกทางที่ติดกำแพงซ้ำๆ)
+            if (Math.hypot(fx, fy) < 10) {
+              const q = [[1, 1], [-1, 1], [-1, -1], [1, -1]][aoeSelfHits % 4];
+              fx = q[0]; fy = q[1];
+            }
+            const n = Math.hypot(fx, fy) || 1;
+            gx = fx / n * (zone.r * 1.4); gy = fy / n * (zone.r * 1.4);   // ตั้งเป้าให้พ้นรัศมีชัดๆ
+            aoeSelfHits++;
+            if (aoeSelfHits === 1) logInfo(`🎯 วง AoE ทับตัวพอดี (ระยะ 0) — ใช้ทิศสำรองหนีออก (${Math.round(gx)},${Math.round(gy)})`);
+          }
           const dirs = [];
           if (gx > 6) dirs.push('right'); else if (gx < -6) dirs.push('left');   // dead zone แคบลง (6) = เล็งแม่นขึ้น
           if (gy > 6) dirs.push('down'); else if (gy < -6) dirs.push('up');
