@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.280
+// @version      6.281
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.280';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.281';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4888,6 +4888,7 @@
   // ---- อ่าน toast ผลการขาย + บวกยอด earned (กันนับซ้ำด้วย WeakSet ต่อ element) ----
   // ใช้ร่วมกันทั้งการขายปลาและขายขยะ (ขาย 2 รอบต่อเนื่อง จึงต้อง dedup ไม่ให้ยอดซ้ำ)
   const seenEarned = new WeakSet();
+  let sellToastDumped = false;   // v6.281: dump ข้อความโมดัลครั้งเดียวเมื่อหา toast ขายไม่เจอ (เรียนรู้ของจริง)
   async function readSellToast() {
     const scopeEl = () => qBtn('ปิดเมนู')?.closest('div[class*="fixed"], div[class*="absolute"]');
     const freshToast = () => {
@@ -4901,8 +4902,33 @@
       }
       return null;
     };
-    const el = await waitFor(freshToast, 8000);
-    if (!el) { say('ขายแล้ว แต่ไม่เห็นข้อความยืนยัน'); return null; }
+    // 🐛 v6.281: "ขายแล้ว แต่ไม่เห็นข้อความยืนยัน" โผล่ซ้ำๆ ทุกยุค — ตัวจับหลักผูกกับ **คลาสสี Tailwind เป๊ะๆ**
+    //   (`bg-[#6fb54a]`/`bg-red-600`) = คลาสบั๊กเดียวกับ selector 7 รอบก่อน · เพิ่มชั้นสำรอง "จับจากข้อความ"
+    //   (+N 🪙/💰 ในโมดัลกระเป๋า) ที่ไม่ผูกกับสีเลย · และถ้าไม่เจอทั้งคู่ ให้ dump ข้อความในโมดัลครั้งเดียว
+    //   เพื่อรอบหน้ารู้ "ของจริง" แทนการเดา (วิธีเดียวกับที่ทำให้เจอ 🎒 ย้าย span→div ใน v6.258)
+    const textToast = () => {
+      const scope = scopeEl(); if (!scope) return null;
+      for (const el2 of scope.querySelectorAll('div,p,span')) {
+        if (el2.children.length || seenEarned.has(el2)) continue;
+        const t = (el2.textContent || '').trim();
+        if (t.length < 90 && /\+\s*[\d,]+\s*(?:🪙|💰|เหรียญ)|ขาย(?:สำเร็จ|ไม่สำเร็จ)|ยังไม่พร้อม/.test(t)) return el2;
+      }
+      return null;
+    };
+    const el = await waitFor(() => freshToast() || textToast(), 8000);
+    if (!el) {
+      say('ขายแล้ว แต่ไม่เห็นข้อความยืนยัน');
+      if (!sellToastDumped) {   // ฟ้องของจริงครั้งเดียว — ข้อความสั้นๆ ในโมดัล ณ วินาทีนั้น
+        sellToastDumped = true;
+        try {
+          const sc = scopeEl();
+          const texts = sc ? [...sc.querySelectorAll('div,p,span')].filter((x) => !x.children.length)
+            .map((x) => (x.textContent || '').trim()).filter((t) => t && t.length < 60).slice(0, 12) : [];
+          logWarn(`💰 ไม่เจอ toast ขาย — ข้อความในโมดัลตอนนั้น: ${JSON.stringify(texts)}`);
+        } catch {}
+      }
+      return null;
+    }
     seenEarned.add(el);
     const toast = el.textContent.trim();
     const m = /\+([\d,]+)\s*🪙/.exec(toast);
@@ -5850,7 +5876,14 @@
           }
           // ใช้แล้วพลังไม่ขึ้น → ไอเทมไม่ใช่กาแฟพลัง/ใช้ไม่ติด → พักลองกระเป๋า 30 นาที แล้วไปซื้อจริง (กันวนสแปม)
           coffeeBagFailUntil = now() + 30 * 60000;
-          logWarn(`ใช้ "กาแฟ" จากกระเป๋าแล้วพลังไม่ขึ้น (${e0}%→${e1}%) — อาจเป็นไอเทมชื่อคล้าย/ใช้ไม่ติด · พักลองกระเป๋า 30 นาที ไปซื้อ/เก็บเควสแทน`);
+          // 🔍 v6.281: เกิดซ้ำแม้แก้ชื่อเต็มแล้ว (17:06 วันนี้ 13.52%→13.57%) — สงสัยเกมจำกัด "การใช้" 3 แก้ว/วัน
+          //   ไม่ใช่แค่การซื้อ · เก็บข้อความที่เกมเด้ง ณ วินาทีนั้นมาดูของจริง แทนการเดาต่อ
+          const gmsg = (() => { try {
+            return [...document.querySelectorAll('div,p,span')].filter((x) => !x.closest('[data-tkbot]') && !x.children.length)
+              .map((x) => (x.textContent || '').trim())
+              .filter((t) => t.length > 3 && t.length < 70 && /กาแฟ|จำกัด|ครบ|วันนี้|คูลดาวน์|ลิมิต|ไม่สามารถ/.test(t)).slice(0, 4);
+          } catch { return []; } })();
+          logWarn(`ใช้ "กาแฟ" จากกระเป๋าแล้วพลังไม่ขึ้น (${e0}%→${e1}%) — อาจเป็นไอเทมชื่อคล้าย/ใช้ไม่ติด/ครบลิมิตใช้ต่อวัน · พักลองกระเป๋า 30 นาที${gmsg.length ? ` · เกมบอก: ${JSON.stringify(gmsg)}` : ''}`);
         }
       }
       // 🎒 v6.194: ไม่มีในกระเป๋า + ปิดการซื้อ = จบ (ใช้แค่ของฟรี ไม่เปิดร้านซื้อ) · พัก 10 นาทีกันเปิดกระเป๋าหาซ้ำถี่
