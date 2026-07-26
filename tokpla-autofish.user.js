@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.296
+// @version      6.297
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.296';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.297';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3866,14 +3866,28 @@
       if (!resumeHome && !isBossMap(bossMapId())) {
         say('👹 ใกล้เวลาบอส — ทดสอบว่าคุมตัวละครได้ก่อน...');
         if (!await bossCanControl()) {
-          say('⚠️ ยกเลิกล่าบอส — เดินตัวละครไม่ได้ตอนนี้ (แท็บไม่โฟกัส/เกมไม่รับปุ่ม?) ลองใหม่ใน 1 นาที');
-          if (isOn('tgOn') && isOn('tgWarn')) void tgSend('⚠️ <b>ยกเลิกล่าบอส</b> — บอทเดินตัวละครไม่ได้ (ต้องเปิดแท็บเกมไว้หน้าสุด) · จะลองใหม่ใน 1 นาที');
-          bossEvent('⚠️ ยกเลิกก่อนออกเดินทาง — เทสต์เดินตัวละครไม่ผ่าน (แท็บไม่โฟกัส/มีแผงเปิดค้าง?) · คูลดาวน์สั้น 60 วิ แล้วลองใหม่');
           // 👹 v6.199: ยกเลิก "ก่อนออกเดินทาง" = ยังไม่เจอบอสเลย → คูลดาวน์สั้น (เดิม 10 นาที = พลาดบอสทั้งรอบ)
           // 🐛 v6.251: ต้อง stamped=true — ไม่งั้น finally (v6.248) จะเรียก stampBossHunt ทับ · ถ้าบอสยังไม่โผล่
           //   (อยู่บ้าน บอสอีก 2-3 นาที) finally จะตั้งคูลดาวน์เต็ม 10 นาที + disarm = พลาดทั้งรอบ (undo v6.199)
-          bossReleaseAll(); bossPhase = 'idle'; clearBossState(); stampBossHunt(60000); stamped = true; orchestrating = false; return;
+          // 🐛 v6.297 (ผู้ใช้เจอสด 27/7 · บอทตก 0 ทั้งรอบ): คุมตัวไม่ได้ + คง armed + คูลดาวน์สั้น = วนพยายามออกไปล่าทุก 60 วิ
+          //   ไม่จบทั้งรอบ (ป้าย "ถึงรอบบอสแล้ว" ค้าง → bossHuntDue จริงตลอด) · แก้: ลองซ้ำได้แค่ 3 ครั้ง แล้ว **disarm ข้ามรอบ**
+          //   กลับไปตกปลาต่อ (ผู้ใช้สั่ง: ล่าไม่สำเร็จ = ปิดระบบหยุดตกปลา) · การล่าจะกลับมาเมื่อเห็นตัวนับรอบใหม่จริง (re-arm)
+          bossCtrlFails++;
+          const giveUp = bossCtrlFails >= 3;
+          if (giveUp) {
+            bossCtrlFails = 0;
+            say('👹 คุมตัวละครไม่ได้หลายครั้ง — ข้ามรอบบอสนี้ กลับไปตกปลาต่อ (จะล่าใหม่เมื่อถึงรอบถัดไป)');
+            bossEvent('⚠️ ข้ามรอบ (คุมตัวละครไม่ได้ 3 ครั้งติด) — disarm + คูลดาวน์เต็ม กลับไปฟาร์ม');
+          } else {
+            say(`⚠️ ยกเลิกล่าบอส — เดินตัวละครไม่ได้ตอนนี้ (แท็บไม่โฟกัส/เกมไม่รับปุ่ม?) ลองใหม่ใน 1 นาที (${bossCtrlFails}/3)`);
+            if (isOn('tgOn') && isOn('tgWarn')) void tgSend('⚠️ <b>ยกเลิกล่าบอส</b> — บอทเดินตัวละครไม่ได้ (ต้องเปิดแท็บเกมไว้หน้าสุด) · จะลองใหม่ใน 1 นาที');
+            bossEvent(`⚠️ ยกเลิกก่อนออกเดินทาง — เทสต์เดินตัวละครไม่ผ่าน · คูลดาวน์สั้น 60 วิ แล้วลองใหม่ (${bossCtrlFails}/3)`);
+          }
+          bossReleaseAll(); bossPhase = 'idle'; clearBossState();
+          stampBossHunt(giveUp ? undefined : 60000);   // giveUp → coolMs undefined = disarm + คูลดาวน์เต็ม (กลับไปตกปลาทั้งรอบ)
+          stamped = true; orchestrating = false; return;
         }
+        bossCtrlFails = 0;   // คุมตัวได้ = รีเซ็ตตัวนับ
       }
       if (!resumeHome) {
         bossPhase = 'travel'; saveBossState();
@@ -4067,7 +4081,7 @@
   //   กรณีบอส: กันล่าซ้ำ 10 นาที → รีโหลดแล้วบอทล่าบอสไม่ได้เลย 10 นาทีแรก (รีโหลดใกล้เวลาบอส = พลาดทั้งรอบ)
   //   แก้: เริ่มที่ค่าติดลบมากๆ = "ไม่เคยทำมาก่อน" จริงๆ (ใช้กับทุกตัวจับเวลาที่เป็น cooldown)
   const NEVER = -1e9;
-  let lastBossHuntAt = NEVER, lastBossEscapeAt = NEVER, bossEscapeFails = 0, bossLastMapId = '', lastBossHereChk = 0;
+  let lastBossHuntAt = NEVER, lastBossEscapeAt = NEVER, bossEscapeFails = 0, bossLastMapId = '', lastBossHereChk = 0, lastBossDepartChk = 0;
   // 🕐 v6.177: persist cooldown ล่าบอสด้วย "เวลาจริง" (Date.now) — v6.176 แก้ฝั่ง "รีโหลดแล้วโดนบล็อก" แต่เหลือฝั่งกลับกัน:
   //   รีโหลดหลังเพิ่งล่าเสร็จ → cooldown หาย → ถ้าป้าย "ถึงรอบบอส" ยังค้าง (รอบบอสยังเปิด) บอทจะวิ่งไปหาบอสที่ตายแล้วซ้ำ
   //   แปลง epoch → ฐาน performance.now(): lastAt = now() - (เวลาจริงที่ผ่านไป) → เงื่อนไข now()-lastAt ทำงานถูกข้ามรีโหลด
@@ -4092,6 +4106,7 @@
   const BOSS_REENTRY_MAX = 4, BOSS_ROUND_BUDGET_MS = 12 * 60000;
   let bossLastKilled = false;   // ไฟต์ล่าสุดฆ่าบอสได้ไหม (bossFight เป็นคนตั้ง) — ใช้ตัดสินว่าจะกลับเข้าไปอีกไหม
   let bossTravelRetries = 0;    // v6.248: นับครั้งที่ "ไปไม่ถึงถ้ำแต่บอสยังอยู่" — จำกัดการลองซ้ำไม่ให้วนทั้งรอบ
+  let bossCtrlFails = 0;        // v6.297: นับครั้งที่ "คุมตัวละครไม่ได้ก่อนออกเดินทาง" — ครบ 3 ครั้ง = ข้ามรอบ (disarm) กลับไปตกปลา ไม่วนปิงปอง
   let bossArmed = true;
   try { bossArmed = W.localStorage.getItem('tokpla_boss_armed') !== '0'; } catch {}
   const setBossArmed = (v) => { bossArmed = v; try { W.localStorage.setItem('tokpla_boss_armed', v ? '1' : '0'); } catch {} };
@@ -4510,24 +4525,13 @@
     const soloLead = Math.max(clamp(cfg.bossOnlyLeadMin || 5, 1, 60), clamp(cfg.bossLeadMin, 1, 60));
     return min <= soloLead;
   }
-  // เรียกจาก tick — คืนว่า "ตอนนี้ควรอยู่โหมดล่าอย่างเดียวไหม" (ผู้ใช้กดเอง หรือระบบเปิดให้อัตโนมัติ)
+  // 🎣 v6.297 (ผู้ใช้สั่ง 27/7): "หยุดตกปลาเพื่อล่าบอส" ต้องผูกกับ **ตอนล่าจริงเท่านั้น** — ไม่ใช่ทั้งช่วง lead
+  //   บั๊กเดิม (ยืนยันสด 27/7 · บอทตก 0 ทั้งรอบ): auto (bossSoloAutoNow) หยุดตกปลาทันทีที่ bossTimerMin() ≤ lead
+  //   แต่ป้าย "ถึงรอบบอสแล้ว" ค้าง → bossTimerMin คืน 0 ตลอด (บอสเปิดยาว 60 นาที + ป้ายค้างต่อ) → ไม่ตกปลาเลยทั้งวัน
+  //   วงจรที่ผู้ใช้ต้องการ: ตกปลาไปเรื่อยๆ → ถึงเวลา (bossHuntDue) ออกเดินทาง = หยุดตก (orchestrating) → ล่าเสร็จ/บอสตาย → กลับมาตก
+  //   ⇒ auto ไม่ "บล็อกการตกปลา" อีกต่อไป (การออกเดินทางย้ายไป departure-check สูงในลูป) — เหลือแต่ "โหมดล่าอย่างเดียว" ที่ผู้ใช้กดเอง
   function bossSoloMode() {
-    if (isOn('bossOnly')) return true;
-    const on = bossSoloAutoNow();
-    if (on !== bossSoloAutoOn) {
-      bossSoloAutoOn = on;
-      if (on) {
-        say(`🎯 ใกล้เวลาบอส (อีก ${bossTimerCache ?? '?'} นาที) — เข้าโหมดล่าบอสอย่างเดียวอัตโนมัติ · หยุดฟาร์มเพื่อออกเดินทางให้ทัน`);
-        bossEvent(`🎯 เข้าโหมดล่าอย่างเดียวอัตโนมัติ (อีก ${bossTimerCache ?? '?'} นาที · ตั้งไว้ ${cfg.bossOnlyLeadMin})`);
-      } else {
-        say('🎣 จบภารกิจบอส — ออกจากโหมดล่าอย่างเดียว กลับไปฟาร์มต่อ');
-      }
-      bossSoloAutoSaid = true;
-      // v6.282: ทาสีปุ่ม+แถบสถานะทันทีที่สลับ (ไม่ใช่ checkbox จึงไม่ถูก syncPanel เรียกเอง)
-      try { if (bossSoloPaint) bossSoloPaint(); } catch {}
-      try { refreshBossBtn(); } catch {}
-    }
-    return on;
+    return isOn('bossOnly');   // เฉพาะที่ "ผู้ใช้กดค้างเอง" เท่านั้นที่หยุดตกปลาเต็มรูปแบบ (auto ไม่หยุดฟาร์มแล้ว)
   }
   let lastBossBlockLog = 0;
   // ⏸ v6.250: เตือนเมื่อ "พักค้างไว้" แล้วรอบบอสใกล้เข้ามา — พักบล็อก runBossHunt ทั้งหมด (ดู tick)
@@ -4550,7 +4554,7 @@
     if (now() - bossTimerCacheAt > 5000) { bossTimerCacheAt = now(); bossTimerCache = bossTimerMin(); }
     const min = bossTimerCache;
     // 🔫 v6.200: เห็นตัวนับ "รอบใหม่จริง" (มากกว่า lead) = arm กลับ — แปลว่าเกมตั้งรอบถัดไปแล้ว ไม่ใช่ป้ายค้าง
-    if (!bossArmed && min != null && min > clamp(cfg.bossLeadMin, 1, 60)) setBossArmed(true);
+    if (!bossArmed && min != null && min > clamp(cfg.bossLeadMin, 1, 60)) { setBossArmed(true); bossCtrlFails = 0; }   // v6.297: รอบใหม่ = รีเซ็ตตัวนับคุมตัวไม่ได้
     const due = min != null && min <= clamp(cfg.bossLeadMin, 1, 60);
     // 🛡️ v6.175: กัน "ออกล่ารอบใหม่ทับขากลับบ้านที่ยังเดินไม่ถึง" — ต้นเหตุแมพเด้ง ถ้ำ↔บ่อตกปลา 6 รอบ (HP เหลือ 16%)
     //   v6.199: คูลดาวน์ยาว/สั้นตามสาเหตุครั้งก่อน (ดู stampBossHunt) · อย่างน้อย 45 วิเสมอ
@@ -8328,7 +8332,9 @@ ${esc(reason)}
       //   ⇒ ถ้าการตกปลาติดขัด (กระเป๋าเต็ม · เหยื่อหมด · พลังหมดนั่งพัก · ปุ่มกดไม่ได้ · dialog ค้าง)
       //     **ระบบล่าบอสไม่มีวันได้รันเลย** — ตรงกับหลักฐานจริง: รอบ 13:30 noshow สนิท ขณะพลังงานเหลือ 7-9%
       //   โหมดนี้ตัดปมนั้นทิ้ง: ทำเฉพาะเรื่องบอส ไม่แตะไปป์ไลน์ตกปลาเลยแม้แต่บรรทัดเดียว
-      if (bossSoloMode()) {   // v6.282: ผู้ใช้กดเอง (cfg.bossOnly) หรือระบบเปิดให้อัตโนมัติก่อนถึงเวลาบอส
+      // 🎯 "โหมดล่าอย่างเดียว" ที่ผู้ใช้กดค้างเอง (cfg.bossOnly) — หยุดตกปลาเต็มรูปแบบ ทำเฉพาะเรื่องบอส (v6.278 คงไว้)
+      //   ⚠️ v6.297: auto-solo (หยุดฟาร์มก่อนเวลา) ถูกถอดออกจาก block นี้แล้ว — ดู bossSoloMode() + departure-check ด้านล่าง
+      if (bossSoloMode()) {   // = isOn('bossOnly') เท่านั้น (ผู้ใช้กดปุ่มม่วง "ล่าบอสอย่างเดียว")
         if (paused) { warnPausedNearBoss(); updateBadge(); return requestAnimationFrame(tick); }
         if (now() - lastIdleWork >= 150) {
           lastIdleWork = now();
@@ -8347,6 +8353,14 @@ ${esc(reason)}
           updateBadge();   // v6.279: อยู่ใน throttle 150ms — เดิมอยู่นอก = วาด DOM ~60 ครั้ง/วิ ฟรีๆ
         }
         return requestAnimationFrame(tick);   // ⛔ ไม่ไหลลงไปตกปลา/ขาย/เควส/NPC ใด ๆ ทั้งสิ้น
+      }
+      // 👹 v6.297 (ผู้ใช้สั่ง 27/7): auto-hunt (เปิดล่าบอสควบคู่ฟาร์ม) — เช็ค "ถึงเวลาออกไปล่า" สูงในลูป **ก่อน**ไปป์ไลน์ตกปลา
+      //   คงเหตุผลเดิม v6.278: ถ้าปล่อย bossHuntDue อยู่ก้นสาขาตกปลาอย่างเดียว การตกปลาที่ติดขัด (state ค้าง/พลังหมด)
+      //   อาจทำให้ไม่มีวันได้ออกเดินทาง · ⭐ ต่างจาก v6.282 ที่ถอดทิ้ง: **ยังไม่ถึงเวลา = ไม่ return → ไหลลงไปตกปลาต่อ**
+      //   (ไม่หยุดฟาร์มทั้งช่วง lead อีกต่อไป — วงจร: ตกปลา…ถึงเวลาออกไปล่า (orchestrating หยุดตก)…ล่าเสร็จ→กลับมาตก)
+      if (isOn('bossHunt') && bossPhase === 'idle' && !orchestrating && !busy && now() - lastBossDepartChk > 250) {
+        lastBossDepartChk = now();
+        if (bossHuntDue()) { void runBossHunt(); return requestAnimationFrame(tick); }
       }
       const state = gameState();
       if (state !== 'bite') biteAt = 0;      // ออกจากจังหวะปลาฮุบ = ล้างตัวจับเวลารีแอค
