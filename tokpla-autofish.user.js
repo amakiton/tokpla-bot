@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.282
+// @version      6.283
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.282';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.283';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1794,7 +1794,72 @@
     return 0;
   }
   let bossHudCache = null, bossHudCacheAt = 0;
-  let weakParseWarned = false, rodPinWarned = false, hpStockNullSaid = false;   // v6.276: เตือน "อ่านจุดอ่อนไม่ออก" ครั้งเดียวต่อเซสชัน (bossHudMeta ถูกเรียกถี่มาก)
+  let weakParseWarned = false, rodPinWarned = false, hpStockNullSaid = false;
+  // 🎯 v6.283: **ตารางจุดอ่อนที่เรียนรู้เอง** — ปมสำคัญคือ "รู้จุดอ่อนตอนอยู่ในถ้ำ แต่ซื้อได้ตอนอยู่นอกถ้ำเท่านั้น"
+  //   ⇒ รอบแรกที่เจอบอสตัวหนึ่ง = จดไว้ · รอบต่อ ๆ ไปของบอสตัวนั้น = ซื้อเหยื่อจุดอ่อนได้ "ก่อน" ออกเดินทาง
+  //   นี่คือเหตุผลที่ระบบต้องเรียนรู้ ไม่ใช่แค่อ่าน HUD สด ๆ (อ่านสดตอนนั้นสายเกินจะไปซื้อแล้ว)
+  const BOSS_WEAK_KEY = 'tokpla_boss_weak';
+  const loadBossWeak = () => { try { return JSON.parse(W.localStorage.getItem(BOSS_WEAK_KEY) || '{}') || {}; } catch { return {}; } };
+  function learnBossWeak(name, tiers, names) {
+    if (!name || !Array.isArray(tiers) || !tiers.length) return;
+    try {
+      const t = loadBossWeak();
+      const old = t[name];
+      const same = old && JSON.stringify(old.tiers) === JSON.stringify(tiers);
+      // seq = ลำดับการพบแบบเพิ่มขึ้นเสมอ — `at` (Date.now) ชนกันได้ถ้าเรียนรู้ 2 ตัวในมิลลิวินาทีเดียวกัน
+      //   แล้วการเรียง "ล่าสุดก่อน" จะไม่แน่นอน (เทสต์จับได้) · seq ทำให้ผลเดิมทุกครั้ง
+      const seq = Math.max(0, ...Object.keys(t).map((k) => t[k].seq || 0)) + 1;
+      t[name] = { tiers: tiers.slice(), names: (names || []).slice(), at: Date.now(), seq, seen: (old?.seen || 0) + 1 };
+      W.localStorage.setItem(BOSS_WEAK_KEY, JSON.stringify(t));
+      if (!same) {
+        logInfo(`🎯 จำจุดอ่อนของ "${name}" แล้ว: ขั้น ${tiers.join('+')} (${(names || []).join('/')}) — รอบหน้าจะซื้อเหยื่อไว้ก่อนออกเดินทาง`);
+        bossEvent(`🧠 เรียนรู้จุดอ่อน: ${name} → ขั้น ${tiers.join('+')}`);
+      }
+    } catch {}
+  }
+  // ขั้นเหยื่อที่ "ควรมีติดตัวก่อนเข้าถ้ำ" — รวมจุดอ่อนของบอสทุกตัวที่เคยเจอ (เพราะไม่รู้ว่ารอบนี้บอสตัวไหนมา)
+  //   จำกัดจำนวนขั้นไว้ ไม่ให้ซื้อกระจาย: เอาที่เพิ่งเจอล่าสุดก่อน (บอสหมุนเวียน = ตัวที่เพิ่งมามีโอกาสมาอีก)
+  // 📊 v6.283: **เรียนรู้ว่าเหยื่อขั้นไหนตีบอสแรงสุดจริง** — วัดจาก "ดาเมจต่อการกด 1 ครั้ง"
+  //   ทำไมต้องหารด้วยจำนวนกด ไม่ใช่ดูดาเมจรวม: ไฟต์ยาว/สั้นไม่เท่ากัน · เข้าช้า/เร็วไม่เท่ากัน
+  //   ดาเมจรวมจึงเทียบข้ามไฟต์ไม่ได้เลย (หลักฐาน: 351 / 923 / 1,636 / 1,831 ในบอสตัวเดียวกัน เหยื่อขั้นเดียวกัน)
+  //   ⚠️ อ่านจาก tokpla_boss_stats ที่มีอยู่แล้ว — ไม่เพิ่มคีย์ใหม่ ไม่ต้องรอสะสมรอบใหม่
+  function bossBaitReport() {
+    let st = []; try { st = loadBossStats() || []; } catch {}
+    const rows = st.filter((f) => f.baitUsed != null && f.dmg > 0 && (f.gauge || 0) + (f.hits || 0) > 0);
+    if (!rows.length) return '📊 ยังไม่มีข้อมูลพอเทียบเหยื่อตีบอส (ต้องมีไฟต์ที่บันทึก เหยื่อ+ดาเมจ+จำนวนกด)';
+    const byBoss = {};
+    for (const f of rows) {
+      const b = f.bossName || '(ไม่รู้ชื่อ)', t = f.baitUsed;
+      const presses = (f.gauge || 0) + (f.hits || 0);
+      byBoss[b] = byBoss[b] || {};
+      const s = byBoss[b][t] = byBoss[b][t] || { n: 0, dmg: 0, presses: 0, weak: 0 };
+      s.n++; s.dmg += f.dmg; s.presses += presses;
+      if ((f.weakTiers || []).includes(t)) s.weak++;
+    }
+    const out = ['📊 เหยื่อไหนตีบอสแรงสุด (ดาเมจต่อการกด 1 ครั้ง)'];
+    for (const b of Object.keys(byBoss)) {
+      const tiers = Object.keys(byBoss[b]).map((t) => {
+        const s = byBoss[b][t];
+        return { t: +t, per: s.presses ? s.dmg / s.presses : 0, n: s.n, weak: s.weak };
+      }).sort((a, b2) => b2.per - a.per);
+      const known = loadBossWeak()[b];
+      out.push(`\n👹 ${b}${known ? ` · จุดอ่อนที่จำไว้: ขั้น ${known.tiers.join('+')}` : ''}`);
+      for (const r of tiers) out.push(`   ขั้น ${r.t}: ${r.per.toFixed(1)} ดาเมจ/กด (${r.n} ไฟต์${r.weak ? ` · ตรงจุดอ่อน ${r.weak}` : ''})`);
+      if (tiers.length < 2) out.push('   ⚠️ มีข้อมูลขั้นเดียว — ยังเทียบไม่ได้ว่าขั้นไหนดีกว่า');
+    }
+    out.push('\nℹ️ ตรงจุดอ่อน = เกมให้ x1.5 · ถ้าตัวเลข "ดาเมจ/กด" ของขั้นจุดอ่อนไม่สูงกว่าชัด แปลว่าเหยื่อไม่ใช่คอขวด');
+    return out.join('\n');
+  }
+  function bossWeakTiersWanted(maxTiers = 2) {
+    try {
+      const t = loadBossWeak();
+      const rows = Object.keys(t).map((k) => ({ name: k, ...t[k] }))
+        .sort((a, b) => ((b.seq || 0) - (a.seq || 0)) || ((b.at || 0) - (a.at || 0)));
+      const out = [];
+      for (const r of rows) for (const ti of (r.tiers || [])) if (!out.includes(ti) && out.length < maxTiers) out.push(ti);
+      return out;
+    } catch { return []; }
+  }   // v6.276: เตือน "อ่านจุดอ่อนไม่ออก" ครั้งเดียวต่อเซสชัน (bossHudMeta ถูกเรียกถี่มาก)
   // อ่าน meta ของบอสรอบนี้จาก HUD — cache 1 วิ (สแกน DOM แพง แต่ค่าพวกนี้เปลี่ยนช้า ยกเว้น HP)
   function bossHudMeta(force) {
     if (!force && bossHudCache && now() - bossHudCacheAt < 1000) return bossHudCache;
@@ -1813,7 +1878,19 @@
       //   แต่สถิติทุกไฟต์บันทึก `weakTiers: []` → แปลว่า regex ไม่ติด · ต้นเหตุที่เป็นไปได้สูงสุดคือ
       //   เกมวางชื่อเหยื่อคนละ text node → innerText แทรก \n คั่น (เคยเจอเป๊ะๆ กับตัวนับหน้าประตู v6.245)
       //   → ยอมให้ข้ามบรรทัดได้ · ผลเสียถ้าเกินจริง = ไม่มี (จำกัด 80 ตัวอักษรอยู่แล้ว)
-      const wm = txt.match(/จุดอ่อน[:：]?\s*([\s\S]{0,80}?)\s*\(\s*x?1\.5\s*\)/);
+      // 🐛 v6.283 — **หลักฐานตัดสิน: 17 ไฟต์ที่เจอบอสจริง อ่านจุดอ่อนติด 0 ครั้ง** ทั้งที่คลิปเห็นข้อความชัด
+      //   v6.276 ขยาย regex ให้ข้ามบรรทัดแล้วก็ยังไม่ติด → แปลว่าปัญหาไม่ได้อยู่ที่ "ข้ามบรรทัด"
+      //   ต้นเหตุที่เหลือและน่าจะใช่: `document.body.innerText` เอาข้อความมารวมทั้งหน้าแบบ **แบนราบ**
+      //   ข้อความ HUD ที่เกมวางเป็นชิปแยก ๆ อาจถูกคั่นด้วยข้อความอื่นจนระยะเกิน 80 ตัวอักษร
+      //   → เลิกพึ่งรูปประโยค `จุดอ่อน…(x1.5)` เป็นหลัก · ใช้ 2 ชั้น:
+      //     ① ชั้นเดิม (แม่นสุดถ้าติด)  ② **สแกนหา "ชื่อเหยื่อ" ใน element ที่มีคำว่าจุดอ่อน/x1.5**
+      //   ชั้น ② ใช้ gameTextMatch ที่ตัด UI ของบอทเองออก (กฎเหล็ก #7) — สำคัญมากเพราะแผงบอทมีชื่อเหยื่อเพียบ
+      let wm = txt.match(/จุดอ่อน[:：]?\s*([\s\S]{0,80}?)\s*\(\s*x?1\.5\s*\)/);
+      if (!wm) {
+        // ② หา element ของเกม (ไม่ใช่ของบอท) ที่พูดถึงจุดอ่อน แล้วเอาข้อความก้อนนั้นมาทั้งดุ้น
+        const em = gameTextMatch(/จุดอ่อน[\s\S]{0,120}/) || gameTextMatch(/[\s\S]{0,60}x\s*1\.5[\s\S]{0,60}/);
+        if (em) wm = [em[0], em[0]];
+      }
       if (wm) {
         const seg = wm[1];
         for (const b of BAIT_TIERS) {
@@ -3324,7 +3401,11 @@
         }
         const meta = bossHudMeta();
         // 🐛 v6.264: จับภาพข้อมูลไฟต์ "ตอนบอสยังอยู่" — จบไฟต์แล้ว HUD หาย อ่านย้อนไม่ได้
-        if (!snapWeak.length && meta.weakTiers.length) { snapWeak = meta.weakTiers.slice(); snapWeakNames = meta.weakNames.slice(); }
+        if (!snapWeak.length && meta.weakTiers.length) {
+          snapWeak = meta.weakTiers.slice(); snapWeakNames = meta.weakNames.slice();
+          // v6.283: จดจุดอ่อนคู่กับ "ชื่อบอส" ทันทีที่อ่านได้ → รอบหน้าซื้อเหยื่อไว้ก่อนออกเดินทางได้
+          learnBossWeak(snapBossName || meta.name, snapWeak, snapWeakNames);
+        }
         if (snapBait == null) snapBait = currentBait()?.tier ?? null;
         if (snapBossName == null && meta.name) snapBossName = meta.name;
         // 📊 v6.265: HP สูงสุดของบอส **ขยายตามจำนวนคนที่เข้าร่วม** (รอบ 10:30 วัดได้ 114k→152k→190k→228k→266k→304k→342k)
@@ -3639,7 +3720,22 @@
       if (!await openShop()) { await sleep(600); if (!await openShop()) { say('👹 เปิดร้านเตรียมเหยื่อบอสไม่ได้ — เข้าถ้ำด้วยเหยื่อที่มี'); return; } }
       await shopTab('🪱 เหยื่อ'); await sleep(300);
       let rows = shopRows().filter((r) => r.tier);
-      // 1) เหยื่อจุดอ่อน (เดิม): ซื้อถ้ายังไม่ถึง 1 แพ็ค
+      // 1️⃣ v6.283: **ซื้อเหยื่อจุดอ่อนที่เรียนรู้มา** — ตอบปมที่ระบบเดิมแก้ไม่ได้
+      //   ระบบเดิมพึ่ง `cfg.bossBaitTier` ที่ผู้ใช้ตั้งเอง · ค่าจริงคือ 0 = **ขาซื้อไม่เคยทำงานเลย**
+      //   และ HUD บอกจุดอ่อนตอนอยู่ในถ้ำ ซึ่งสายเกินจะออกมาซื้อ → ต้องใช้ "ของที่จำไว้จากรอบก่อน"
+      {
+        const want = bossWeakTiersWanted(2);
+        for (const wt of want) {
+          const wr2 = rows.find((r) => r.tier === wt);
+          if (!wr2) { say(`👹 หาเหยื่อจุดอ่อนขั้น ${wt} ในร้านไม่เจอ`); continue; }
+          if (wr2.lockedLv) { say(`👹 เหยื่อจุดอ่อนขั้น ${wt} ยังไม่ปลดล็อก (Lv.${wr2.lockedLv})`); continue; }
+          if ((wr2.stock || 0) >= 100) continue;                       // มีพอแล้ว ไม่ต้องเสียเงิน
+          if (await buyBaitRow(wr2)) say(`🎯 ซื้อเหยื่อจุดอ่อนขั้น ${wt} (จำจากบอสที่เคยเจอ) — พร้อมตี x1.5`);
+          else say(`🎯 ซื้อเหยื่อจุดอ่อนขั้น ${wt} ไม่สำเร็จ (เงินไม่พอ/ล็อก?) — จะใช้เหยื่อที่มี`);
+        }
+        if (want.length) rows = shopRows().filter((r) => r.tier);      // อ่านสต๊อกใหม่หลังซื้อ
+      }
+      // 1) เหยื่อจุดอ่อนที่ผู้ใช้ตั้งเอง (ของเดิม — ยังเคารพถ้าตั้งไว้)
       if (bt > 0) {
         const wr = rows.find((r) => r.tier === bt);
         if (!wr) say(`👹 หาเหยื่อจุดอ่อนขั้น ${bt} ในร้านไม่เจอ`);
@@ -9253,6 +9349,20 @@ ${esc(reason)}
       statBtn.textContent = '📊 ตารางเทียบรายไฟต์';
       statBtn.style.cssText = 'padding:5px 10px;border-radius:7px;border:1px solid #4a5568;background:#2d3748;color:#e2e8f0;font-size:11px;cursor:pointer;margin:2px 3px 6px 0;';
       statBtn.addEventListener('click', () => { showBossStatsModal(); });   // ตารางรายไฟต์ในหน้าต่าง monospace
+      // 🎯 v6.283: ปุ่มดูผลเรียนรู้เหยื่อ — ตอบคำถาม "เหยื่อไหนตีบอสแรงสุด" ด้วยข้อมูลจริง ไม่ใช่ทฤษฎี
+      const baitBtn = document.createElement('button');
+      baitBtn.setAttribute('data-tkbot', '1');
+      baitBtn.textContent = '🎯 ผลเรียนรู้เหยื่อจุดอ่อน';
+      baitBtn.style.cssText = statBtn.style.cssText;
+      baitBtn.title = 'เทียบ "ดาเมจต่อการกด 1 ครั้ง" ของเหยื่อแต่ละขั้น แยกตามบอส + จุดอ่อนที่บอทจำได้';
+      baitBtn.addEventListener('click', () => {
+        const t = loadBossWeak();
+        const known = Object.keys(t).length
+          ? Object.keys(t).map((k) => `  ${k} → ขั้น ${t[k].tiers.join('+')} (${(t[k].names || []).join('/')}) · เจอ ${t[k].seen || 1} รอบ`).join('\n')
+          : '  (ยังไม่เคยอ่านจุดอ่อนได้เลย)';
+        say(`🎯 จุดอ่อนที่จำไว้:\n${known}\n\n${bossBaitReport()}`);
+      });
+      panel.appendChild(baitBtn);
       panel.appendChild(row(
         '📊 สถิติล่าบอส (เก็บ N ครั้งล่าสุด)',
         'บันทึกทุกไฟต์อัตโนมัติ: ผล (ฆ่า/หมดเวลา/ไม่มา) · ดาเมจ+% · กดเกจ · หลบ AoE · ตาย · HP ต่ำสุด · เวลา/ไฟต์ · '
