@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.266
+// @version      6.267
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.266';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.267';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4615,11 +4615,24 @@
     return null;
   }
 
+  // 🐛 v6.267: อ่านยอดขายได้ 0 ตลอด (log จริง: "ขายปลาทั้งหมด 9 ชนิด (0 🪙)" ทั้งที่ขายสำเร็จและมีเงินซื้อเหยื่อ)
+  //   ต้นตอเดิม: ผูกกับอิโมจิ 🪙 ตัวเดียว — แต่เกมใช้สัญลักษณ์เงินไม่คงที่ (เห็น 💰 ในข้อความรางวัลบอส 25/7 แล้ว)
+  //   📌 บทเรียนซ้ำรอบที่ 7: ห้ามผูก selector กับอิโมจิ (เหมือน 🪱→🐛 ที่พังมาแล้ว)
+  //   ผลกระทบจริง: เกณฑ์ `sellAtCoins` ตายสนิท (total ไม่มีวัน ≥ ค่าที่ตั้ง) + ตัวเลขในรายงานผิด
+  //   แก้: รับได้ทั้ง 🪙 / 💰 / "เหรียญ" และ **ยอมรับตัวเลขล้วน**ถ้าปุ่มไม่มีสัญลักษณ์เลย
+  //        อ่านไม่ออก = log ข้อความดิบครั้งเดียว (ให้รู้ของจริง ไม่ต้องเดารอบหน้า)
+  let totalCoinsWarned = false;
   function readTotalCoins() {
     const b = sellAllBtn();
     if (!b) return 0;
-    const m = /([\d,]+)\s*🪙/.exec(b.textContent);
-    return m ? parseInt(m[1].replace(/,/g, ''), 10) : 0;
+    const t = (b.textContent || '').trim();
+    const m = /([\d,]+)\s*(?:🪙|💰|เหรียญ)/.exec(t) || /^ขาย(?:ปลา|ขยะ)?ทั้งหมด\D*([\d,]+)\s*$/.exec(t);
+    if (m) return parseInt(m[1].replace(/,/g, ''), 10);
+    if (!totalCoinsWarned) {
+      totalCoinsWarned = true;
+      logWarn(`💰 อ่านยอดขายจากปุ่มไม่ออก — ข้อความจริงคือ ${JSON.stringify(t.slice(0, 60))} · เกณฑ์ "ขายเมื่อได้กี่เหรียญ" จะใช้ไม่ได้จนกว่าจะแก้ pattern`);
+    }
+    return 0;
   }
 
   // ---- ข้อความแจ้งผลการขายในหน้ากระเป๋า (แถบเขียว = สำเร็จ, แดง = ล้มเหลว) ----
@@ -5350,8 +5363,16 @@
       const tab = findUiTab('ของใช้') || btnByText('🎒 ของใช้');   // v6.254: เกมเปลี่ยนเป็น "ของใช้261 ชิ้น"
       if (!tab) { logWarn('🎒 หาแท็บ "ของใช้" ในกระเป๋าไม่เจอ — กินกาแฟ/ยาไม่ได้'); await closeMenu(); return false; }
       fireClick(tab); await sleep(450);
-      const item = [...document.querySelectorAll('button')].find((b) =>
-        nameRe.test(b.getAttribute('aria-label') || '') || nameRe.test(b.textContent || ''));
+      // 🛡️ v6.267: เกมเพิ่มไอเทมชื่อคล้ายกันเรื่อยๆ ("กาแฟนักตกปลา" vs "กาแฟเข้ม") — เดิมหยิบ "ตัวแรกที่เจอ"
+      //   = ลำดับของในกระเป๋าเป็นตัวตัดสินว่ากินอะไร · ถ้าชนกันต้องรู้ตัว ไม่ใช่กินมั่วแล้วเงียบ
+      const hits = [...document.querySelectorAll('button')].filter((b) =>
+        !isBotUI(b) && (nameRe.test(b.getAttribute('aria-label') || '') || nameRe.test(b.textContent || '')));
+      if (hits.length > 1) {
+        const names = hits.map((b) => (b.getAttribute('aria-label') || b.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 24));
+        logWarn(`🎒 ชื่อไอเทมชนกัน ${hits.length} ชิ้นสำหรับ ${nameRe} → [${names.join(' | ')}] · หยิบชื่อสั้นสุด (ตรงที่สุด) — ถ้าผิดตัวให้ระบุชื่อเต็มในโค้ด`);
+      }
+      // ชื่อสั้นสุด = ตรงกับ pattern มากที่สุด (ชื่อยาวมักเป็นไอเทมอื่นที่บังเอิญมีคำนั้นอยู่ข้างใน)
+      const item = hits.sort((a, b) => ((a.getAttribute('aria-label') || a.textContent || '').length - (b.getAttribute('aria-label') || b.textContent || '').length))[0];
       if (!item) { await closeMenu(); return false; }   // ไม่มีของ (ซื้อไม่ติด?)
       fireClick(item); await sleep(450);
       const use = [...document.querySelectorAll('button')].find((b) => /ใช้เลย/.test(b.textContent) && !b.disabled);
@@ -5385,7 +5406,11 @@
       //     ทำให้ tick เรียกซ้ำทุกจังหวะ = วนใช้กาแฟ+สแปม Telegram ไม่จบ (cast ค้าง ไม่ได้ตก)
       if (now() > coffeeBagFailUntil) {
         const e0 = energyPct();
-        if (await useConsumable(/กาแฟ/)) {
+        // 🐛 v6.267: เดิมใช้ /กาแฟ/ ซึ่งจับได้ 2 ไอเทม — แพตช์ใหม่เพิ่ม **"กาแฟเข้ม" (potion_hp ยาฟื้นเลือด 2,500 🪙)**
+        //   ขึ้นมาข้างๆ "กาแฟนักตกปลา" (coffee_energy พลัง 1,500 🪙) → บอทดื่มยาเลือดแพงๆ ทิ้งแล้วพลังไม่ขึ้น
+        //   เกิดจริง 11:05:31: "ใช้กาแฟแล้วพลังไม่ขึ้น (18.40%→18.46%)" แล้วโดนพักลองกระเป๋า 30 นาที = ตกปลาต่อด้วยพลังต่ำ
+        //   (ขา "ซื้อในร้าน" บรรทัดล่างใช้ /กาแฟนักตกปลา/ ถูกอยู่แล้ว — พลาดแค่ขา "ใช้ของในกระเป๋า")
+        if (await useConsumable(/กาแฟนักตกปลา/)) {
           await sleep(500);   // รอเกมอัปเดตพลัง
           const e1 = energyPct();
           if (e0 == null || e1 == null || e1 > e0 + 2) {   // พลังขึ้นจริง = กาแฟพลังจริง
@@ -5427,7 +5452,7 @@
         saveProfit(); refreshProfit();
         await sleep(300); await closeShop();
         // เกมล่าสุด: ซื้อแล้วของเข้ากระเป๋า ต้อง "กดใช้" ถึงได้พลัง
-        ok = await useConsumable(/กาแฟ/);
+        ok = await useConsumable(/กาแฟนักตกปลา/);   // v6.267: ชื่อเต็ม — กันไปโดน "กาแฟเข้ม" (ยาฟื้นเลือด)
         if (ok) {
           say(`☕ ซื้อ+ใช้กาแฟ +50 พลัง (−${COFFEE_PRICE.toLocaleString()} 🪙) — ตกต่อ`);
           if (cfg.tgTrade && isOn('tgOn')) void tgSend(`☕ เติมพลัง +50 ด้วยกาแฟ (−${COFFEE_PRICE.toLocaleString()} 🪙 · ตกไปแล้ว ${casts} ครั้ง)`);
