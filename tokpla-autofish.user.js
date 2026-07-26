@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.277
+// @version      6.278
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.277';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.278';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -228,6 +228,8 @@
     bossStew: true,              // 🍲 กินต้มปลาร้อนก่อนเข้าถ้ำ (Lv.67: เลือด 234 → 281)
     bossStewBuy: true,           // 🛒 ซื้อถ้าไม่มีในกระเป๋า — 3,000 🪙 (เกมจำกัด 2/วัน)
     bossStewMaxDay: 2,           // เพดานซื้อของเราเองต่อวัน (≤ 2 ตามเกม)
+    // 👹 v6.278: โหมดล่าบอสอย่างเดียว — ระบบแยกจากการตกปลาโดยสิ้นเชิง (ดูเหตุผลเต็มที่จุดใช้ใน tick)
+    bossOnly: false,             // true = ทำเฉพาะเรื่องบอส ไม่ตกปลา/ขาย/เควส/NPC เลย
     potionWeight: true,          // 🐋 ยาปลาตัวใหญ่ (+15% น้ำหนัก=ราคาขาย 30 นาที · 2,000 🪙)
     potionLuck: false,           // 🍀 ยาโชคปลาแรร์ (+8% โอกาสแรร์ 30 นาที · 2,500 🪙)
     potionMinCph: 25000,         // ซื้อยาเฉพาะเมื่อรายได้ ≥ กี่ 🪙/ชม. (ต่ำกว่านี้ไม่คุ้มต้นทุนยา)
@@ -7773,6 +7775,29 @@ ${esc(reason)}
         if (_present) learnBossMap(bossMapId());
         if (isBossMap(bossMapId()) && _present) { void bossFightHere(); return requestAnimationFrame(tick); }
       }
+      // ═══════════════════════════════════════════════════════════════════════
+      // 👹 v6.278 — **ระบบล่าบอสแยกเป็นเอกเทศ** (ผู้ใช้สั่งให้แยกออกจากระบบปกติ)
+      //   ปัญหาเชิงโครงสร้างที่ทำให้พลาดบอสมาตลอด: `bossHuntDue()` ถูกวางไว้ **ก้นสาขา idle ของระบบตกปลา**
+      //   กว่าจะถึงมันต้องผ่านด่านของ "การตกปลา" ครบทุกด่านก่อน:
+      //     สถานะเกมต้องว่าง (ไม่ใช่ bite/minigame/reeling) → ไม่ paused → ผ่าน popupWatchdog
+      //     → ผ่านสาขา "ปุ่มตกปลากดไม่ได้" → ผ่านคิวงาน idle (ขาย/เควส/กาแฟ/ยา/NPC/หีบ)
+      //   ⇒ ถ้าการตกปลาติดขัด (กระเป๋าเต็ม · เหยื่อหมด · พลังหมดนั่งพัก · ปุ่มกดไม่ได้ · dialog ค้าง)
+      //     **ระบบล่าบอสไม่มีวันได้รันเลย** — ตรงกับหลักฐานจริง: รอบ 13:30 noshow สนิท ขณะพลังงานเหลือ 7-9%
+      //   โหมดนี้ตัดปมนั้นทิ้ง: ทำเฉพาะเรื่องบอส ไม่แตะไปป์ไลน์ตกปลาเลยแม้แต่บรรทัดเดียว
+      if (isOn('bossOnly')) {
+        if (paused) { warnPausedNearBoss(); updateBadge(); return requestAnimationFrame(tick); }
+        if (now() - lastIdleWork >= 150) {
+          lastIdleWork = now();
+          if (popupWatchdog()) return requestAnimationFrame(tick);   // dialog ค้างก็ทำให้เดินไม่ได้เหมือนกัน
+          if (bossHuntDue()) { void runBossHunt(); return requestAnimationFrame(tick); }
+          // ค้างในถ้ำโดยไม่มีบอส → ออกมารอ (ไม่งั้นยืนในถ้ำยาว ๆ โดยไม่มีอะไรทำ)
+          if (now() - lastBossEscapeAt > 15000 && strandedInBossCave()) {
+            lastBossEscapeAt = now(); void escapeBossCave(); return requestAnimationFrame(tick);
+          }
+        }
+        updateBadge();
+        return requestAnimationFrame(tick);   // ⛔ ไม่ไหลลงไปตกปลา/ขาย/เควส/NPC ใด ๆ ทั้งสิ้น
+      }
       const state = gameState();
       if (state !== 'bite') biteAt = 0;      // ออกจากจังหวะปลาฮุบ = ล้างตัวจับเวลารีแอค
       if (state !== 'idle') castArmed = false;   // กำลังตกอยู่ = ยังไม่ถึงจังหวะตั้งเวลาเหวี่ยง
@@ -8443,13 +8468,15 @@ ${esc(reason)}
     mythicBtn.style.background = bg;
   }
   // 👹 ปุ่มเริ่ม/หยุดล่าบอส — แยกจากปุ่มบอทตกปลาปกติ (v6.140) · สถานะสด: กำลังเดิน/สู้/รอเวลา/ปิด
-  let bossBtn = null, lastBossBtnTxt = '';
+  let bossBtn = null, lastBossBtnTxt = '', bossSoloPaint = null;   // v6.278: bossSoloPaint = ทาสีปุ่ม "ล่าอย่างเดียว" ใหม่เมื่อค่าเปลี่ยนจากที่อื่น
   function refreshBossBtn() {
     if (!bossBtn) return;
+    // 👹 v6.278: บอกให้ชัดว่ากำลังอยู่โหมดไหน — "ล่าอย่างเดียว" กับ "ล่าคู่ฟาร์ม" พฤติกรรมต่างกันมาก
+    const solo = isOn('bossOnly') ? ' · โหมดล่าอย่างเดียว (ไม่ตกปลา)' : '';
     const [txt, bg] = bossPhase !== 'idle'
-      ? [`👹 กำลังล่าบอส (${bossPhase === 'travel' ? 'เดินไปถ้ำ' : bossPhase === 'fight' ? 'สู้บอส' : 'กลับบ้าน'}) — กดหยุด`, '#3e7d24']
+      ? [`👹 กำลังล่าบอส (${bossPhase === 'travel' ? 'เดินไปถ้ำ' : bossPhase === 'fight' ? 'สู้บอส' : 'กลับบ้าน'})${solo} — กดหยุด`, '#3e7d24']
       : isOn('bossHunt')
-        ? ['👹 โหมดล่าบอส เปิดอยู่ · รอเวลาบอส — กดเพื่อหยุด', '#8a5a1e']
+        ? [`👹 โหมดล่าบอส เปิดอยู่ · รอเวลาบอส${solo} — กดเพื่อหยุด`, isOn('bossOnly') ? '#7a3f9e' : '#8a5a1e']
         : ['👹 เริ่มล่าบอส', '#8a3030'];
     if (txt === lastBossBtnTxt) return;
     lastBossBtnTxt = txt;
@@ -8625,6 +8652,7 @@ ${esc(reason)}
 
   function syncPanel() {
     if (!panel) return;
+    if (bossSoloPaint) { try { bossSoloPaint(); } catch {} }   // v6.278: ปุ่มโหมดล่าอย่างเดียวไม่ใช่ checkbox ต้องทาสีเอง
     panel.querySelectorAll('input[data-key]').forEach((i) => {
       const k = i.dataset.key;
       if (i.type === 'checkbox') {
@@ -8966,6 +8994,35 @@ ${esc(reason)}
     });
     refreshBossBtn();
     panel.appendChild(bossBtn);
+
+    // 👹 v6.278: ปุ่ม "ระบบล่าบอสอย่างเดียว" — แยกจากปุ่มบนที่เป็น "ล่าบอสควบคู่การฟาร์ม"
+    //   กดแล้ว: เปิดบอท + เปิดโหมดล่าบอส + ตั้ง bossOnly → tick จะวิ่งเฉพาะเส้นทางบอส ไม่แตะการตกปลาเลย
+    {
+      const soloBtn = document.createElement('button');
+      soloBtn.setAttribute('data-tkbot', '1');
+      soloBtn.style.cssText = 'width:100%;padding:7px;border-radius:8px;border:none;color:#fff;font-weight:800;font-size:11.5px;cursor:pointer;margin:0 0 6px;';
+      const paint = () => {
+        soloBtn.textContent = isOn('bossOnly')
+          ? '🎯 ระบบล่าบอสอย่างเดียว: เปิดอยู่ — กดเพื่อกลับไปฟาร์มด้วย'
+          : '🎯 เปลี่ยนเป็น "ล่าบอสอย่างเดียว" (หยุดตกปลา)';
+        soloBtn.style.background = isOn('bossOnly') ? '#7a3f9e' : '#2d3748';
+      };
+      soloBtn.addEventListener('click', () => {
+        if (isOn('bossOnly')) {
+          cfg.bossOnly = false; saveCfg(); syncPanel();
+          say('🎣 กลับสู่โหมดปกติ — ฟาร์มตามเดิม และล่าบอสเมื่อถึงเวลา');
+        } else {
+          cfg.bossOnly = true; cfg.bossHunt = true; sessionOff.delete('bossHunt'); saveCfg(); syncPanel();
+          if (!enabled) toggle();
+          say('🎯 โหมดล่าบอสอย่างเดียว — จะไม่ตกปลา/ขาย/เควส/NPC เลย · รอเวลาบอสแล้วออกไปตีอย่างเดียว');
+          if (isOn('tgOn')) void tgSend('🎯 <b>โหมดล่าบอสอย่างเดียว</b> — หยุดฟาร์ม รอตีบอสอย่างเดียว');
+        }
+        paint(); refreshBossBtn();
+      });
+      paint();
+      panel.appendChild(soloBtn);
+      bossSoloPaint = paint;   // ให้ syncPanel เรียกทาสีใหม่ได้เวลาค่าถูกเปลี่ยนจากที่อื่น
+    }
 
     panel.appendChild(row(
       '👹 ล่า & ตีบอสอัตโนมัติ',
