@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.279
+// @version      6.280
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.279';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.280';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2428,9 +2428,30 @@
     return Math.max(0, Math.round((target - Date.now()) / 60000));
   }
   let bossPredictSayAt = 0;
+  let bossChipDistrustAt = 0;
   function bossTimerMin() {
     const dom = bossTimerDom();
-    if (dom != null && dom > 0) { setBossNext(Date.now() + dom * 60000); return dom; }   // ตัวนับจริง = ความจริง · sync ตัวทำนาย
+    if (dom != null && dom > 0) {
+      // 🐛 v6.280 (จับได้จากข้อมูลสด 17:33): ฐานเวลาบอสเพี้ยนเป็น 18:33 ทั้งที่รอบจริงคือ 19:30
+      //   ต้นตอ: chip `title="แตะดูเวลาเต็ม"` **ไม่ได้เป็นของป้ายบอสแต่เพียงผู้เดียว** — เกมใช้ component
+      //   ตัวนับเดียวกันกับอย่างอื่น (เช่นแข่ง 19:00 ที่ตอน 17:33 แสดง "1 ชม. …" = อ่านได้ 60 นาที)
+      //   → setBossNext โดนวางยา → บอทจะออกเดินทาง 18:30 = ไปเก้อทั้งเที่ยว
+      //   แก้: ค่าจาก DOM ต้องสอดคล้องกับตารางเวลานาฬิกา (พิสูจน์แล้ว 20 ไฟต์ว่าบอสมา HH:29-30 เป๊ะ)
+      //   คลาดได้ ±6 นาที (เกมเคยเปิดประตูช้า ~1 นาที + เผื่อปัดเศษ) · เกินนั้น = chip ตัวอื่น ไม่เชื่อ
+      const sched = bossScheduleNextMs(Date.now());
+      if (sched) {
+        const domMs = Date.now() + dom * 60000;
+        if (Math.abs(domMs - sched) > 6 * 60000) {
+          if (now() - bossChipDistrustAt > 600000) {
+            bossChipDistrustAt = now();
+            logInfo(`🔮 ตัวนับบนจอบอก "อีก ${dom} นาที" แต่ตารางบอกรอบถัดไป ${hhmmOf(sched)} — น่าจะเป็นตัวนับของอย่างอื่น (แข่ง/อีเวนต์) ไม่เชื่อ ใช้ตาราง`);
+          }
+          setBossNext(sched);
+          return Math.max(0, Math.round((sched - Date.now()) / 60000));
+        }
+      }
+      setBossNext(Date.now() + dom * 60000); return dom;   // ตัวนับจริง (สอดคล้องตาราง) = ความจริง · sync ตัวทำนาย
+    }
     // 🐛 v6.215 (ผู้ใช้เจอสด 23:22): ป้าย "ถึงรอบบอสแล้ว!" โชว์ทั้งที่เวลาบอสจริงยังอีก 11 ชม. (เกมเพี้ยน)
     //   → bossTimerDom คืน 0 (armed) → บอทไปเก้อทุก ~10 นาที · ต้อง cross-check กับ "เวลาบอสที่รู้จริง" (bossNextMs)
     if (dom === 0) {
