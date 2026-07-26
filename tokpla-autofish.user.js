@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.292
+// @version      6.293
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.292';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.293';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -7652,6 +7652,7 @@
       if (JSON.stringify(old) === JSON.stringify(clean)) return;
       W.localStorage.setItem(YAD_OFFERS_KEY, JSON.stringify(clean));
       logInfo(`🎣 จำข้อเสนอลุงหยัด ${clean.length} รายการ: ${clean.map((o) => `${o.fish}×${o.need}→${o.reward}×${o.rewardQty}`).join(' · ')}`);
+      try { syncPanel(); } catch {}   // v6.293: ข้อเสนอเปลี่ยน → อัปเดต dropdown "รางวัลที่จะแลก" ทันที (แผงสร้างครั้งเดียว)
     } catch {}
   }
   // ข้อเสนอที่ "เลือกไว้จะแลก" — ตาม cfg.yadReward ('' = ทุกข้อเสนอ · ไม่งั้นเทียบชื่อรางวัลแบบมีคำนั้น)
@@ -9178,8 +9179,25 @@ ${esc(reason)}
       i.value = cfg[i.dataset.textKey] || '';
     });
     panel.querySelectorAll('select[data-sel]').forEach((i) => {
-      i.value = cfg[i.dataset.sel];
+      if (i.dataset.sel === 'yadReward') yadRefreshRewardOptions(i);   // v6.293: ตัวเลือกรางวัลมาทีหลัง (อ่านจากลุงหยัด) — สร้างใหม่ทุกครั้ง
+      i.value = cfg[i.dataset.sel] || '';
     });
+  }
+  // 🎣 v6.293: อัปเดตตัวเลือก dropdown "รางวัลที่จะแลก" จากข้อเสนอที่บอทเรียนรู้มา
+  //   บั๊ก v6.292: แผงถูกสร้างครั้งเดียว (mountUI guard) แต่ข้อเสนอลุงหยัดมาทีหลัง (หลังกด E) → dropdown ค้างมีตัวเลือกเดียว
+  //   สร้างใหม่เฉพาะเมื่อรายการเปลี่ยนจริง (กัน dropdown รีเซ็ต/กระพริบตอนผู้ใช้กำลังเลือก)
+  function yadRefreshRewardOptions(sel) {
+    try {
+      const offs = yadOffers();
+      const want = [['', 'ทุกข้อเสนอที่ครบ']];
+      for (const o of offs) want.push([o.reward, `${o.reward} ×${o.rewardQty} (ใช้ ${o.fish} ${o.need})`]);
+      if (cfg.yadReward && !want.some(([v]) => v === cfg.yadReward)) want.push([cfg.yadReward, `${cfg.yadReward} (ไม่พบในข้อเสนอปัจจุบัน)`]);
+      const cur = [...sel.options].map((o) => `${o.value}|${o.textContent}`).join('§');
+      const next = want.map(([v, l]) => `${v}|${l}`).join('§');
+      if (cur === next) return;
+      sel.textContent = '';
+      for (const [v, l] of want) { const op = document.createElement('option'); op.value = v; op.textContent = l; if (cfg.yadReward === v) op.selected = true; sel.appendChild(op); }
+    } catch {}
   }
 
   // ---- Accordion: หัวข้อหมวดพับ/กางได้ (ใช้เป็น "ตัวคั่น" — ทุก element หลังหัวข้อจนถึงหัวข้อถัดไป = กลุ่มเดียวกัน) ----
