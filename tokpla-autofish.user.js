@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.264
+// @version      6.265
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.264';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.265';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1654,6 +1654,51 @@
   //   HUD ตอนสู้มีครบ: ชื่อบอส · "เฟส N" · "จุดอ่อน: <ชื่อเหยื่อ> <ชื่อเหยื่อ> (x1.5)" · ชิปบอกโหมดตี · HP "n / max"
   const BOSS_MELEE_RANGE = 60;      // ระยะที่เกมยอมให้ฟาดโดน (tuning.raidMeleeRange)
   const BOSS_CHARGE_MS = 1800;      // กดค้างเท่านี้ = ชาร์จเต็ม x2 (tuning.raidChargeFullMs)
+  // 🎯 v6.265: เกมเปลี่ยนโครง `scene.raidDodge` — เดิม {mode, cx, cy, r} วงเดียว
+  //   ตอนนี้เป็น {seq, mode, r, deadline, zones:[{cx,cy,ring}], count} = **วงหลายวง** และ cx/cy ย้ายลงไปอยู่ใน zones
+  //   ผลที่เกิดจริง (รอบ 10:30 26/7 โหมด melee): raid.cx/cy = undefined → dx/dy = NaN → เทียบ `gx > 6` เป็น false ทุกทิศ
+  //   → dirs = [] → bossMoveDirs([]) = ปล่อยปุ่มหมด = **ยืนนิ่งกิน AoE เต็มๆ** · HP 100→81→62→42→23→4 แล้วตาย 3 ครั้ง
+  //   (r ยังอยู่ระดับบนสุด จึง log ว่า "r72" ถูก แต่ "วง@NaN,NaN" — อาการนี้คือลายเซ็นของบั๊กนี้)
+  //   เกมเลือกวงยังไง: updateBiteDodge() วน zones หา `Math.hypot(player.x-i.cx, player.y-i.cy)` ที่น้อยสุด = **วงใกล้สุด**
+  //   → ทำตามเป๊ะ · ใช้ได้ทั้ง 2 โหมด: flee (อยู่นอกวงใกล้สุด = อยู่นอกทุกวง) · reach (เข้าวงใกล้สุด = ถึงเร็วสุด)
+  function bossDodgeZone(raid, px, py) {
+    if (!raid) return null;
+    const r = Number(raid.r);
+    if (!Number.isFinite(r) || !Number.isFinite(px) || !Number.isFinite(py)) return null;
+    const zs = Array.isArray(raid.zones) ? raid.zones : null;
+    if (zs && zs.length) {
+      let best = null, bd = Infinity;
+      for (const z of zs) {
+        const zx = Number(z && (z.cx != null ? z.cx : z.x)), zy = Number(z && (z.cy != null ? z.cy : z.y));
+        if (!Number.isFinite(zx) || !Number.isFinite(zy)) continue;
+        const d = Math.hypot(px - zx, py - zy);
+        if (d < bd) { bd = d; best = { cx: zx, cy: zy, dist: d }; }
+      }
+      if (best) return { cx: best.cx, cy: best.cy, r, dist: best.dist, n: zs.length };
+    }
+    // โครงเก่า (วงเดียว) — เผื่อเกมย้อนกลับ/มีทั้งสองแบบ
+    const cx = Number(raid.cx), cy = Number(raid.cy);
+    if (Number.isFinite(cx) && Number.isFinite(cy)) return { cx, cy, r, dist: Math.hypot(px - cx, py - cy), n: 1 };
+    return null;   // อ่านไม่ออก = ผู้เรียกต้อง log ดังๆ ห้ามเงียบ (บทเรียน: selector พังเงียบมาแล้ว 6 จุด)
+  }
+  // 🚪 v6.265: การ์ดปากทางถ้ำ — เดิมมีแต่ในบล็อกหลบ AoE ทำให้ **ขาเดินเข้าประชิด (melee) ไม่มีการ์ด**
+  //   หลักฐาน 10:27:36 รอบ 10:30: "⚠️ หลุดออกจากถ้ำ (ครั้งที่ 1 · เดินหลบออก)" ทั้งที่ตอนนั้นกำลังเดินเข้าหาบอส
+  //   → แยกออกมาให้ทั้งสองขาใช้ร่วมกัน · คืน exit ที่ใกล้สุดไว้ให้ผู้เรียกทำ slide ต่อ (เฉพาะขาหลบที่ห้ามยืนนิ่ง)
+  function bossExitClamp(dirs, px, py) {
+    let clampExit = null;
+    try {
+      for (const ex of (bossMapExits() || [])) {
+        const ecx = ex.x + (ex.w || 0) / 2, ecy = ex.y + (ex.h || 0) / 2, edx = ecx - px, edy = ecy - py;
+        const ed = Math.hypot(edx, edy);
+        if (ed < 120) {
+          if (!clampExit || ed < clampExit.d) clampExit = { dx: edx, dy: edy, d: ed };
+          let i; if (edx > 10) { if ((i = dirs.indexOf('right')) >= 0) dirs.splice(i, 1); } else if (edx < -10 && (i = dirs.indexOf('left')) >= 0) dirs.splice(i, 1);
+          if (edy > 10) { if ((i = dirs.indexOf('down')) >= 0) dirs.splice(i, 1); } else if (edy < -10 && (i = dirs.indexOf('up')) >= 0) dirs.splice(i, 1);
+        }
+      }
+    } catch {}
+    return clampExit;
+  }
   let bossHudCache = null, bossHudCacheAt = 0;
   // อ่าน meta ของบอสรอบนี้จาก HUD — cache 1 วิ (สแกน DOM แพง แต่ค่าพวกนี้เปลี่ยนช้า ยกเว้น HP)
   function bossHudMeta(force) {
@@ -2770,10 +2815,22 @@
     const aoeMap = bossMapId();
     const aoeKey = aoeMap ? 'tokpla_aoe_samples_' + aoeMap : '';
     let aoeSamples = [];
-    if (aoeKey) try { const sv = JSON.parse(W.localStorage.getItem(aoeKey) || 'null'); if (Array.isArray(sv) && sv.length) aoeSamples = sv; } catch {}
+    let aoeShapeWarned = false;   // v6.265: เตือน "อ่านวง AoE ไม่ออก" ครั้งเดียวต่อไฟต์ (ไม่งั้นท่วม log)
+    // 🧹 v6.265: กรองค่าเสียตอนโหลด — ไฟต์ 10:30 26/7 เขียน [null,null] ลงคีย์นี้ไปแล้ว (raid.cx หาย → NaN → JSON เป็น null)
+    //   ถ้าไม่กรอง ค่าเฉลี่ยจะเป็น NaN ตลอดไป = recenter เดินไป NaN,NaN ทุกไฟต์ · กันทั้งขาอ่านและขาเขียน
+    //   ⚠️ ต้องเช็ค typeof — `+null` ได้ 0 (ไม่ใช่ NaN) ถ้าใช้ Number.isFinite(+p[0]) ของเสียจะรอดมาเป็น [0,0]
+    //   แล้วลากค่าเฉลี่ยไปมุมจอ = recenter เดินไป (0,0) แย่กว่าเดิมอีก (เทสต์ test-dodge-zones.js จับได้)
+    const aoeNum = (v) => typeof v === 'number' && Number.isFinite(v);
+    const aoeClean = (v) => Array.isArray(v) ? v.filter((p) => Array.isArray(p) && aoeNum(p[0]) && aoeNum(p[1])) : [];
+    if (aoeKey) try {
+      const sv = aoeClean(JSON.parse(W.localStorage.getItem(aoeKey) || 'null'));
+      if (sv.length) aoeSamples = sv;
+      // เขียนกลับทันทีถ้าเพิ่งกรองของเสียออก — ไม่งั้นพิษอยู่ยาวข้ามไฟต์
+      W.localStorage.setItem(aoeKey, JSON.stringify(aoeSamples));
+    } catch {}
     // ย้ายข้อมูลเก่า (key รวม) มาเป็นของ boss_cave ครั้งเดียว — ถ้ำเดิมจะไม่เสียสถิติที่สะสมไว้
     if (!aoeSamples.length && aoeMap === BOSS_MAP) {
-      try { const old = JSON.parse(W.localStorage.getItem('tokpla_aoe_samples') || 'null'); if (Array.isArray(old) && old.length) aoeSamples = old; } catch {}
+      try { const old = aoeClean(JSON.parse(W.localStorage.getItem('tokpla_aoe_samples') || 'null')); if (old.length) aoeSamples = old; } catch {}
       if (!aoeSamples.length) aoeSamples = [[841, 744]];
     }
     let lastRecenter = 0, recenters = 0;
@@ -2788,7 +2845,7 @@
     // 🐛 v6.264: ไฟต์ 22:30 เผยว่าสถิติใหม่ของ v6.252 **เก็บผิดจังหวะจนใช้ไม่ได้** —
     //   `weakTiers: []` (อ่านตอนจบไฟต์ = HUD หายไปแล้ว) · `baitUsed: null` (อ่านหลังสลับเหยื่อคืนเป็นเหยื่อฟาร์มแล้ว)
     //   → ต้อง "จับภาพตอนกำลังสู้จริง" แล้วเก็บไว้ ไม่ใช่ไปอ่านย้อนตอนจบ
-    let snapWeak = [], snapWeakNames = [], snapBait = null, snapBossName = null, snapHpMax = null;
+    let snapWeak = [], snapWeakNames = [], snapBait = null, snapBossName = null, snapHpMax = null, snapHpMaxEnd = null;
     // 🛡️ v6.175: เดิมเงื่อนไขลูปมี isOn('bossHunt') → **ปิดโหมดล่าบอสกลางไฟต์ = ทิ้งบอสทันที**
     //   เจอสด 16:30:14: เข้าตีตอน 16:30:00 แล้วโดนตัดจบใน 14 วิ ("กดเกจ 0") ทั้งที่บอสยืนอยู่ตรงหน้า
     //   ซ้ำร้าย พอเปิดโหมดใหม่ ขา "เข้าถ้ำ" ชนกับขา "กลับบ้าน" → แมพเด้ง ถ้ำ↔บ่อตกปลา 6 รอบ โดนตีฟรีจน HP เหลือ 16%
@@ -2840,12 +2897,18 @@
       //   นี่คือปัญหาหลักที่ผู้ใช้บอก: ไม่เข้าวงเขียว/ไม่หนีวงแดง = โดนตี→มึน→ตาย · เดิมบอทแค่กดกระโดด ไม่ขยับตัว
       //   (deadline เป็น Phaser time เทียบ Date.now ไม่ได้ → เช็คแค่ raidDodge ยังอยู่ + ยังไม่ dodged)
       const _sc = getPhaserScene(); const raid = _sc && _sc.raidDodge;
-      if (raid && _sc.player && !raid.dodged) {
-        const dx = raid.cx - _sc.player.x, dy = raid.cy - _sc.player.y, dist = Math.hypot(dx, dy);
+      // 🎯 v6.265: อ่านวงผ่าน bossDodgeZone (เกมย้ายพิกัดลงไปใน zones[]) · zone=null = อ่านไม่ออก → เตือนดังๆ ครั้งเดียว
+      const zone = (raid && _sc && _sc.player) ? bossDodgeZone(raid, _sc.player.x, _sc.player.y) : null;
+      if (raid && _sc && _sc.player && !zone && !aoeShapeWarned) {
+        aoeShapeWarned = true;
+        logWarn(`⚠️ อ่านวง AoE ไม่ออก — โครง raidDodge เปลี่ยนอีกแล้ว · ฟิลด์ที่มี: [${Object.keys(raid).join(',')}] · zones=${Array.isArray(raid.zones) ? raid.zones.length : 'ไม่มี'} · หลบไม่ได้ไฟต์นี้`);
+      }
+      if (raid && _sc.player && !raid.dodged && zone) {
+        const dx = zone.cx - _sc.player.x, dy = zone.cy - _sc.player.y, dist = zone.dist;
         const green = raid.mode === 'reach';                     // reach=เขียว(เข้า) · flee=แดง(หนี)
         // 🎯 v6.156: relax margin (เกมเช็ค dist<r/dist>r เป๊ะ) — หยุดขยับทันทีที่ "ปลอดภัยพอ+เผื่อ latency นิดเดียว"
         //   เดิม 0.7/1.3 ต้องวิ่งเลยเส้นเยอะ = ช้า/ไม่ทัน deadline (โดยเฉพาะวงโผล่ไกล) → ตาย · 0.9/1.12 = วิ่งน้อยลง ถึงเร็วขึ้น
-        const safe = green ? dist < raid.r * 0.9 : dist > raid.r * 1.12;
+        const safe = green ? dist < zone.r * 0.9 : dist > zone.r * 1.12;
         if (!safe) {
           const gx = green ? dx : -dx, gy = green ? dy : -dy;     // เขียว=เข้าหาศูนย์ · แดง=ทิศตรงข้าม
           const dirs = [];
@@ -2853,18 +2916,7 @@
           if (gy > 6) dirs.push('down'); else if (gy < -6) dirs.push('up');
           // 🚪 v6.157: กัน "เดินหลบทะลุปากทางออกถ้ำ" (boss_cave→village @≈836,915) แล้วหลุดออกจากถ้ำกลางสู้ (เข้าใจผิดว่าตาย)
           //   ต้นเหตุ: หลบ (เข้าเขียว/หนีแดง) ดันตัวไปทางปากทาง → เหยียบพอร์ทัล → เปลี่ยนแมพ · แก้: ใกล้ปากทาง <120px = ตัด "ทิศที่เข้าหาปากทาง" ออก (ยังเดินแนวขนานหลบได้ แต่ไม่ออกถ้ำ)
-          let clampExit = null;    // ปากทางที่ใกล้สุด — ไว้คำนวณ slide ถ้าตัดทิศจนหมด
-          try {
-            for (const ex of (bossMapExits() || [])) {
-              const ecx = ex.x + (ex.w || 0) / 2, ecy = ex.y + (ex.h || 0) / 2, edx = ecx - _sc.player.x, edy = ecy - _sc.player.y;
-              const ed = Math.hypot(edx, edy);
-              if (ed < 120) {
-                if (!clampExit || ed < clampExit.d) clampExit = { dx: edx, dy: edy, d: ed };
-                let i; if (edx > 10) { if ((i = dirs.indexOf('right')) >= 0) dirs.splice(i, 1); } else if (edx < -10 && (i = dirs.indexOf('left')) >= 0) dirs.splice(i, 1);
-                if (edy > 10) { if ((i = dirs.indexOf('down')) >= 0) dirs.splice(i, 1); } else if (edy < -10 && (i = dirs.indexOf('up')) >= 0) dirs.splice(i, 1);
-              }
-            }
-          } catch {}
+          const clampExit = bossExitClamp(dirs, _sc.player.x, _sc.player.y);   // v6.265: ย้ายไปเป็นฟังก์ชันร่วมกับขา melee
           // 🚪 v6.191: ปากทางกินทิศหลบจนหมด แต่ยัง "ไม่ปลอดภัย" → เดิม bossMoveDirs([]) = ยืนนิ่งกิน AoE เต็มๆ
           //   แก้: เลื่อนตัว "ขนานปากทาง" (perpendicular) ทางที่มุ่งเข้าที่ปลอดภัยมากสุด — ขยับหลบได้โดยไม่ทะลุออกถ้ำ
           //   ยังไม่มี log ยืนยันว่าเคยเกิดจริง จึงนับ aoeStalls ไว้ให้ไฟต์หน้าพิสูจน์ (วัดก่อนเชื่อ)
@@ -2878,13 +2930,18 @@
           bossMoveDirs(dirs);
           if (!bossDodging) {
             bossDodging = true; aoeDodges++;
-            aoeSamples.push([Math.round(raid.cx), Math.round(raid.cy)]);   // 🧭 เก็บตำแหน่งวงจริง — จุดกลาง recenter ปรับตามข้อมูลสด
-            if (aoeSamples.length > 30) aoeSamples = aoeSamples.slice(-30);
+            // 🧭 เก็บตำแหน่งวงจริง — จุดกลาง recenter ปรับตามข้อมูลสด
+            // 🐛 v6.265: เดิมยัด NaN ลงไปได้ (ตอน raid.cx หาย) → JSON.stringify กลายเป็น [null,null] → โหลดกลับมาแล้ว
+            //   ค่าเฉลี่ยเป็น NaN → navigate({x:NaN,y:NaN}) = recenter พังถาวรข้ามไฟต์ · ต้องกันที่ "ขาเขียน" ด้วย ไม่ใช่แค่ขาอ่าน
+            if (Number.isFinite(zone.cx) && Number.isFinite(zone.cy)) {
+              aoeSamples.push([Math.round(zone.cx), Math.round(zone.cy)]);
+              if (aoeSamples.length > 30) aoeSamples = aoeSamples.slice(-30);
+            }
             if (aoeKey) try { W.localStorage.setItem(aoeKey, JSON.stringify(aoeSamples)); } catch {}   // v6.178: จำข้ามไฟต์ · v6.247: แยกต่อถ้ำ (คีย์ตรึงตอนเริ่มไฟต์)
             try { _sc.autoWalker.cancel(); } catch {}                 // กัน autoWalker (recenter) เดินแย้งกับ WASD หลบ
             // v6.156: log ตำแหน่งวง (ออกแบบ recenter) · v6.159: + จับ "ตอนหลบตีบอสได้ไหม" — orb เปิด/มีเกจ = ตีระหว่างหลบได้ (ไม่ต้อง facetank) · HP = ประเมิน budget โดน AoE
             const _o = bossHitOrb(), _gz = readGaugeWheel(), _hp = bossPlayerHpPct();
-            logInfo(`🎯 ${green ? 'เข้าวงเขียว' : 'หนีวงแดง'} วง@${Math.round(raid.cx)},${Math.round(raid.cy)} r${Math.round(raid.r)} · ตัว@${Math.round(_sc.player.x)},${Math.round(_sc.player.y)} ระยะ${Math.round(dist)} · orb=${_o ? (_o.disabled ? 'ปิด' : 'เปิด') : 'ไม่มี'} เกจ=${_gz && _gz.ang != null ? 'มี' : 'ไม่มี'} HP=${_hp != null ? Math.round(_hp) + '%' : '?'}`);
+            logInfo(`🎯 ${green ? 'เข้าวงเขียว' : 'หนีวงแดง'} วง@${Math.round(zone.cx)},${Math.round(zone.cy)} r${Math.round(zone.r)}${zone.n > 1 ? ` (ใกล้สุดจาก ${zone.n} วง)` : ''} · ตัว@${Math.round(_sc.player.x)},${Math.round(_sc.player.y)} ระยะ${Math.round(dist)} · orb=${_o ? (_o.disabled ? 'ปิด' : 'เปิด') : 'ไม่มี'} เกจ=${_gz && _gz.ang != null ? 'มี' : 'ไม่มี'} HP=${_hp != null ? Math.round(_hp) + '%' : '?'}`);
           }
           // ⚔️ v6.161: "ตีระหว่างหลบ" — diagnostic v6.159 ยืนยันสด 7/7 ครั้ง: ตอน AoE ทุกครั้ง `orb=เปิด เกจ=มี`
           //   = บอสโจมตีได้ระหว่าง AoE · เดิม continue ข้ามการตี = ทิ้ง DPS ฟรี (~7 ช่วง/ไฟต์)
@@ -2949,7 +3006,9 @@
         if (!snapWeak.length && meta.weakTiers.length) { snapWeak = meta.weakTiers.slice(); snapWeakNames = meta.weakNames.slice(); }
         if (snapBait == null) snapBait = currentBait()?.tier ?? null;
         if (snapBossName == null && meta.name) snapBossName = meta.name;
-        if (snapHpMax == null && meta.hpMax) snapHpMax = meta.hpMax;
+        // 📊 v6.265: HP สูงสุดของบอส **ขยายตามจำนวนคนที่เข้าร่วม** (รอบ 10:30 วัดได้ 114k→152k→190k→228k→266k→304k→342k)
+        //   เดิมเก็บเฟรมแรกค่าเดียว → เอาไปหารกับดาเมจได้ % ที่เทียบข้ามไฟต์ไม่ได้เลย · เก็บทั้งค่าเริ่มและค่าสูงสุด
+        if (meta.hpMax) { if (snapHpMax == null) snapHpMax = meta.hpMax; if (snapHpMaxEnd == null || meta.hpMax > snapHpMaxEnd) snapHpMaxEnd = meta.hpMax; }
         if (meta.hitMode && meta.hitMode !== bossHitMode) {
           bossHitMode = meta.hitMode;
           bossEvent(`👊 โหมดตีบอสรอบนี้: ${meta.hitMode === 'melee' ? 'เข้าประชิดแล้วฟาด (≤60px)' : meta.hitMode === 'charge' ? 'กดค้างชาร์จ 1.8 วิ (x2)' : 'ปาเบ็ด (เกจแบบเดิม)'}${meta.weakNames.length ? ` · จุดอ่อน: ${meta.weakNames.join('+')}` : ''}`);
@@ -2964,6 +3023,8 @@
             const ddx = rb.x - _sc.player.x, ddy = rb.y - _sc.player.y;
             if (ddx > 8) dirs.push('right'); else if (ddx < -8) dirs.push('left');
             if (ddy > 8) dirs.push('down'); else if (ddy < -8) dirs.push('up');
+            // 🚪 v6.265: กันเดินเข้าประชิดแล้วเหยียบปากทางออกถ้ำ (เกิดจริง 10:27:36 = หลุดออกกลางไฟต์ เสียเวลากลับเข้า ~30 วิ)
+            bossExitClamp(dirs, _sc.player.x, _sc.player.y);
             bossMoveDirs(dirs); meleeApproaches++;
             if (!meleeSaid) { meleeSaid = true; logInfo(`👊 โหมดประชิด — เดินเข้าหาบอส (ห่าง ${Math.round(d)}px, ต้อง ≤${BOSS_MELEE_RANGE})`); }
             await sleep(120); continue;   // เดินก่อน ยังไม่ต้องกด
@@ -3061,7 +3122,7 @@
       // v6.264: ใช้ค่าที่ "จับภาพตอนกำลังสู้" — อ่านตอนนี้ไม่ได้แล้ว (HUD หาย + สลับเหยื่อคืนไปแล้ว)
       hitMode: bossHitMode, approaches: meleeApproaches, charges: chargeShots,
       bossName: snapBossName, weakTiers: snapWeak, weakNames: snapWeakNames,
-      baitUsed: snapBait, bossHpMax: snapHpMax,
+      baitUsed: snapBait, bossHpMax: snapHpMax, bossHpMaxEnd: snapHpMaxEnd,
     });
     if (isOn('tgOn')) void tgSend(`👹 <b>จบสู้บอส</b> ${esc(outcome)}\n${esc(stat)}\nกำลังกลับไปฟาร์ม`);
     say(`👹 ${outcome}`);
