@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.278
+// @version      6.279
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.278';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.279';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3127,16 +3127,21 @@
         // 🐛 v6.274: เดิมลองครั้งเดียวแล้วเลิก · ผู้ใช้เจอสด 2 รอบ ต้องปิดบอทเดินเข้าถ้ำเอง
         //   ตายแล้วเกมย้ายแมพ = สภาพแวดล้อมเพิ่งเปลี่ยน (ฉากใหม่/A* ยังไม่พร้อม) — ลองซ้ำคุ้มกว่าทิ้งทั้งรอบ
         //   รอบบอสเปิดเป็นชั่วโมง เสียเวลาลองอีก 2 ครั้งไม่กระทบอะไร แต่ทิ้งไฟต์ = เสีย reward ทั้งรอบ
+        // 🐛 v6.279 (ตรวจซ้ำหลัง v6.278): เดิมใช้ bossGameNavTo = **A* ล้วน ไม่มี fallback เดินเอง**
+        //   ขัดกับหลักฐานสดของวันนี้เอง: A* จากบ่อตกปลาสั่ง 11 ครั้งตัวไม่ขยับสักครั้ง — วิธีที่ได้ผลจริงคือ
+        //   เดินเอง (WASD wall-slide) ซึ่งอยู่ใน bossTravelTo · ลูปต่อรอบ (v6.275) ใช้ bossTravelTo ถูกแล้ว
+        //   แต่ขานี้ยังใช้ตัวเก่า = ตายแล้วกลับไม่ได้ทั้ง 3 ครั้งในสถานการณ์เดียวกับที่เพิ่งเกิด
+        //   (A* fail เร็วแล้วตั้งแต่ v6.277 — rotations ครบ 2 รอบ = เลิกใน ~20 วิ → ตามด้วยเดินเอง)
         let backIn = false;
-        for (let tryN = 1; tryN <= 3 && !backIn; tryN++) {
-          backIn = await bossGameNavTo(fightMap || bossActiveCave(), 25000);
+        for (let tryN = 1; tryN <= 2 && !backIn; tryN++) {
+          backIn = await bossTravelTo(fightMap || bossActiveCave());
           if (!backIn) {
-            say(`⚠️ กลับเข้าถ้ำไม่สำเร็จ (ครั้งที่ ${tryN}/3) — ${bossNavFail || 'ไม่ทราบสาเหตุ'}`);
+            say(`⚠️ กลับเข้าถ้ำไม่สำเร็จ (ครั้งที่ ${tryN}/2) — ${bossNavFail || 'เดินเองก็ไปไม่ถึง'}`);
             if (!enabled || (!isOn('bossHunt') && !mythicActive())) break;   // ถูกสั่งหยุด = เคารพ ไม่ดื้อลองต่อ
             await sleep(1500);
           }
         }
-        if (!backIn) { say('⚠️ กลับเข้าถ้ำไม่สำเร็จครบ 3 ครั้ง — เลิกสู้รอบนี้'); break; }
+        if (!backIn) { say('⚠️ กลับเข้าถ้ำไม่สำเร็จครบ 2 ครั้ง (ทั้ง A*+เดินเอง) — เลิกสู้รอบนี้'); break; }
         say('✅ กลับเข้าถ้ำได้แล้ว — สู้ต่อ');
         continue;
       }
@@ -7788,14 +7793,20 @@ ${esc(reason)}
         if (paused) { warnPausedNearBoss(); updateBadge(); return requestAnimationFrame(tick); }
         if (now() - lastIdleWork >= 150) {
           lastIdleWork = now();
+          // v6.279: bossOnly เปิดแต่ bossHunt ถูกปิดทีหลัง = ไม่ตกปลาและไม่ล่าบอส → ยืนเฉยทั้งวันแบบเงียบๆ
+          //   (คลาสปัญหาเดียวกับ "พักแล้วเงียบจนพลาดรอบบอส" v6.250 — ต้องส่งเสียง ไม่ใช่ปล่อยเงียบ)
+          if (!isOn('bossHunt') && now() - lastBossOnlyWarn > 300000) {
+            lastBossOnlyWarn = now();
+            say('⚠️ โหมด "ล่าบอสอย่างเดียว" เปิดอยู่ แต่โหมดล่าบอสถูกปิด — บอทไม่มีอะไรทำเลย (เปิดล่าบอส หรือกดปุ่มม่วงเพื่อกลับไปฟาร์ม)');
+          }
           if (popupWatchdog()) return requestAnimationFrame(tick);   // dialog ค้างก็ทำให้เดินไม่ได้เหมือนกัน
           if (bossHuntDue()) { void runBossHunt(); return requestAnimationFrame(tick); }
           // ค้างในถ้ำโดยไม่มีบอส → ออกมารอ (ไม่งั้นยืนในถ้ำยาว ๆ โดยไม่มีอะไรทำ)
           if (now() - lastBossEscapeAt > 15000 && strandedInBossCave()) {
             lastBossEscapeAt = now(); void escapeBossCave(); return requestAnimationFrame(tick);
           }
+          updateBadge();   // v6.279: อยู่ใน throttle 150ms — เดิมอยู่นอก = วาด DOM ~60 ครั้ง/วิ ฟรีๆ
         }
-        updateBadge();
         return requestAnimationFrame(tick);   // ⛔ ไม่ไหลลงไปตกปลา/ขาย/เควส/NPC ใด ๆ ทั้งสิ้น
       }
       const state = gameState();
@@ -8468,7 +8479,7 @@ ${esc(reason)}
     mythicBtn.style.background = bg;
   }
   // 👹 ปุ่มเริ่ม/หยุดล่าบอส — แยกจากปุ่มบอทตกปลาปกติ (v6.140) · สถานะสด: กำลังเดิน/สู้/รอเวลา/ปิด
-  let bossBtn = null, lastBossBtnTxt = '', bossSoloPaint = null;   // v6.278: bossSoloPaint = ทาสีปุ่ม "ล่าอย่างเดียว" ใหม่เมื่อค่าเปลี่ยนจากที่อื่น
+  let bossBtn = null, lastBossBtnTxt = '', bossSoloPaint = null, lastBossOnlyWarn = 0;   // v6.278: bossSoloPaint = ทาสีปุ่ม "ล่าอย่างเดียว" ใหม่เมื่อค่าเปลี่ยนจากที่อื่น
   function refreshBossBtn() {
     if (!bossBtn) return;
     // 👹 v6.278: บอกให้ชัดว่ากำลังอยู่โหมดไหน — "ล่าอย่างเดียว" กับ "ล่าคู่ฟาร์ม" พฤติกรรมต่างกันมาก
