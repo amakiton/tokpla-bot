@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.291
+// @version      6.292
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.291';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.292';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -233,6 +233,9 @@
     // 🎯 v6.282: สลับเข้าโหมดล่าอย่างเดียว "อัตโนมัติ" ก่อนถึงเวลาบอส แล้วออกเองเมื่อจบทริป
     // 🎣 v6.286: ลุงหยัด (NPC แลกปลา · ท่าเรือทะเล) — เก็บปลาที่ลุงต้องการไว้ ไม่เอาไปขาย
     npcYad: true,                // เปิด = กันขายปลาที่ลุงหยัดต้องการ (รายการอ่านจากแผงลุงเอง ไม่ hardcode)
+    // 🎣 v6.292: ระบบเดินไปแลกกับลุงหยัดอัตโนมัติ — เลือกรางวัลที่จะแลก + ครบแล้วเดินไปแลกเอง
+    yadReward: '',               // รางวัลที่เลือกแลก (ชื่อรางวัล เช่น "กาแฟนักตกปลา") · '' = ทุกข้อเสนอ · เลือกจากแผงตั้งค่า (อ่านจากที่ลุงเสนอจริง)
+    yadAutoTrade: false,         // เปิด = พอปลาครบตามข้อเสนอที่เลือก บอทเดินไปหาลุงหยัดแล้วกดแลกให้เอง แล้วกลับมาฟาร์มต่อ
     bossBaitStockMax: 6,         // 🎲 v6.284: ตุนเหยื่อขั้น 1..N ไว้ก่อนล่าบอส (จุดอ่อนสุ่มต่อรอบ ทำนายไม่ได้) · ขั้น 7-8 แพงเกินคุ้ม
     bossOnlyAuto: true,          // เปิด = พอใกล้เวลาบอส หยุดฟาร์มเองก่อนออกเดินทาง (กันงานค้างทำให้ไปสาย)
     bossOnlyLeadMin: 5,          // กี่นาทีก่อนเวลาบอส ให้เข้าโหมดล่าอย่างเดียว (ระบบบังคับ ≥ "ไปก่อน (นาที)")
@@ -7604,6 +7607,147 @@
       return { map, rows, raw, ok: true };
     } catch { return null; }
   }
+  // 🎣 v6.292: อ่าน "ข้อเสนอเต็ม" จากแผงลุงหยัดที่เปิดอยู่ — ปลาที่ใช้ + จำนวน + รางวัล + ปุ่มแลก (กดได้ไหม)
+  //   โครงจริงที่อ่านสด (2026-07-26): ต่อ 1 ข้อเสนอ = การ์ดที่มี "ปลาหยุด ×150" + "4/150" + "☕ กาแฟนักตกปลา x2" + ปุ่ม "ปลาไม่พอ"/"แลกเลย"
+  //   ปลาที่ต้องใช้ใช้ "×" (U+00D7) · รางวัลใช้ "x" (ascii) → แยกสองอย่างออกจากกันได้ชัด (ยืนยันจาก DOM จริง ไม่เดา)
+  const YAD_OFFERS_KEY = 'tokpla_yad_offers';
+  function yadReadOffers() {
+    const offers = [];
+    try {
+      for (const btn of document.querySelectorAll('button')) {
+        if (isBotUI(btn) || btn.offsetParent === null) continue;
+        const bt = (btn.textContent || '').trim();
+        if (!/ปลาไม่พอ|แลกเลย|^แลก(เลย)?$/.test(bt)) continue;   // ปุ่มแลกของลุงหยัด (ไม่พอ=ดับ · แลกเลย=กดได้)
+        // ไต่หา "การ์ดข้อเสนอ" = element เล็กสุดเหนือปุ่มที่มีทั้ง ×จำนวน และ มี/ต้องการ
+        let card = btn;
+        for (let i = 0; i < 6 && card; i++) {
+          const t = card.innerText || '';
+          if (/×\s*\d/.test(t) && /\d\s*\/\s*\d/.test(t)) break;
+          card = card.parentElement;
+        }
+        if (!card) continue;
+        const t = card.innerText || '';
+        const fm = /([^\n×]{2,28}?)\s*×\s*(\d{1,5})/.exec(t);   // ชื่อปลา × ที่ต้องใช้
+        const pm = /(\d{1,5})\s*\/\s*(\d{1,5})/.exec(t);        // มี / ต้องการ
+        if (!fm || !pm) continue;
+        const need = +fm[2], have = +pm[1], target = +pm[2];
+        if (need !== target) continue;                          // เป้าสองที่ต้องตรง = ยืนยันอ่านถูกการ์ด
+        // รางวัล: บรรทัดที่ลงท้ายด้วย "x<เลข>" (ascii x) และไม่มี × (กันไปโดนแถวปลา)
+        let reward = '', rewardQty = 0;
+        const rl = t.split('\n').map((s) => s.trim())
+          .find((s) => /x\s*\d{1,4}$/i.test(s) && !s.includes('×') && !/^\d+\s*\/\s*\d+$/.test(s));
+        if (rl) { const rm = /^(.*?)\s*x\s*(\d{1,4})$/i.exec(rl); if (rm) { reward = rm[1].replace(/^[^฀-๿a-zA-Z0-9]+/, '').trim(); rewardQty = +rm[2]; } }
+        offers.push({ fish: fm[1].trim(), need, have, reward, rewardQty, canExchange: !btn.disabled && !/ปลาไม่พอ/.test(bt), btn });
+      }
+    } catch {}
+    return offers;
+  }
+  const yadOffers = () => { try { return JSON.parse(W.localStorage.getItem(YAD_OFFERS_KEY) || '[]') || []; } catch { return []; } };
+  function yadSaveOffers(offers) {
+    try {
+      const clean = offers.map((o) => ({ fish: o.fish, need: o.need, reward: o.reward, rewardQty: o.rewardQty }))
+        .filter((o) => o.fish && o.need > 0);
+      if (!clean.length) return;
+      const old = yadOffers();
+      if (JSON.stringify(old) === JSON.stringify(clean)) return;
+      W.localStorage.setItem(YAD_OFFERS_KEY, JSON.stringify(clean));
+      logInfo(`🎣 จำข้อเสนอลุงหยัด ${clean.length} รายการ: ${clean.map((o) => `${o.fish}×${o.need}→${o.reward}×${o.rewardQty}`).join(' · ')}`);
+    } catch {}
+  }
+  // ข้อเสนอที่ "เลือกไว้จะแลก" — ตาม cfg.yadReward ('' = ทุกข้อเสนอ · ไม่งั้นเทียบชื่อรางวัลแบบมีคำนั้น)
+  function yadTargetOffers() {
+    const all = yadOffers();
+    const pick = String(cfg.yadReward || '').trim();
+    if (!pick) return all;
+    return all.filter((o) => o.reward && o.reward.includes(pick));
+  }
+  // ปลาที่ต้อง "ล็อกไว้ไม่ขาย" ตามข้อเสนอที่เลือก → ชนิด → จำนวนสูงสุดที่ต้องใช้
+  function yadKeepMap() {
+    const m = {};
+    for (const o of yadTargetOffers()) m[o.fish] = Math.max(m[o.fish] || 0, o.need);
+    return m;
+  }
+  // นับปลาชนิดหนึ่งที่ "ขายได้/ปลดล็อก" ในกระเป๋า (เปิดกระเป๋าอ่าน — แพง เรียกแบบ throttle)
+  async function yadOwnedCount(species) {
+    let n = 0; busy = true;
+    try {
+      await ensureMenuOpen();
+      if (!(await openBagUI())) return 0;
+      if (!(await waitFor(() => readBag().some((c) => npcVisible(c.el)), 4000, 200))) { await closeMenu(); return 0; }
+      for (const c of readBag()) if (c.species === species) n += Math.max(0, c.count - (c.lockedCount || 0));
+      await closeMenu();
+    } catch (e) { logErr('yadOwnedCount', e); } finally { busy = false; }
+    return n;
+  }
+  // 🎣 v6.292: เดินไปหาลุงหยัด (ท่าเรือทะเล) → เปิดแผง → กดแลกข้อเสนอที่เลือกจนกดไม่ได้ → กลับมาฟาร์ม
+  const YAD_MAP = 'sea_dock', YAD_NPC = 'yad', YAD_XY = { x: 1120, y: 410 };
+  async function runYadTrade() {
+    if (orchestrating || busy) return;
+    orchestrating = true;
+    const here = bossMapId();
+    const home = (here && !isBossMap(here) && here !== 'fisher_town') ? here : (lastFishMap() || homeMapId() || YAD_MAP);
+    let traded = 0;
+    try {
+      gameEscape();
+      say('🎣 ปลาครบตามข้อเสนอลุงหยัด — เดินไปแลกที่ท่าเรือทะเล');
+      if (!(await bossGameNavTo(YAD_MAP, 90000, true))) { say('🎣 ไปท่าเรือทะเลไม่สำเร็จ'); return; }
+      // เดินเข้าใกล้ลุงหยัดจน scene.nearNpcId === 'yad'
+      try { getPhaserScene().autoWalker.navigate({ x: YAD_XY.x, y: YAD_XY.y, mapId: YAD_MAP }); } catch {}
+      if (!(await waitFor(() => { try { return getPhaserScene()?.nearNpcId === YAD_NPC; } catch { return false; } }, 15000, 300))) {
+        say('🎣 เดินเข้าใกล้ลุงหยัดไม่สำเร็จ'); return;
+      }
+      // เปิดแผง (คีย์ E) — ยืนยันด้วยว่ามีข้อเสนอโผล่จริง
+      for (let k = 0; k < 4 && !yadReadOffers().length; k++) { gameHotkey('KeyE', 69); await sleep(500); }
+      if (!yadReadOffers().length) { say('🎣 เปิดแผงลุงหยัดไม่สำเร็จ (ไม่เจอข้อเสนอ)'); return; }
+      const picks = yadTargetOffers();
+      const wantReward = (o) => !picks.length || picks.some((p) => p.reward === o.reward && p.need === o.need);
+      // กดแลกทุกข้อเสนอที่เลือกไว้ + ปุ่มกดได้ (ครบจำนวน) · วนซ้ำเพราะแลกทีละอันแล้ว have อาจเปลี่ยน
+      for (let round = 0; round < 6; round++) {
+        const offers = yadReadOffers().filter((o) => wantReward(o) && o.canExchange);
+        if (!offers.length) break;
+        const o = offers[0];
+        const beforeRaw = (yadReadPanel() || {}).raw || '';
+        fireClick(o.btn); await sleep(1200);
+        // ยืนยันแลกสำเร็จ: ข้อเสนอเดิม have ลดลง (raw เปลี่ยน) หรือปุ่มกลับเป็นกดไม่ได้
+        const afterRaw = (yadReadPanel() || {}).raw || '';
+        const okNow = yadReadOffers().find((x) => x.reward === o.reward && x.need === o.need);
+        if (afterRaw !== beforeRaw || (okNow && !okNow.canExchange)) {
+          traded++;
+          say(`🎣 แลกสำเร็จ: ${o.fish}×${o.need} → ${o.reward}×${o.rewardQty} (เข้ากล่องจดหมาย)`);
+          bossEvent(`🎣 แลกลุงหยัด: ${o.fish}×${o.need} → ${o.reward}×${o.rewardQty}`);
+          if (isOn('tgOn')) void tgSend(`🎣 <b>แลกลุงหยัด</b> ${esc(o.fish)}×${o.need} → ${esc(o.reward)}×${o.rewardQty}`);
+        } else { say('🎣 กดแลกแล้วแต่ยืนยันผลไม่ได้ — หยุดไว้ก่อน (กันกดซ้ำ)'); break; }
+      }
+      npcCloseDialog(); await sleep(300);
+      if (!traded) say('🎣 ยังแลกไม่ได้ (ปลายังไม่ครบ/ปุ่มกดไม่ได้) — กลับไปฟาร์มต่อ');
+      lastYadTradeAt = now();
+      if (home && home !== YAD_MAP) await bossGameNavTo(home, 90000, true);
+      else if (home === YAD_MAP) { /* อยู่ท่าเรือแล้ว ฟาร์มต่อได้เลย */ }
+    } catch (e) { logErr('runYadTrade', e); }
+    finally { npcCloseDialog(); bossReleaseAll(); orchestrating = false; lastCast = now(); pendingCast = 0; }
+  }
+  let lastYadTradeAt = NEVER, lastYadCheckAt = NEVER;
+  const YAD_TRADE_COOLDOWN = 8 * 60000;   // หลังไปแลก 1 เที่ยว เว้น 8 นาที (กันไปๆกลับๆถี่)
+  const YAD_CHECK_MS = 5 * 60000;         // นับกระเป๋าเช็คทุก 5 นาที (เปิดกระเป๋า = แพง)
+  // เช็คว่าถึงเวลาไปแลกลุงหยัดไหม — เรียกจาก idle branch (throttle หนัก)
+  async function yadTradeCheck() {
+    if (!isOn('npcYad') || !isOn('yadAutoTrade')) return;
+    if (orchestrating || busy || bossPhase !== 'idle' || paused || testRunning) return;
+    if (now() - lastYadTradeAt < YAD_TRADE_COOLDOWN) return;
+    if (now() - lastYadCheckAt < YAD_CHECK_MS) return;
+    const targets = yadTargetOffers();
+    if (!targets.length) return;                             // ยังไม่รู้ข้อเสนอ (ต้องเปิดแผงลุงครั้งหนึ่งก่อน) — ไม่เดา
+    lastYadCheckAt = now();
+    // นับปลาแต่ละชนิดที่ข้อเสนอเลือกไว้ต้องใช้ (เปิดกระเป๋าครั้งเดียว)
+    const species = [...new Set(targets.map((o) => o.fish))];
+    const owned = {};
+    for (const sp of species) owned[sp] = await yadOwnedCount(sp);
+    const ready = targets.find((o) => (owned[o.fish] || 0) >= o.need);
+    if (ready) {
+      logInfo(`🎣 ปลา ${ready.fish} ครบ ${owned[ready.fish]}/${ready.need} — ไปแลก ${ready.reward}`);
+      void runYadTrade();
+    }
+  }
   function pickSpecies(cards) {
     const list = cfg.speciesList.split(',').map((s) => s.trim()).filter(Boolean);
 
@@ -7628,7 +7772,10 @@
     //   ถ้าไม่กันตรงนี้ ระบบขายจะระบายปลาที่ต้องสะสมทิ้งทุกครั้งที่กระเป๋าถึงเกณฑ์ = สะสมไม่มีวันครบ
     //   (คลาสเดียวกับบทเรียน "ใช้ของที่มี ถูกล่ามกับปุ่มซื้อ" — ระบบหนึ่งทำลายงานของอีกระบบเงียบๆ)
     if (isOn('npcYad')) {
-      for (const [sp, need] of Object.entries(yadWants())) {
+      // v6.292: ล็อกเฉพาะปลาของ "รางวัลที่เลือกไว้" (yadKeepMap) · ถ้ายังไม่รู้ข้อเสนอ ใช้ wants เดิมกันเหนียว
+      const keepM = yadKeepMap();
+      const src = Object.keys(keepM).length ? keepM : yadWants();
+      for (const [sp, need] of Object.entries(src)) {
         const have = sellableOf.get(sp) || 0;
         if (have > 0) keep(sp, `ลุงหยัดต้องการ ${need} ตัว (มี ${have})`);
       }
@@ -8109,6 +8256,8 @@ ${esc(reason)}
           }
         } catch {}
         if (r.ok) yadSaveWants(r.map);
+        // 🎣 v6.292: เก็บ "ข้อเสนอเต็ม" (ปลา+จำนวน+รางวัล) ไว้ให้แผงตั้งค่าเลือกรางวัล + ระบบแลกอัตโนมัติใช้
+        try { const offers = yadReadOffers(); if (offers.length) yadSaveOffers(offers); } catch {}
       }
     }
     if (enabled && !busy && !orchestrating) {
@@ -8382,6 +8531,8 @@ ${esc(reason)}
         }
         // 🏪 v6.150: ระบบ NPC เมืองประมง — ถึงเกณฑ์ปลา (ระดับ+จำนวน) → ไปฝากลุงคลัง/แลกยายแก่น แล้วกลับ (self-throttle เปิดกระเป๋านับทุก 2 นาที)
         void npcErrandCheck();
+        // 🎣 v6.292: ปลาครบตามข้อเสนอลุงหยัดที่เลือก → เดินไปแลกที่ท่าเรือทะเลแล้วกลับ (self-throttle นับกระเป๋าทุก 5 นาที · คูลดาวน์ 8 นาที)
+        void yadTradeCheck();
 
         // 🛡️ v6.217: กันหน้าต่างหีบ (รางวัล/คูลดาวน์) ค้างบังจอหลังจบทริป → ตกปลาต่อไม่ได้ (บั๊ก v6.216)
         //   จำกัดเฉพาะ ~60 วิ หลังเพิ่งไปเก็บหีบ (กันเผลอปิด dialog อื่นที่บังเอิญมีปุ่ม "ปิด" เหมือนกัน)
@@ -9587,23 +9738,51 @@ ${esc(reason)}
       yadBtn.textContent = '🎣 สถานะลุงหยัด';
       yadBtn.style.cssText = 'padding:5px 10px;border-radius:7px;border:1px solid #4a5568;background:#2d3748;color:#e2e8f0;font-size:11px;cursor:pointer;margin:2px 3px 6px 0;';
       yadBtn.addEventListener('click', () => {
-        const w = yadWants();
-        const ks = Object.keys(w);
         const NL = String.fromCharCode(10);
-        say(ks.length
-          ? `🎣 ลุงหยัดต้องการ:${NL}${ks.map((k) => `  ${k} → ${w[k]} ตัว (บอทกันไม่ให้ขายแล้ว)`).join(NL)}`
-          : '🎣 ยังไม่รู้ว่าลุงหยัดต้องการอะไร — เดินไปคุยกับลุงที่ท่าเรือทะเลสักครั้ง บอทจะอ่านรายการจากแผงแล้วจำเอง (ไม่ต้องตั้งค่า)');
+        const offs = yadOffers();
+        if (!offs.length) {
+          say('🎣 ยังไม่รู้ข้อเสนอลุงหยัด — เดินไปคุยกับลุงที่ท่าเรือทะเลแล้วกด E สักครั้ง บอทจะอ่านแล้วจำเอง');
+          return;
+        }
+        const pick = String(cfg.yadReward || '').trim();
+        const tgt = yadTargetOffers();
+        const lines = offs.map((o) => {
+          const chosen = tgt.some((p) => p.reward === o.reward && p.need === o.need);
+          return `  ${chosen ? '✅' : '▫️'} ${o.fish} ×${o.need} → ${o.reward} ×${o.rewardQty}`;
+        });
+        say(`🎣 ข้อเสนอลุงหยัด (${offs.length} รายการ):${NL}${lines.join(NL)}${NL}`
+          + `รางวัลที่เลือก: ${pick || 'ทุกข้อเสนอ'} · เดินไปแลกเอง: ${isOn('yadAutoTrade') ? 'เปิด 🤖' : 'ปิด (กดแลกเอง)'}${NL}`
+          + `บอทกันปลาพวกนี้ไว้ไม่ขายแล้ว (✅ = ที่เลือกไว้จะแลก)`);
       });
       panel.appendChild(row(
-        '🎣 ลุงหยัด — เก็บปลาที่ลุงต้องการไว้แลกของ (ท่าเรือทะเล)',
-        '**บอทจะไม่ขายปลาที่ลุงหยัดต้องการ** — ถ้าไม่กันตรงนี้ ระบบขายจะระบายทิ้งทุกครั้งที่กระเป๋าถึงเกณฑ์ = สะสมไม่มีวันครบ · '
-        + 'รายการที่ลุงต้องการ **อ่านจากแผงของลุงเอง ไม่ได้ตั้งค่าตายตัว** (ตารางมาจากเซิร์ฟเวอร์เหมือนตารางบอส) · '
-        + '📌 **วิธีใช้: เดินไปคุยกับลุงแล้วกด E สักครั้ง** บอทจะอ่านแล้วจำเอง จากนั้นกันปลาชนิดนั้นไว้อัตโนมัติ · '
-        + '📋 ของจริงที่อ่านมาแล้ว: `ปลาหยุด ×100 → เหยื่อปลอมปลาเงิน ×20` และ `ปลาหยุด ×150 → ☕ กาแฟนักตกปลา ×2` '
-        + '(ใช้ปลาชนิดเดียวกัน → เก็บถึง 150 แลกได้ทั้งคู่ · กาแฟจากลุง**ไม่นับลิมิต 3 แก้ว/วันของร้าน**) · '
-        + '⚠️ ยังไม่ให้บอทเดินไปแลกเอง — ตอนนี้ต้องกดแลกเอง (ปุ่มจะเปลี่ยนจาก "ปลาไม่พอ" เป็นกดได้เมื่อครบ)',
+        '🎣 ลุงหยัด — เก็บปลา + เดินไปแลกของอัตโนมัติ (ท่าเรือทะเล)',
+        '**บอทจะไม่ขายปลาที่ใช้แลก** — ถ้าไม่กันตรงนี้ ระบบขายจะระบายทิ้งทุกครั้งที่กระเป๋าถึงเกณฑ์ = สะสมไม่มีวันครบ · '
+        + 'รายการที่ลุงรับ **อ่านจากแผงของลุงเอง ไม่ได้ตั้งค่าตายตัว** (ตารางมาจากเซิร์ฟเวอร์) · '
+        + '📌 **ครั้งแรก: เดินไปคุยกับลุงแล้วกด E สักครั้ง** บอทจะอ่านข้อเสนอทั้งหมดแล้วจำเอง จากนั้นเลือก "รางวัลที่จะแลก" ด้านล่างได้ · '
+        + '📋 ของจริง: `ปลาหยุด ×150 → ☕ กาแฟนักตกปลา ×2` และ `ปลาหยุด ×100 → เหยื่อปลอมปลาเงิน ×20` '
+        + '(กาแฟจากลุง**ไม่นับลิมิต 3 แก้ว/วันของร้าน**) · '
+        + '🤖 เปิด "เดินไปแลกเอง" = พอปลาครบตามรางวัลที่เลือก บอทจะหยุดฟาร์ม เดินไปหาลุง กดแลกให้ (เข้ากล่องจดหมาย) แล้วกลับมาฟาร์มต่อ',
         labeled('เปิด', checkbox('npcYad')),
       ));
+      // เลือกรางวัลที่จะแลก — ตัวเลือกสร้างจากข้อเสนอที่ "อ่านมาจริง" (yadOffers)
+      {
+        const offs = yadOffers();
+        const opts = [['', 'ทุกข้อเสนอที่ครบ']];
+        for (const o of offs) opts.push([o.reward, `${o.reward} ×${o.rewardQty} (ใช้ ${o.fish} ${o.need})`]);
+        // ถ้าค่าที่ตั้งไว้ไม่อยู่ในลิสต์ (ข้อเสนอเปลี่ยน) ใส่ไว้กันหาย
+        if (cfg.yadReward && !opts.some(([v]) => v === cfg.yadReward)) opts.push([cfg.yadReward, `${cfg.yadReward} (ไม่พบในข้อเสนอปัจจุบัน)`]);
+        panel.appendChild(row(
+          'รางวัลที่จะแลก',
+          offs.length ? 'เลือกว่าจะสะสมปลาไปแลกอะไร · "ทุกข้อเสนอ" = แลกอันไหนครบก่อนแลกอันนั้น (เก็บปลาถึงจำนวนมากสุด)'
+            : '⚠️ ยังไม่มีข้อเสนอให้เลือก — เดินไปคุยกับลุงหยัดที่ท่าเรือทะเลแล้วกด E สักครั้งก่อน แล้วเปิดแผงนี้ใหม่',
+          selectInput('yadReward', opts),
+        ));
+        panel.appendChild(row(
+          'เดินไปแลกเอง (อัตโนมัติ)',
+          'พอปลาครบ บอทเดินไปแลกให้เอง แล้วกลับมาฟาร์ม · ปิด = แค่เก็บปลาไว้ คุณไปกดแลกเอง',
+          labeled('เปิด', checkbox('yadAutoTrade')),
+        ));
+      }
       panel.appendChild(yadBtn);
     }
 
