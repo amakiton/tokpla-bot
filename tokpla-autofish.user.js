@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.270
+// @version      6.271
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.270';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.271';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -221,6 +221,9 @@
     //   ⚠️ แยก "ใช้ของที่มี" ออกจาก "ซื้อ" เสมอ (บทเรียนเดิม: gate ด้วยสวิตช์ซื้อ = ปิดซื้อแล้วไม่ใช้ของฟรีเลย)
     bossHpPotion: true,          // ❤️ กินยาฟื้นเลือดตอนสู้บอสเมื่อเลือดต่ำ (ใช้ของในกระเป๋า ไม่ซื้อเอง)
     bossHpPotionAt: 45,          // กินเมื่อเลือดเหลือ ≤ กี่ % (ต่ำไป=ตายก่อนได้กิน · สูงไป=เปลืองตอนยังไม่จำเป็น)
+    bossHpPotionBuy: true,       // 🛒 ซื้อยาตุนก่อนเข้าถ้ำ (ในถ้ำซื้อไม่ได้) — เสียเงินจริง 2,500 🪙/ขวด
+    bossHpPotionKeep: 2,         // อยากมีติดตัวกี่ขวดก่อนเข้าถ้ำ (เกมถือได้สูงสุด 5)
+    bossHpPotionMaxBuy: 2,       // เพดานซื้อต่อ 1 รอบล่า (กันดูดเงินถ้าอ่านจำนวนเพี้ยน)
     potionWeight: true,          // 🐋 ยาปลาตัวใหญ่ (+15% น้ำหนัก=ราคาขาย 30 นาที · 2,000 🪙)
     potionLuck: false,           // 🍀 ยาโชคปลาแรร์ (+8% โอกาสแรร์ 30 นาที · 2,500 🪙)
     potionMinCph: 25000,         // ซื้อยาเฉพาะเมื่อรายได้ ≥ กี่ 🪙/ชม. (ต่ำกว่านี้ไม่คุ้มต้นทุนยา)
@@ -3365,6 +3368,54 @@
   // 👹 เตรียมเหยื่อ "ก่อนเข้าถ้ำบอส" (ในถ้ำซื้อไม่ได้) — v6.243 เสริม safety net หลังผู้ใช้เจอ "เหยื่อหมด ตีบอสไม่ได้"
   //   ตีบอสต้องมีเหยื่อติดเบ็ด (bossFight สลับเป็นเหยื่อจุดอ่อน) · เหยื่อหมดเกลี้ยง = ตีไม่ได้เลย = เสียรอบทั้งรอบ
   //   เดิมมีแต่ "ซื้อเหยื่อจุดอ่อน" ที่ return เงียบ 6 จุดเมื่อซื้อไม่ได้ → ไม่การันตีว่ามีเหยื่อจริง
+  // ❤️ v6.271: ซื้อยาฟื้นเลือดตุนไว้ก่อนเข้าถ้ำ (ในถ้ำเปิดร้านไม่ได้)
+  //   ⚠️ นี่คือ "การใช้เงินจริง" — ต้องมีเพดานชัดเจน 3 ชั้น กันดูดเงินเงียบๆ:
+  //     ① เป้าจำนวนที่ถือ (bossHpPotionKeep) · ② เพดานซื้อต่อรอบล่า · ③ แจ้ง Telegram ทุกครั้งที่ซื้อ
+  //   ราคา 2,500 🪙/ขวด · ของเกม `consumableHoldMax: 5` = ถือได้มากสุด 5 ชิ้น
+  const HP_POTION_PRICE = 2500, HP_POTION_HOLD_MAX = 5;
+  // นับจำนวนที่มีจากแถวในร้าน (แถวร้านโชว์ "มี N" แบบเดียวกับเหยื่อ) — อ่านไม่ออกคืน null (ห้ามเดาว่า 0 แล้วซื้อรัว)
+  function hpPotionStock() {
+    try {
+      const row = [...document.querySelectorAll('div[class*="tk-inner"]')].find((r) => /กาแฟเข้ม/.test(r.textContent || ''));
+      if (!row) return { row: null, stock: null };
+      const m = /(?:มี|คงเหลือ|x|×)\s*(\d+)/.exec(row.textContent || '');
+      return { row, stock: m ? +m[1] : null };
+    } catch { return { row: null, stock: null }; }
+  }
+  async function stockBossHpPotion() {
+    if (!isOn('bossHpPotion') || !isOn('bossHpPotionBuy')) return;
+    const keep = clamp(cfg.bossHpPotionKeep || 2, 1, HP_POTION_HOLD_MAX);
+    try {
+      await shopTab('🧪 ยา'); await sleep(350);
+      const { row, stock } = hpPotionStock();
+      if (!row) { logWarn('❤️ หา "กาแฟเข้ม" ในร้านไม่เจอ — ข้ามการตุนยา (เกมอาจเปลี่ยนชื่อ/ย้ายแท็บ)'); return; }
+      if (stock == null) { logWarn('❤️ อ่านจำนวนยาที่มีไม่ออก — ไม่ซื้อ (กันซื้อซ้ำจนเงินหมด)'); return; }
+      let need = keep - stock;
+      if (need <= 0) return;                                   // มีพอแล้ว — ไม่ต้องเสียเงิน
+      const cap = clamp(cfg.bossHpPotionMaxBuy || 2, 1, HP_POTION_HOLD_MAX);
+      if (need > cap) need = cap;                              // เพดานต่อรอบล่า
+      let bought = 0;
+      for (let i = 0; i < need; i++) {
+        const { row: r2 } = hpPotionStock();
+        const add = r2 && [...r2.querySelectorAll('button')].find((b) => /ใส่ตะกร้า/.test(b.textContent) && !b.disabled);
+        if (!add) break;
+        fireClick(add); await sleep(300);
+        const buy = btnByText('ซื้อเลย!') || btnByText('เหรียญไม่พอ');
+        if (!buy || buy.disabled || /เหรียญไม่พอ/.test(buy.textContent)) { say('❤️ เงินไม่พอซื้อยาฟื้นเลือด — เข้าถ้ำด้วยของที่มี'); break; }
+        fireClick(buy);
+        const done = await waitFor(() => { const t = document.body.innerText; if (t.includes('✅ ซื้อสำเร็จ!')) return 'ok'; if (t.includes('❌')) return 'fail'; return null; }, 8000);
+        if (done !== 'ok') break;
+        bought++; await sleep(350);
+      }
+      if (bought) {
+        const cost = bought * HP_POTION_PRICE;
+        profit.life.potionCost += cost; saveProfit(); refreshProfit();   // นับเป็นต้นทุนจริง ไม่ให้กำไรดูสวยเกิน
+        say(`❤️ ตุนยาฟื้นเลือด ${bought} ขวด (−${cost.toLocaleString()} 🪙) — มี ${stock + bought}/${keep} พร้อมเข้าถ้ำ`);
+        // การซื้อ = เสียเงินจริง → แจ้งเสมอ ไม่ขึ้นกับ tgTrade (ธรรมเนียมเดียวกับ v6.182 ตอนซื้อเหยื่อ)
+        if (isOn('tgOn')) void tgSend(`❤️ ซื้อยาฟื้นเลือด ${bought} ขวด (<b>${cost.toLocaleString()} 🪙</b>) ก่อนล่าบอส`);
+      }
+    } catch (e) { logErr('ตุนยาฟื้นเลือดล้มเหลว', e); }
+  }
   async function ensureBossBaitStock() {
     if (isBossMap(bossMapId())) return;
     const bt = cfg.bossBaitTier;
@@ -3396,6 +3447,9 @@
           if (isOn('tgOn')) void tgSend('🔴 <b>เหยื่อหมด + ซื้อไม่ได้</b> — บอสรอบนี้อาจตีไม่ได้ (เช็คเงิน/เหยื่อในร้าน)');
         }
       }
+      // 3) ❤️ v6.271: ตุน "กาแฟเข้ม" (ยาฟื้นเลือด) ก่อนเข้าถ้ำ — ในถ้ำซื้อไม่ได้เหมือนเหยื่อ
+      //   ร้านอยู่คนละแท็บ (🧪 ยา) จึงทำท้ายสุด แล้วปิดร้านทีเดียว
+      await stockBossHpPotion();
       await sleep(200); await closeShop();
     } catch (e) { logErr('เตรียมเหยื่อบอสล้มเหลว', e); await closeShop(); }
     finally { busy = false; }
@@ -8694,9 +8748,15 @@ ${esc(reason)}
       + '**ใช้ของที่มีอยู่เท่านั้น ไม่ซื้อเอง** — ยาราคา 2,500 🪙 ที่ร้าน ถ้าอยากให้มีติดตัวต้องซื้อเอง · '
       + 'ลำดับความสำคัญ: **หลบ AoE มาก่อนเสมอ** ยาเป็นตาข่ายชั้นสองตอนหลบไม่ทัน ไม่ใช่ตัวแทนการหลบ · '
       + 'ถ้าเกมมีปุ่มใช้ด่วนใน HUD จะกดปุ่มนั้น (เร็ว) · ไม่มีก็เปิดกระเป๋ากิน แต่ทำเฉพาะจังหวะที่ไม่มีวง AoE ค้าง (เปิดกระเป๋า ~2.5 วิ = ยืนกินดาเมจ) · '
-      + 'ยืนยันผลจากเลือดที่ขึ้นจริง ไม่ใช่แค่ "กดแล้ว" · กินไม่ขึ้น 3 ครั้ง = เลิกลองไฟต์นั้น (กันเสียจังหวะตี)',
+      + 'ยืนยันผลจากเลือดที่ขึ้นจริง ไม่ใช่แค่ "กดแล้ว" · กินไม่ขึ้น 3 ครั้ง = เลิกลองไฟต์นั้น (กันเสียจังหวะตี) · '
+      + '🛒 **ซื้อตุนก่อนเข้าถ้ำ = เสียเงินจริง 2,500 🪙/ขวด** (ในถ้ำเปิดร้านไม่ได้ ต้องซื้อตอนอยู่นอกถ้ำ) · '
+      + 'กันเงินรั่ว 3 ชั้น: ซื้อเฉพาะส่วนที่ขาดจาก "อยากมีติดตัว" · จำกัดจำนวนต่อรอบล่า · อ่านจำนวนที่มีไม่ออก = **ไม่ซื้อเลย** · '
+      + 'ทุกครั้งที่ซื้อจะแจ้ง Telegram และนับเป็นต้นทุนในกำไรสุทธิเสมอ',
       labeled('เปิด', checkbox('bossHpPotion')),
       labeled('กินเมื่อเลือด ≤ (%)', numInput('bossHpPotionAt', 5, 95, 48)),
+      labeled('🛒 ซื้อตุนก่อนเข้าถ้ำ', checkbox('bossHpPotionBuy')),
+      labeled('อยากมีติดตัว (ขวด)', numInput('bossHpPotionKeep', 1, 5, 44)),
+      labeled('ซื้อได้สูงสุด/รอบ', numInput('bossHpPotionMaxBuy', 1, 5, 44)),
     ));
 
     {
