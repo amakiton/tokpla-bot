@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.273
+// @version      6.274
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.273';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.274';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2558,7 +2558,12 @@
   //   เกม pump step() เองใน update loop → ไม่ต้องกดปุ่มเอง · จุดถึงต่อแมพ = โซนตกปลา/สู้ (เดินไปจุดไหนก็ได้ เกมหาเส้นเอง)
   const BOSS_NAV_TARGET = { boss_cave: { x: 841, y: 445 }, sea_dock: { x: 350, y: 490 }, village: { x: 752, y: 490 }, river_bank: { x: 1467, y: 700 }, fisher_town: { x: 687, y: 770 }, ice_village: { x: 700, y: 500 }, lotus_marsh: { x: 700, y: 500 } };
   const gameWalker = () => { try { const sc = getPhaserScene(); return sc && sc.autoWalker && typeof sc.autoWalker.navigate === 'function' ? sc.autoWalker : null; } catch { return null; } };
+  // 🐛 v6.274: เดิม bossGameNavTo คืน false ได้ 3 ทางโดย **ไม่บอกว่าเพราะอะไร** → ผู้เรียกพิมพ์
+  //   "กลับเข้าถ้ำไม่สำเร็จ — เลิกสู้" ลอยๆ · ผู้ใช้เจอสด 2 รอบ (16:32:31 และ 16:37:02) แล้วต้องปิดบอทเดินเข้าถ้ำเอง
+  //   วินิจฉัยไม่ได้เลยว่าเป็นเพราะฉากยังไม่พร้อม / บอทถูกปิด / หมดเวลาจริง → ต้องแยกให้ออก
+  let bossNavFail = '';
   async function bossGameNavTo(targetMap, maxMs = 90000, anyMode = false) {
+    bossNavFail = '';
     gameEscape();   // ⎋ v6.165: story dialog (เช่น "ฤๅษีเงา") ยึด input ระหว่างเดินทาง = ตัวไม่เดิน — ล้างก่อนเสมอ
     // 🐛 v6.273 (เห็นสด 16:32:31): ตายกลางไฟต์ → เกมย้ายแมพ+สร้างฉากใหม่ → `gameWalker()` ยังไม่พร้อมชั่วครู่
     //   เดิม `return false` ทันที → ผู้เรียกพิมพ์ "กลับเข้าถ้ำไม่สำเร็จ — เลิกสู้" **ทั้งที่รอบบอสยังเหลืออีกหลายนาที**
@@ -2566,7 +2571,7 @@
     let aw = gameWalker();
     if (!aw) {
       aw = await waitFor(() => gameWalker(), Math.min(8000, maxMs), 250);
-      if (!aw) return false;
+      if (!aw) { bossNavFail = 'ฉากยังไม่พร้อม (walker ไม่มา ใน 8 วิ)'; return false; }
     }
     const t = BOSS_NAV_TARGET[targetMap] || { x: 700, y: 500 };
     // 🐛 v6.262: จุดเป้าหมายสำรอง — บทเรียนเดียวกับ v6.260 (เดินเข้าบ่อ)
@@ -2584,7 +2589,7 @@
       out.push({ x: t.x, y: t.y + 200 }, { x: t.x - 200, y: t.y }, { x: t.x + 200, y: t.y }, { x: 700, y: 500 });
       return out;
     };
-    let navIdx = 0, stuckRounds = 0;
+    let navIdx = 0, stuckRounds = 0, navFails = 0;   // v6.274: navFails = navigate() หาเส้นไม่ได้ติดกันกี่ครั้ง
     const t0 = now(); let lastNav = 0, lastP = null, stillFor = 0;
     // 🐛 v6.221: anyMode = ผู้เรียกที่ไม่ใช่บอส/ปลาเทพ (ธุระเมือง NPC) — เดิม no-op เงียบเมื่อ bossHunt ปิด → ธุระเมืองพัง + วน bag-full
     let lastGateProbe = 0;
@@ -2616,10 +2621,25 @@
         lastNav = now(); stillFor = 0;
         const nt = navTargets()[navIdx] || t;
         let ok = false; try { ok = aw.navigate({ x: Math.round(nt.x), y: Math.round(nt.y), mapId: targetMap }); } catch {}
-        if (!ok) { if (bossNavArrived(targetMap)) return true; return false; }   // หาเส้นไม่ได้ → ให้ fallback ทำต่อ (ยกเว้นถึงแล้ว)
+        // 🐛 v6.274 (ผู้ใช้เจอสด 2 รอบ แล้วต้องปิดบอทเดินเข้าถ้ำเอง): เดิม navigate() คืน falsy = **return false ทันทีรอบแรก**
+        //   → ขา "ตายแล้วกลับเข้าถ้ำ" ที่ให้งบมา 60 วิ ใช้ไปจริง <1 วิ แล้วพิมพ์ "กลับเข้าถ้ำไม่สำเร็จ — เลิกสู้"
+        //   ความจริง: A* หาเส้นไม่ได้ "จากจุดนี้ไปจุดนั้น" ไม่ได้แปลว่าไปไม่ได้เลย — จุดสำรองอื่นอาจไปได้
+        //   ใหม่: หมุนไปจุดถัดไปแล้วลองต่อ ยอมแพ้เมื่อวนครบ 2 รอบทุกจุด (หรือหมดงบเวลา) เท่านั้น
+        if (!ok) {
+          if (bossNavArrived(targetMap)) return true;
+          navFails++;
+          const listLen = navTargets().length;
+          navIdx = (navIdx + 1) % listLen;
+          if (navFails >= listLen * 2) { bossNavFail = `A* หาเส้นไปไม่ได้ ครบทุกจุดสำรอง (${listLen} จุด × 2 รอบ)`; return false; }
+          lastNav = 0;   // ให้ยิงจุดใหม่ได้ทันที ไม่ต้องรอ 2.5 วิ
+        } else navFails = 0;
       }
       await sleep(400);
     }
+    // v6.274: แยกให้ออกว่าออกจากลูปเพราะอะไร — ไม่งั้นวินิจฉัยไม่ได้ว่าต้องแก้ตรงไหน
+    if (!bossNavFail) bossNavFail = !enabled ? 'บอทถูกปิดกลางทาง'
+      : (!anyMode && !isOn('bossHunt') && !mythicActive()) ? 'โหมดล่าบอสถูกปิดกลางทาง'
+      : `หมดเวลาที่ให้ (${Math.round(maxMs / 1000)} วิ)`;
     return bossNavArrived(targetMap);
   }
   // v6.247: "ถึงเป้าหรือยัง" — เป้าเป็นถ้ำบอส ให้ถ้ำบอสถ้ำไหนก็นับ (เกมหมุนเวียนถ้ำ)
@@ -3075,7 +3095,20 @@
         await sleep(died ? 10000 : 800);   // ตาย = รอ respawn · เดินออก = กลับทันที
         // 🐛 v6.247: เดิมกลับเข้า BOSS_MAP เสมอ → ตายในถ้ำที่หมุนเวียนมา (naga_vortex ฯลฯ) = ถูกพากลับ **ถ้ำผิดใบ**
         //   ตอนนี้ใช้ถ้ำที่กำลังสู้อยู่จริง (จำไว้ตอนเห็นบอสครั้งแรก) — แม่นกว่าเดาจากประตู
-        if (!(await bossGameNavTo(fightMap || bossActiveCave(), 60000))) { say('⚠️ กลับเข้าถ้ำไม่สำเร็จ — เลิกสู้'); break; }
+        // 🐛 v6.274: เดิมลองครั้งเดียวแล้วเลิก · ผู้ใช้เจอสด 2 รอบ ต้องปิดบอทเดินเข้าถ้ำเอง
+        //   ตายแล้วเกมย้ายแมพ = สภาพแวดล้อมเพิ่งเปลี่ยน (ฉากใหม่/A* ยังไม่พร้อม) — ลองซ้ำคุ้มกว่าทิ้งทั้งรอบ
+        //   รอบบอสเปิดเป็นชั่วโมง เสียเวลาลองอีก 2 ครั้งไม่กระทบอะไร แต่ทิ้งไฟต์ = เสีย reward ทั้งรอบ
+        let backIn = false;
+        for (let tryN = 1; tryN <= 3 && !backIn; tryN++) {
+          backIn = await bossGameNavTo(fightMap || bossActiveCave(), 25000);
+          if (!backIn) {
+            say(`⚠️ กลับเข้าถ้ำไม่สำเร็จ (ครั้งที่ ${tryN}/3) — ${bossNavFail || 'ไม่ทราบสาเหตุ'}`);
+            if (!enabled || (!isOn('bossHunt') && !mythicActive())) break;   // ถูกสั่งหยุด = เคารพ ไม่ดื้อลองต่อ
+            await sleep(1500);
+          }
+        }
+        if (!backIn) { say('⚠️ กลับเข้าถ้ำไม่สำเร็จครบ 3 ครั้ง — เลิกสู้รอบนี้'); break; }
+        say('✅ กลับเข้าถ้ำได้แล้ว — สู้ต่อ');
         continue;
       }
       // 🏁 บอสเคยมาแล้วตอนนี้หายไป (ยืนยัน >1.5วิ กันอ่านพลาด) → จบทันที เก็บ reward กลับไปฟาร์ม (ไม่รอครบ maxMin เปล่าๆ)
