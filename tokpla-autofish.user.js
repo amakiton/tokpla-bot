@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.295
+// @version      6.296
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.295';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.296';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2943,7 +2943,16 @@
         lastNav = now();
         if (useWalk && exitZone && exitZone.x != null) {
           // เดินชนปากประตูตรงๆ — วิธีที่ได้ผลแน่เมื่อประตูเปิดแล้ว (ไม่พึ่ง A* ข้ามแมพ)
-          void bossWalkTo(exitZone.x, exitZone.y + (exitZone.height ? 30 : 0), { thresh: 12, maxMs: 1100 });
+          // 🎯 v6.296: เดินไป "กลางโซนประตู" (ไม่ใช่ขอบซ้าย x ที่อาจอยู่ในกำแพง) — ยืนยันสด: WASD ชนกลางโซน = เข้าได้
+          void bossWalkTo(exitZone.x + (exitZone.width || 0) / 2, exitZone.y + (exitZone.height || 0) / 2, { thresh: 12, maxMs: 1100 });
+        } else if (exitZone && exitZone.x != null) {
+          // 🎯 v6.296 (ยืนยันสด 23:20 — ผู้ใช้เจอบั๊ก "ตายแล้วเข้าถ้ำไม่ถูกตำแหน่ง"):
+          //   A* ไป "พิกัดในถ้ำ" (target ข้ามแมพ) → ข้ามประตูไม่ได้ → snap ไปมุมแมพ (เช่น 27,20) → WASD จากมุมเข้าประตูไม่ได้ (กำแพงกั้น)
+          //   วิธีที่พิสูจน์แล้วว่าได้ผล: A* ไป "จุดข้างประตูฝั่งในแมพ" (เดินถึงได้จริง) → แล้ว WASD ชนประตู
+          //   จุด approach = กลางโซนประตู + ขยับ 140px เข้าหากลางแมพ (ประตูขอบซ้าย → approach อยู่ทางขวา)
+          const gcx = exitZone.x + (exitZone.width || 0) / 2, gcy = exitZone.y + (exitZone.height || 0) / 2;
+          const dx = 700 - gcx, dy = 500 - gcy, dd = Math.hypot(dx, dy) || 1;
+          try { gameWalker()?.navigate({ x: Math.round(gcx + dx / dd * 140), y: Math.round(gcy + dy / dd * 140), mapId: cur }); } catch {}
         } else {
           try { gameWalker()?.navigate({ x: target.x, y: target.y, mapId: dest }); } catch {}
         }
