@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.299
+// @version      6.300
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.299';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.300';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -7253,7 +7253,15 @@
     }
     return m || homeMapId() || 'lotus_marsh';
   };
-  let lastPondWalk = 0, lastPondSay = 0, pondWalkStart = 0;
+  // 📍 v6.300 (ผู้ใช้ขอ): "จุดตกปลาที่บันทึกเอง" ต่อแมพ — เก็บพิกัดเป๊ะที่ผู้ใช้ยืน แล้วบอทเดินไปจุดนั้นก่อนเหวี่ยง
+  //   แก้ปัญหา sea_dock: nearPond=true ตั้งแต่บนหาด → บอทยืนผิดจุดเหวี่ยงไม่ออก · บันทึกจุดบนสะพานเอง = ตรงเป๊ะ
+  const FISH_SPOT_KEY = 'tokpla_fish_spots';       // { mapId: {x,y} }
+  const FISH_SPOT_TOL = 40;                        // ถึงจุด = ห่าง ≤ 40px (A* ลงไม่เป๊ะ เผื่อไว้)
+  const fishSpots = () => { try { return JSON.parse(W.localStorage.getItem(FISH_SPOT_KEY) || '{}') || {}; } catch { return {}; } };
+  const fishSpot = (m) => { if (!m) return null; const s = fishSpots()[m]; return (s && typeof s.x === 'number' && typeof s.y === 'number') ? s : null; };
+  const saveFishSpot = (m, x, y) => { if (!m) return false; try { const all = fishSpots(); all[m] = { x: Math.round(x), y: Math.round(y) }; W.localStorage.setItem(FISH_SPOT_KEY, JSON.stringify(all)); return true; } catch { return false; } };
+  const clearFishSpot = (m) => { try { const all = fishSpots(); if (all[m] != null) { delete all[m]; W.localStorage.setItem(FISH_SPOT_KEY, JSON.stringify(all)); } } catch {} };
+  let lastPondWalk = 0, lastPondSay = 0, pondWalkStart = 0, spotWalkStart = 0;
   // 🐛 v6.260 (ผู้ใช้อัดวิดีโอมา 2 รอบ: "ถึงจุดหมายเควสแล้ว เด้งรัวไม่หยุด"):
   //   หลักฐานจากคลิป — ตัวละคร **อยู่จุดเดิมเป๊ะ 16 วินาที** · `บอท: เปิด — 0 / ∞` (ไม่เหวี่ยงเลย) · toast เด้งซ้ำ
   //   สาเหตุ: สั่ง `navigate()` ไปจุดที่ A* หาเส้นไม่ได้ (ติดน้ำ/กำแพง) → เกมสแนปเป็น "ถึงแล้ว" ทันที
@@ -7279,6 +7287,25 @@
     if (near === null) { pondWalkStart = 0; return false; }   // อ่านไม่ได้ (กำลังโหลด/transition) = ไม่ยุ่ง
     const aw = gameWalker(); if (!aw) return false;
     const curMap = bossMapId();
+    // 📍 v6.300 (ผู้ใช้ขอ): มี "จุดตกปลาที่บันทึกไว้" ของแมพนี้ → เดินไปจุดนั้นเป๊ะก่อน — สำคัญกว่า nearPond
+    //   (nearPond ที่ sea_dock ติด true ตั้งแต่บนหาด → บอทยืนผิดจุดเหวี่ยงไม่ออก · จุดที่บันทึกเองอยู่บนสะพานจริง)
+    const spot = fishSpot(curMap);
+    if (spot) {
+      const pp = bossPlayerXY();
+      if (pp && Math.hypot(pp.x - spot.x, pp.y - spot.y) <= FISH_SPOT_TOL) {   // ถึงจุดที่บันทึกแล้ว = ตกปลาได้เลย
+        spotWalkStart = 0; pondWalkStart = 0; pondTryIdx = 0; pondStuckN = 0; pondLastPos = null; saveFishMap(curMap); return false;
+      }
+      if (!spotWalkStart) spotWalkStart = now();
+      if (now() - spotWalkStart <= 45000) {   // ภายใน 45 วิ = พยายามเดินไปจุดที่บันทึก
+        if (now() - lastPondWalk >= 3000) {   // อย่าสั่ง navigate ถี่เกิน
+          lastPondWalk = now();
+          try { aw.navigate({ x: spot.x, y: spot.y, mapId: curMap }); } catch {}
+          if (now() - lastPondSay > 30000) { lastPondSay = now(); logInfo(`📍 เดินไปจุดตกปลาที่บันทึกไว้ (${spot.x},${spot.y}) — แมพ ${curMap}`); }
+        }
+        return true;
+      }
+      // เกิน 45 วิ ยังไปไม่ถึง (A* ไปไม่ได้/จุดเพี้ยน) → ปล่อยตรรกะ nearPond เดิมทำต่อ (กันค้าง)
+    } else if (spotWalkStart) spotWalkStart = 0;   // ไม่มีจุดบันทึกแล้ว (ถูกล้าง) = รีเซ็ต
     const fz = bossFishingZone();
     // v6.260: ถึงบ่อแล้ว = ล้างสถานะการไล่จุดเป้าหมายทั้งหมด (ไม่งั้นรอบหน้าเริ่มจากจุดสำรองที่ค้างไว้)
     if (near === true) { pondWalkStart = 0; pondTryIdx = 0; pondStuckN = 0; pondLastPos = null; saveFishMap(curMap); return false; }   // อยู่ริมบ่อแล้ว — จำแมพนี้เป็น "แมพตกปลา"
@@ -9735,6 +9762,50 @@ ${esc(reason)}
       labeled('เหยื่อจุดอ่อน (ขั้น)', numInput('bossBaitTier', 0, 8, 44)),
       labeled('แมพบ้าน', smallTextInput('bossHomeMap', 'เช่น ท่าเรือทะเล', 110)),
     ));
+
+    // 📍 v6.300 (ผู้ใช้ขอ): บันทึก/ล้าง "จุดตกปลา" ของแมพปัจจุบัน — บอทเดินมาจุดนี้ก่อนเหวี่ยงทุกครั้งที่ตกปลาแมพนี้
+    //   แก้ปัญหา sea_dock (nearPond ติดตั้งแต่บนหาด → บอทยืนผิดจุด): บันทึกจุดบนสะพานเอง = ตรงเป๊ะ
+    {
+      const wrap = document.createElement('div');
+      wrap.setAttribute('data-tkbot', '1');
+      wrap.style.cssText = 'margin:0 0 8px;';
+      const info = document.createElement('div');
+      info.setAttribute('data-tkbot', '1');
+      info.style.cssText = 'font-size:10.5px;color:#a0aec0;margin:0 0 4px;line-height:1.45;';
+      const refresh = () => {
+        const m = bossMapId();
+        const sp = m ? fishSpot(m) : null;
+        info.textContent = m
+          ? (sp ? `📍 จุดตกปลาแมพนี้ (${m}): ${sp.x},${sp.y} — บอทจะเดินมาจุดนี้ก่อนเหวี่ยง`
+                : `📍 แมพนี้ (${m}) ยังไม่บันทึกจุด — เดินตัวไปยืนจุดที่อยากตก แล้วกด "บันทึกจุด"`)
+          : '📍 อ่านชื่อแมพไม่ได้ตอนนี้ (ลองใหม่หลังโหลดแมพเสร็จ)';
+      };
+      const saveBtn = document.createElement('button');
+      saveBtn.setAttribute('data-tkbot', '1');
+      saveBtn.textContent = '📍 บันทึกจุดตกปลา (แมพนี้)';
+      saveBtn.style.cssText = 'padding:6px 10px;border-radius:7px;border:none;background:#2f6f55;color:#fff;font-weight:700;font-size:11px;cursor:pointer;margin:2px 6px 4px 0;';
+      saveBtn.addEventListener('click', () => {
+        const m = bossMapId(), p = bossPlayerXY();
+        if (!m || !p) { say('📍 บันทึกไม่ได้ — อ่านตำแหน่ง/แมพไม่ได้ตอนนี้ (ต้องอยู่ในเกม + เปิดแท็บไว้หน้าสุด)'); return; }
+        saveFishSpot(m, p.x, p.y); spotWalkStart = 0;
+        say(`📍 บันทึกจุดตกปลาแมพ ${m} = (${Math.round(p.x)},${Math.round(p.y)}) แล้ว — ต่อไปบอทจะเดินมาจุดนี้ก่อนเหวี่ยง`);
+        refresh();
+      });
+      const clrBtn = document.createElement('button');
+      clrBtn.setAttribute('data-tkbot', '1');
+      clrBtn.textContent = '🗑️ ล้างจุด (แมพนี้)';
+      clrBtn.style.cssText = 'padding:6px 10px;border-radius:7px;border:1px solid #4a5568;background:#2d3748;color:#e2e8f0;font-size:11px;cursor:pointer;margin:2px 3px 4px 0;';
+      clrBtn.addEventListener('click', () => {
+        const m = bossMapId();
+        if (!m) { say('📍 ล้างไม่ได้ — อ่านชื่อแมพไม่ได้ตอนนี้'); return; }
+        clearFishSpot(m); spotWalkStart = 0;
+        say(`🗑️ ล้างจุดตกปลาแมพ ${m} แล้ว — กลับไปใช้ระบบเดินเข้าบ่ออัตโนมัติ`);
+        refresh();
+      });
+      refresh();
+      wrap.appendChild(info); wrap.appendChild(saveBtn); wrap.appendChild(clrBtn);
+      panel.appendChild(wrap);
+    }
 
     // 🎥 v6.239: ปุ่มดูข้อมูลดักเลขดาเมจต่อครั้ง (ตัวดักเปิดตลอด ไม่มีสวิตช์ — อ่านอย่างเดียว)
     {
