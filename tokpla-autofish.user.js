@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.284
+// @version      6.285
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.284';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.285';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3165,6 +3165,7 @@
     // 🥁 v6.266: สถิติจังหวะ — จดว่า "กดที่เฟสไหนของบีต แล้วเกมตอบว่าอะไร" เพื่อหาว่าบีตอยู่ตรงไหน
     const beatBuckets = Array.from({ length: BEAT_NB }, () => ({ n: 0, score: 0 }));
     let beatLockSlot = null;          // ช่องที่ล็อกแล้ว (ms ใน 0..1199) · null = ยังวัดอยู่
+    let beatMissRun = 0;              // v6.285: หลุดจังหวะติดกันกี่ครั้งหลังล็อก (ครบ 3 = ปลดล็อกจับใหม่)
     let beatStartedAt = 0;            // startedAt จริงจาก fiber (ถ้าหาเจอ = แม่นสุด)
     let beatFindTried = false;
     let tapWait = null;               // { at, slot } — การกดที่รอผลตอบกลับ
@@ -3175,13 +3176,28 @@
       if (!tapWait || now() - tapWait.at < 260) return;   // รอ HUD เด้งก่อน (เกมเด้งเร็วกว่านี้ไม่ทัน)
       const { fb, combo } = readTapFeedback();
       if (combo != null && combo > comboMax) comboMax = combo;
+      const tapWaitSlot = tapWait.slot;   // v6.285: เก็บไว้ก่อน tapWait ถูกล้าง (ใช้เป็นสมอจังหวะ)
       const b = beatBuckets[Math.floor(tapWait.slot / BEAT_BUCKET) % BEAT_NB];
       if (fb === 'perfect') { tapFb.perfect++; b.n++; b.score += 2; }
       else if (fb === 'good') { tapFb.good++; b.n++; b.score += 1; }
       else if (fb === 'miss') { tapFb.miss++; b.n++; b.score -= 1; }
       else tapFb.none++;
       tapWait = null;
-      // ล็อกได้เมื่อมีตัวอย่างพอ + ช่องที่ดีสุดชนะขาด (กันล็อกจากเสียงรบกวน)
+      // 🥁 v6.285 — **ล็อกจังหวะแบบ "จับสมอ" แทนการสะสมสถิติ 24 ตัวอย่าง**
+      //   หลักฐานจาก 4 ไฟต์จริงว่าดีไซน์เดิมใช้ไม่ได้: กด 73/97/75/35 ครั้ง แต่ได้ตัวอย่างที่ใช้ได้แค่ 5/8/8/7
+      //   (ที่เหลือ `ไม่ตอบ` 15/23/14/6 — เพราะปุ่มตีมีคูลดาวน์ การกดส่วนใหญ่ไม่ได้กลายเป็นการตีจริง)
+      //   ⇒ ไม่มีทางถึง 24 ตัวอย่างในไฟต์เดียว · และเฟสข้ามไฟต์ไม่ได้ (`startedAt` คนละค่าต่อ raid)
+      //   ⇒ วิธีที่ถูก: **โดน "เป๊ะ" หรือ "ดี" แค่ครั้งเดียวก็รู้เฟสแล้ว** — จังหวะนั้นคือบีต
+      //      จากนั้นยิงที่ anchor + k×1200ms · แม่นทันทีแทนที่จะรอสะสม
+      if (beatLockSlot == null && (fb === 'perfect' || fb === 'good')) {
+        beatLockSlot = tapWaitSlot;
+        logInfo(`🥁 จับจังหวะได้จาก "${fb === 'perfect' ? 'เป๊ะ' : 'ดี'}" ครั้งเดียว — ล็อกบีตที่ ${beatLockSlot}ms แล้วยิงตามทุก 1.2 วิ`);
+      } else if (beatLockSlot != null && fb === 'miss' && ++beatMissRun >= 3) {
+        // หลุด 3 ครั้งติดหลังล็อก = สมอเพี้ยน (เฟสเลื่อน/อ่านผลผิด) → ปลดล็อกไปจับใหม่ ดีกว่ายิงผิดที่ต่อ
+        beatMissRun = 0; beatLockSlot = null;
+        logInfo('🥁 หลุดจังหวะ 3 ครั้งติด — ปลดล็อกไปจับสมอใหม่');
+      } else if (fb === 'perfect' || fb === 'good') beatMissRun = 0;
+      // (ของเดิม) ล็อกจากสถิติ — เก็บไว้เป็นทางสำรองกรณีไม่เคยได้ "เป๊ะ/ดี" เลย
       if (beatLockSlot == null && tapFb.perfect + tapFb.good + tapFb.miss >= 24) {
         const ranked = beatBuckets.map((v, i) => ({ i, avg: v.n ? v.score / v.n : -9, n: v.n })).filter((v) => v.n >= 2).sort((a, b2) => b2.avg - a.avg);
         if (ranked.length >= 3 && ranked[0].avg >= 0.8 && ranked[0].avg - ranked[ranked.length - 1].avg >= 1.2) {
