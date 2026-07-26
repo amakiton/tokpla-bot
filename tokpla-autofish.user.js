@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.269
+// @version      6.270
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.269';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.270';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -216,6 +216,11 @@
     buyCoffee: false,            // ซื้อ ☕ กาแฟเติมพลังในร้าน (หลังเก็บเควสหมด) เพื่อตกต่อเนื่อง 24 ชม.
     coffeeAtEnergy: 35,          // ซื้อกาแฟเมื่อพลัง ≤ กี่ % (เก็บเควสก่อน ถ้าไม่พอค่อยซื้อ) · กาแฟ +50 พลัง 1,500 🪙
     buyPotion: false,            // ซื้อยาบัฟอัตโนมัติเมื่อบัฟหมด (เฉพาะตอนรายได้/ชม.ถึงเกณฑ์ = คุ้ม)
+    // ❤️ v6.270: ยาฟื้นเลือดตอนสู้บอส — "กาแฟเข้ม" (potion_hp) ฟื้น 35% คูลดาวน์ 45 วิ
+    //   ค่าจากเกม: hpPotionHealPct 35 · hpPotionCooldownSec 45 · เลือดสู้บอส = 100 + 2×เลเวล (Lv.66 = 232)
+    //   ⚠️ แยก "ใช้ของที่มี" ออกจาก "ซื้อ" เสมอ (บทเรียนเดิม: gate ด้วยสวิตช์ซื้อ = ปิดซื้อแล้วไม่ใช้ของฟรีเลย)
+    bossHpPotion: true,          // ❤️ กินยาฟื้นเลือดตอนสู้บอสเมื่อเลือดต่ำ (ใช้ของในกระเป๋า ไม่ซื้อเอง)
+    bossHpPotionAt: 45,          // กินเมื่อเลือดเหลือ ≤ กี่ % (ต่ำไป=ตายก่อนได้กิน · สูงไป=เปลืองตอนยังไม่จำเป็น)
     potionWeight: true,          // 🐋 ยาปลาตัวใหญ่ (+15% น้ำหนัก=ราคาขาย 30 นาที · 2,000 🪙)
     potionLuck: false,           // 🍀 ยาโชคปลาแรร์ (+8% โอกาสแรร์ 30 นาที · 2,500 🪙)
     potionMinCph: 25000,         // ซื้อยาเฉพาะเมื่อรายได้ ≥ กี่ 🪙/ชม. (ต่ำกว่านี้ไม่คุ้มต้นทุนยา)
@@ -2919,6 +2924,54 @@
     let fightMap = '';   // 🧭 v6.247: ถ้ำที่สู้อยู่จริง (จำตอนเห็นบอส) — ใช้พากลับเข้าถ้ำ "ใบเดิม" หลังตาย
     // 👊 v6.252: โหมดตีของบอสรอบนี้ + ตัวนับไว้พิสูจน์ว่าระบบใหม่ทำงาน (ไฟต์ 19:29 ได้ 0.1% เพราะไม่รู้ว่าต้องเข้าประชิด)
     let bossHitMode = null, meleeApproaches = 0, chargeShots = 0, meleeSaid = false;
+    // ❤️ v6.270: ยาฟื้นเลือดระหว่างไฟต์ · ชื่อไอเทมในเกม = "กาแฟเข้ม" (potion_hp)
+    //   ⚠️ ระวังชื่อชนกับ "กาแฟนักตกปลา" (ยาพลังงาน) — บั๊ก v6.267 มาจากตรงนี้เป๊ะ ใช้ชื่อเต็มเท่านั้น
+    const HP_POTION_RE = /กาแฟเข้ม/;
+    const HP_POTION_CD = 45000;   // hpPotionCooldownSec 45 — กินก่อนครบ = เกมปฏิเสธ เสียจังหวะเปล่า
+    let potionUses = 0, potionFails = 0, lastPotionAt = 0, potionQuickPath = null, potionGaveUp = false, lastPotionChk = 0;
+    // หา "ปุ่มกดใช้ด่วน" ของยา — ถ้าเจอตอนกระเป๋ายังไม่เปิด แปลว่าเกมมีช่องใช้ด่วนใน HUD (คลิกเดียวจบ)
+    //   ไม่เจอ = ต้องเปิดกระเป๋า (~2.5 วิ) ซึ่งกลางไฟต์แปลว่ายืนกิน AoE → ทำเฉพาะตอนไม่มีวงเตือน
+    const hpPotionQuickBtn = () => {
+      try {
+        return [...document.querySelectorAll('button')].find((b) =>
+          !isBotUI(b) && b.offsetParent && !b.disabled &&
+          (HP_POTION_RE.test(b.getAttribute('aria-label') || '') || HP_POTION_RE.test(b.textContent || ''))) || null;
+      } catch { return null; }
+    };
+    async function bossTryHpPotion(hpPct) {
+      if (!isOn('bossHpPotion') || potionGaveUp) return false;
+      if (hpPct == null || hpPct > clamp(cfg.bossHpPotionAt || 45, 5, 95)) return false;
+      if (now() - lastPotionAt < HP_POTION_CD) return false;         // เกมเตือน "เพิ่งกินไป รอครบ 45 วินาที"
+      if (bossDisabledNow()) return false;                            // ล้ม/สตันอยู่ = เกมไม่ให้กิน (ฟื้นแล้วเลือดเต็มเอง)
+      const before = hpPct;
+      lastPotionAt = now();                                           // จองคูลดาวน์ก่อน — ล้มเหลวก็ไม่รัวซ้ำ
+      // ทางที่ 1: ปุ่มใช้ด่วน (เร็ว ไม่ต้องเปิดกระเป๋า = ไม่ทิ้งจังหวะหลบ)
+      const quick = hpPotionQuickBtn();
+      if (quick) {
+        if (potionQuickPath == null) { potionQuickPath = 'ด่วน'; logInfo('❤️ เจอปุ่มใช้ยาด่วนใน HUD — กินได้โดยไม่ต้องเปิดกระเป๋า'); }
+        fireClick(quick); await sleep(600);
+      } else {
+        // ทางที่ 2: เปิดกระเป๋า — ช้า (~2.5 วิ) ทำเฉพาะตอน "ไม่มีวง AoE ค้าง" ไม่งั้นยืนกินดาเมจแทนที่จะรอด
+        const raidNow = (() => { try { return getPhaserScene()?.raidDodge; } catch { return null; } })();
+        if (raidNow) return false;
+        if (potionQuickPath == null) { potionQuickPath = 'กระเป๋า'; logInfo('❤️ ไม่มีปุ่มใช้ด่วน — ต้องเปิดกระเป๋ากิน (ช้ากว่า ทำเฉพาะจังหวะไม่มีวง AoE)'); }
+        bossReleaseAll();                                             // ปล่อยปุ่มเดินก่อน ไม่งั้นค้างเดินตอนแผงเปิด
+        busy = true;
+        try { await useConsumable(HP_POTION_RE); } catch {} finally { busy = false; }
+      }
+      // ✅ ยืนยัน "ผลจริง" ไม่ใช่ค่าที่ฟังก์ชันคืน (บทเรียนเดิม: คืน true ทั้งที่ไม่เกิดอะไร)
+      await sleep(400);
+      const after = bossPlayerHpPct();
+      if (after != null && after > before + 5) {
+        potionUses++;
+        logInfo(`❤️ กินยาฟื้นเลือด — HP ${Math.round(before)}% → ${Math.round(after)}% (ครั้งที่ ${potionUses})`);
+        return true;
+      }
+      potionFails++;
+      if (potionFails === 1) logWarn(`❤️ กินยาแล้วเลือดไม่ขึ้น (${Math.round(before)}%→${after == null ? '?' : Math.round(after)}%) — อาจไม่มี "กาแฟเข้ม" ในกระเป๋า หรือกดไม่ติด`);
+      if (potionFails >= 3) { potionGaveUp = true; logWarn('❤️ กินยาไม่สำเร็จ 3 ครั้ง — เลิกลองไฟต์นี้ (กันเสียจังหวะตีบอส)'); }
+      return false;
+    }
     // 🐛 v6.264: ไฟต์ 22:30 เผยว่าสถิติใหม่ของ v6.252 **เก็บผิดจังหวะจนใช้ไม่ได้** —
     //   `weakTiers: []` (อ่านตอนจบไฟต์ = HUD หายไปแล้ว) · `baitUsed: null` (อ่านหลังสลับเหยื่อคืนเป็นเหยื่อฟาร์มแล้ว)
     //   → ต้อง "จับภาพตอนกำลังสู้จริง" แล้วเก็บไว้ ไม่ใช่ไปอ่านย้อนตอนจบ
@@ -3125,6 +3178,13 @@
       if (present) {
         // 🥁 v6.266: เก็บผลการกดครั้งก่อน + หา startedAt ครั้งเดียวต่อไฟต์ (fiber walk แพง)
         beatSettle();
+        // ❤️ v6.270: เลือดต่ำ → กินยา · วางไว้ "หลัง" บล็อกหลบ AoE (บล็อกนั้น continue ไปแล้ว)
+        //   = หลบมาก่อนเสมอ ยาเป็นตัวสำรองตอนหลบไม่ทัน ไม่ใช่ตัวแทนการหลบ
+        //   (รอบ 10:30 ตาย 3 ครั้งเพราะหลบพัง — v6.265 แก้การหลบแล้ว อันนี้คือตาข่ายชั้นสอง)
+        if (isOn('bossHpPotion') && !potionGaveUp && now() - lastPotionChk > 700) {
+          lastPotionChk = now();
+          if (await bossTryHpPotion(bossPlayerHpPct())) continue;   // กินสำเร็จ = วนรอบใหม่ อ่านสถานะสดอีกที
+        }
         if (!beatFindTried && fightT0) {
           beatFindTried = true;
           beatStartedAt = findRaidStartedAt();
@@ -3238,6 +3298,10 @@
     } else if (bossSeen) {
       bossEvent(`🥁 ไฟต์นี้ไม่มีข้อความจังหวะเลย (กด ${gaugePresses} ครั้ง) → บอสตัวนี้น่าจะปิดบีต (beatOn=false) หรืออ่านข้อความไม่เจอ${stunSkips ? ` · ข้ามตอนสตัน ${stunSkips}` : ''}`);
     }
+    // ❤️ v6.270: รายงานยาฟื้นเลือด — ไฟต์แรกจะบอกเราว่ามีปุ่มใช้ด่วนไหม และมียาในกระเป๋าจริงไหม
+    if (potionUses || potionFails) {
+      bossEvent(`❤️ ยาฟื้นเลือด: กินสำเร็จ ${potionUses} · พลาด ${potionFails}${potionQuickPath ? ` · ทาง${potionQuickPath}` : ''}${potionGaveUp ? ' · เลิกลองกลางไฟต์' : ''}`);
+    }
     const outcome = killed ? '✅ บอสตาย!' : bossSeen ? '🏁 บอสหมดเวลา/หายไป — เก็บ reward ตามส่วนที่ช่วยตี' : '⌛ บอสไม่มาในเวลาที่รอ';
     // v6.169: เพิ่มตัวเลขวัดผลของใหม่ — recenter (v6.162) · ความเร็วเข็มที่วัดได้ (เกจอัจฉริยะ v6.162) · จุดกลางวง AoE ที่เรียนรู้
     //   เดิมสรุปไม่มีตัวเลขพวกนี้เลย = อัปเกรดแล้ววัดไม่ได้ว่าดีขึ้นจริงไหม
@@ -3270,6 +3334,8 @@
       baitUsed: snapBait, bossHpMax: snapHpMax, bossHpMaxEnd: snapHpMaxEnd,
       // 🥁 v6.266: หลักฐานว่าระบบจังหวะมีจริงไหม/ล็อกได้ไหม — ไฟต์หน้าจะได้ตัดสินใจจากข้อมูล ไม่ใช่เดา
       tapPerfect: tapFb.perfect, tapGood: tapFb.good, tapMiss: tapFb.miss, tapNoFb: tapFb.none,
+      // ❤️ v6.270: ยาฟื้นเลือด — ดูว่าช่วยลด deaths จริงไหม (เทียบกับรอบ 10:30 ที่ตาย 3)
+      potionUses, potionFails, potionPath: potionQuickPath,
       comboMax, stunSkips, beatLock: beatLockSlot, beatSrc: beatStartedAt ? 'startedAt' : (beatLockSlot != null ? 'วัดเอง' : 'ยังไม่ล็อก'),
       beatBuckets: beatBuckets.map((b) => (b.n ? +(b.score / b.n).toFixed(2) : null)),
     });
@@ -8619,6 +8685,18 @@ ${esc(reason)}
       labeled('เปิด', checkbox('bossHunt', refreshBossBtn)),
       labeled('ไปก่อน (นาที)', numInput('bossLeadMin', 1, 60, 48)),
       labeled('รอสูงสุด (นาที)', numInput('bossMaxWaitMin', 1, 30, 48)),
+    ));
+
+    // ❤️ v6.270
+    panel.appendChild(row(
+      '❤️ กินยาฟื้นเลือดตอนสู้บอส',
+      'เลือดเหลือต่ำกว่าเกณฑ์ระหว่างไฟต์ → กิน **"กาแฟเข้ม"** ที่มีในกระเป๋า (ฟื้น 35% · คูลดาวน์ 45 วิ ตามค่าจริงในเกม) · '
+      + '**ใช้ของที่มีอยู่เท่านั้น ไม่ซื้อเอง** — ยาราคา 2,500 🪙 ที่ร้าน ถ้าอยากให้มีติดตัวต้องซื้อเอง · '
+      + 'ลำดับความสำคัญ: **หลบ AoE มาก่อนเสมอ** ยาเป็นตาข่ายชั้นสองตอนหลบไม่ทัน ไม่ใช่ตัวแทนการหลบ · '
+      + 'ถ้าเกมมีปุ่มใช้ด่วนใน HUD จะกดปุ่มนั้น (เร็ว) · ไม่มีก็เปิดกระเป๋ากิน แต่ทำเฉพาะจังหวะที่ไม่มีวง AoE ค้าง (เปิดกระเป๋า ~2.5 วิ = ยืนกินดาเมจ) · '
+      + 'ยืนยันผลจากเลือดที่ขึ้นจริง ไม่ใช่แค่ "กดแล้ว" · กินไม่ขึ้น 3 ครั้ง = เลิกลองไฟต์นั้น (กันเสียจังหวะตี)',
+      labeled('เปิด', checkbox('bossHpPotion')),
+      labeled('กินเมื่อเลือด ≤ (%)', numInput('bossHpPotionAt', 5, 95, 48)),
     ));
 
     {
