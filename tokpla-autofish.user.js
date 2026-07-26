@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.294
+// @version      6.295
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.294';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.295';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2722,7 +2722,20 @@
       aw = await waitFor(() => gameWalker(), Math.min(8000, maxMs), 250);
       if (!aw) { bossNavFail = 'ฉากยังไม่พร้อม (walker ไม่มา ใน 8 วิ)'; return false; }
     }
-    const t = BOSS_NAV_TARGET[targetMap] || { x: 700, y: 500 };
+    // 🐛 v6.295 (ผู้ใช้เจอสด "ตายแล้วเด้งออกมาบ่อตกปลา บอทเดินเข้าถ้ำไม่ถูกตำแหน่ง"):
+    //   เป้าเป็นถ้ำบอสที่ "ไม่มีพิกัดใน BOSS_NAV_TARGET" (เช่น naga_vortex = ชื่อ instance ที่เรียนตอนสู้)
+    //   → เดิมใช้ default {700,500} = กลางแมพ ไม่ใช่ประตู (ประตูถ้ำที่ village อยู่ (24,404)) + เกมไม่รู้จักแมพ instance
+    //     นั้น A* หาทางไม่ได้ → ตัวเดินผิดที่ กลับเข้าถ้ำไม่สำเร็จ
+    //   แก้: นำทางผ่าน "ชื่อประตูถ้ำบอสที่แมพปัจจุบันมี exit ชี้ไป" (เกมตั้งชื่อ exit ว่า boss_cave + มีพิกัด) แทน
+    //   ประตู boss_cave พาเข้าถ้ำที่ active รอบนี้เอง = ถ้ำเดียวกับที่เพิ่งสู้ (กลับเข้าถูกใบ)
+    let navMap = targetMap;
+    if (isBossMap(targetMap) && !BOSS_NAV_TARGET[targetMap]) {
+      try {
+        const gate = (bossMapExits() || []).find((e) => e && isBossMap(e.targetMap) && BOSS_NAV_TARGET[e.targetMap]);
+        if (gate) { navMap = gate.targetMap; logInfo(`🧭 ถ้ำเป้า "${targetMap}" ไม่มีพิกัด → นำทางผ่านประตู "${navMap}" (${BOSS_NAV_TARGET[navMap].x},${BOSS_NAV_TARGET[navMap].y}) ที่แมพนี้มี exit ชี้ไป`); }
+      } catch {}
+    }
+    const t = BOSS_NAV_TARGET[navMap] || { x: 700, y: 500 };
     // 🐛 v6.262: จุดเป้าหมายสำรอง — บทเรียนเดียวกับ v6.260 (เดินเข้าบ่อ)
     //   ถ้า A* หาเส้นไปจุดนั้นไม่ได้ เกมสแนปเป็น "ถึงแล้ว" โดยตัวไม่ขยับ → เดิมยิงจุดเดิมซ้ำจนหมด maxMs
     //   เคสที่เจ็บสุด: **ตายกลางไฟต์บอสแล้วกลับเข้าถ้ำ** (ให้เวลาแค่ 60 วิ) — ยิงจุดเดิมเปล่าจนหมดเวลา = เลิกสู้ทั้งรอบ
@@ -2779,7 +2792,7 @@
         } else stuckRounds = 0;
         lastNav = now(); stillFor = 0;
         const nt = navTargets()[navIdx] || t;
-        let ok = false; try { ok = aw.navigate({ x: Math.round(nt.x), y: Math.round(nt.y), mapId: targetMap }); } catch {}
+        let ok = false; try { ok = aw.navigate({ x: Math.round(nt.x), y: Math.round(nt.y), mapId: navMap }); } catch {}
         // 🐛 v6.274 (ผู้ใช้เจอสด 2 รอบ แล้วต้องปิดบอทเดินเข้าถ้ำเอง): เดิม navigate() คืน falsy = **return false ทันทีรอบแรก**
         //   → ขา "ตายแล้วกลับเข้าถ้ำ" ที่ให้งบมา 60 วิ ใช้ไปจริง <1 วิ แล้วพิมพ์ "กลับเข้าถ้ำไม่สำเร็จ — เลิกสู้"
         //   ความจริง: A* หาเส้นไม่ได้ "จากจุดนี้ไปจุดนั้น" ไม่ได้แปลว่าไปไม่ได้เลย — จุดสำรองอื่นอาจไปได้
