@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.281
+// @version      6.282
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.281';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.282';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -229,7 +229,10 @@
     bossStewBuy: true,           // 🛒 ซื้อถ้าไม่มีในกระเป๋า — 3,000 🪙 (เกมจำกัด 2/วัน)
     bossStewMaxDay: 2,           // เพดานซื้อของเราเองต่อวัน (≤ 2 ตามเกม)
     // 👹 v6.278: โหมดล่าบอสอย่างเดียว — ระบบแยกจากการตกปลาโดยสิ้นเชิง (ดูเหตุผลเต็มที่จุดใช้ใน tick)
-    bossOnly: false,             // true = ทำเฉพาะเรื่องบอส ไม่ตกปลา/ขาย/เควส/NPC เลย
+    bossOnly: false,             // true = ทำเฉพาะเรื่องบอส ไม่ตกปลา/ขาย/เควส/NPC เลย (ผู้ใช้กดค้างไว้เอง)
+    // 🎯 v6.282: สลับเข้าโหมดล่าอย่างเดียว "อัตโนมัติ" ก่อนถึงเวลาบอส แล้วออกเองเมื่อจบทริป
+    bossOnlyAuto: true,          // เปิด = พอใกล้เวลาบอส หยุดฟาร์มเองก่อนออกเดินทาง (กันงานค้างทำให้ไปสาย)
+    bossOnlyLeadMin: 5,          // กี่นาทีก่อนเวลาบอส ให้เข้าโหมดล่าอย่างเดียว (ระบบบังคับ ≥ "ไปก่อน (นาที)")
     potionWeight: true,          // 🐋 ยาปลาตัวใหญ่ (+15% น้ำหนัก=ราคาขาย 30 นาที · 2,000 🪙)
     potionLuck: false,           // 🍀 ยาโชคปลาแรร์ (+8% โอกาสแรร์ 30 นาที · 2,500 🪙)
     potionMinCph: 25000,         // ซื้อยาเฉพาะเมื่อรายได้ ≥ กี่ 🪙/ชม. (ต่ำกว่านี้ไม่คุ้มต้นทุนยา)
@@ -4329,6 +4332,40 @@
   // เงื่อนไขเริ่มล่า (เรียกจาก idle branch) — ใกล้เวลา + ยังไม่เพิ่งล่า + อยู่โหมด bot/gameauto (ไม่ใช่ off)
   //   v6.121: idle branch เรียกทุก 150ms แต่ bossTimerMin = TreeWalker ทั้ง DOM (แพง) → cache ผล 5 วิ (เวลาบอสละเอียดระดับนาที เหลือเฟือ)
   let bossTimerCache = null, bossTimerCacheAt = 0;
+  // 🎯 v6.282 (ผู้ใช้ขอ): ให้โหมด "ล่าบอสอย่างเดียว" **เปิดเองอัตโนมัติก่อนถึงเวลาเดินทาง**
+  //   เหตุผลที่มันสำคัญกว่าที่คิด: การหยุดฟาร์ม "ก่อน" ออกเดินทาง = ตัดงานค้างที่ทำให้ออกช้า
+  //   (กำลังดึงปลา · เปิดกระเป๋าขาย · ทริปเมือง NPC) ซึ่งเป็นต้นตอที่ทำให้ไปถึงถ้ำไม่ทันมาหลายรอบ
+  //   ⚠️ เป็นสถานะ "ชั่วคราว" — ไม่เขียนทับ cfg.bossOnly ที่ผู้ใช้ตั้งเอง (ไม่งั้นเปิดค้างถาวรโดยไม่ได้ตั้งใจ)
+  let bossSoloAutoOn = false, bossSoloAutoSaid = false;
+  function bossSoloAutoNow() {
+    if (!isOn('bossOnlyAuto') || !isOn('bossHunt')) return false;
+    if (bossPhase !== 'idle') return true;                    // กำลังล่าอยู่ = คงโหมดไว้จนจบทริป
+    if (now() - bossTimerCacheAt > 5000) { bossTimerCacheAt = now(); bossTimerCache = bossTimerMin(); }
+    const min = bossTimerCache;
+    if (min == null) return false;                            // อ่านเวลาไม่ได้ = ไม่เดา ปล่อยฟาร์มตามปกติ
+    // ต้อง ≥ lead เสมอ — ตั้งน้อยกว่าเวลาเดินทางก็ไม่มีประโยชน์ (โหมดจะเปิดหลังออกเดินทางไปแล้ว)
+    const soloLead = Math.max(clamp(cfg.bossOnlyLeadMin || 5, 1, 60), clamp(cfg.bossLeadMin, 1, 60));
+    return min <= soloLead;
+  }
+  // เรียกจาก tick — คืนว่า "ตอนนี้ควรอยู่โหมดล่าอย่างเดียวไหม" (ผู้ใช้กดเอง หรือระบบเปิดให้อัตโนมัติ)
+  function bossSoloMode() {
+    if (isOn('bossOnly')) return true;
+    const on = bossSoloAutoNow();
+    if (on !== bossSoloAutoOn) {
+      bossSoloAutoOn = on;
+      if (on) {
+        say(`🎯 ใกล้เวลาบอส (อีก ${bossTimerCache ?? '?'} นาที) — เข้าโหมดล่าบอสอย่างเดียวอัตโนมัติ · หยุดฟาร์มเพื่อออกเดินทางให้ทัน`);
+        bossEvent(`🎯 เข้าโหมดล่าอย่างเดียวอัตโนมัติ (อีก ${bossTimerCache ?? '?'} นาที · ตั้งไว้ ${cfg.bossOnlyLeadMin})`);
+      } else {
+        say('🎣 จบภารกิจบอส — ออกจากโหมดล่าอย่างเดียว กลับไปฟาร์มต่อ');
+      }
+      bossSoloAutoSaid = true;
+      // v6.282: ทาสีปุ่ม+แถบสถานะทันทีที่สลับ (ไม่ใช่ checkbox จึงไม่ถูก syncPanel เรียกเอง)
+      try { if (bossSoloPaint) bossSoloPaint(); } catch {}
+      try { refreshBossBtn(); } catch {}
+    }
+    return on;
+  }
   let lastBossBlockLog = 0;
   // ⏸ v6.250: เตือนเมื่อ "พักค้างไว้" แล้วรอบบอสใกล้เข้ามา — พักบล็อก runBossHunt ทั้งหมด (ดู tick)
   //   เตือนครั้งเดียวต่อรอบ (กันสแปม) · ใช้เวลาจากป้ายเกมโดยตรง ไม่ใช่ตารางที่ตั้งไว้
@@ -7843,7 +7880,7 @@ ${esc(reason)}
       //   ⇒ ถ้าการตกปลาติดขัด (กระเป๋าเต็ม · เหยื่อหมด · พลังหมดนั่งพัก · ปุ่มกดไม่ได้ · dialog ค้าง)
       //     **ระบบล่าบอสไม่มีวันได้รันเลย** — ตรงกับหลักฐานจริง: รอบ 13:30 noshow สนิท ขณะพลังงานเหลือ 7-9%
       //   โหมดนี้ตัดปมนั้นทิ้ง: ทำเฉพาะเรื่องบอส ไม่แตะไปป์ไลน์ตกปลาเลยแม้แต่บรรทัดเดียว
-      if (isOn('bossOnly')) {
+      if (bossSoloMode()) {   // v6.282: ผู้ใช้กดเอง (cfg.bossOnly) หรือระบบเปิดให้อัตโนมัติก่อนถึงเวลาบอส
         if (paused) { warnPausedNearBoss(); updateBadge(); return requestAnimationFrame(tick); }
         if (now() - lastIdleWork >= 150) {
           lastIdleWork = now();
@@ -8537,7 +8574,9 @@ ${esc(reason)}
   function refreshBossBtn() {
     if (!bossBtn) return;
     // 👹 v6.278: บอกให้ชัดว่ากำลังอยู่โหมดไหน — "ล่าอย่างเดียว" กับ "ล่าคู่ฟาร์ม" พฤติกรรมต่างกันมาก
-    const solo = isOn('bossOnly') ? ' · โหมดล่าอย่างเดียว (ไม่ตกปลา)' : '';
+    // v6.282: แยก 3 สถานะให้เห็น — กดค้างเอง / ระบบเปิดให้ชั่วคราว / ปกติ
+    const solo = isOn('bossOnly') ? ' · โหมดล่าอย่างเดียว (ไม่ตกปลา)'
+      : bossSoloAutoOn ? ' · 🎯 หยุดฟาร์มอัตโนมัติแล้ว (ใกล้เวลาบอส)' : '';
     const [txt, bg] = bossPhase !== 'idle'
       ? [`👹 กำลังล่าบอส (${bossPhase === 'travel' ? 'เดินไปถ้ำ' : bossPhase === 'fight' ? 'สู้บอส' : 'กลับบ้าน'})${solo} — กดหยุด`, '#3e7d24']
       : isOn('bossHunt')
@@ -9067,10 +9106,13 @@ ${esc(reason)}
       soloBtn.setAttribute('data-tkbot', '1');
       soloBtn.style.cssText = 'width:100%;padding:7px;border-radius:8px;border:none;color:#fff;font-weight:800;font-size:11.5px;cursor:pointer;margin:0 0 6px;';
       const paint = () => {
+        // v6.282: บอกให้ครบว่าตอนนี้อยู่สถานะไหนใน 3 แบบ
         soloBtn.textContent = isOn('bossOnly')
-          ? '🎯 ระบบล่าบอสอย่างเดียว: เปิดอยู่ — กดเพื่อกลับไปฟาร์มด้วย'
-          : '🎯 เปลี่ยนเป็น "ล่าบอสอย่างเดียว" (หยุดตกปลา)';
-        soloBtn.style.background = isOn('bossOnly') ? '#7a3f9e' : '#2d3748';
+          ? '🎯 ระบบล่าบอสอย่างเดียว: เปิดค้างอยู่ — กดเพื่อกลับไปฟาร์มด้วย'
+          : bossSoloAutoOn
+            ? '🎯 หยุดฟาร์มอัตโนมัติอยู่ (ใกล้เวลาบอส) — กดเพื่อค้างโหมดนี้ไว้ตลอด'
+            : `🎯 เปลี่ยนเป็น "ล่าบอสอย่างเดียว" (หยุดตกปลา)${isOn('bossOnlyAuto') ? ` · อัตโนมัติก่อน ${cfg.bossOnlyLeadMin} นาที` : ''}`;
+        soloBtn.style.background = isOn('bossOnly') ? '#7a3f9e' : bossSoloAutoOn ? '#5b3a7a' : '#2d3748';
       };
       soloBtn.addEventListener('click', () => {
         if (isOn('bossOnly')) {
@@ -9098,6 +9140,17 @@ ${esc(reason)}
       labeled('เปิด', checkbox('bossHunt', refreshBossBtn)),
       labeled('ไปก่อน (นาที)', numInput('bossLeadMin', 1, 60, 48)),
       labeled('รอสูงสุด (นาที)', numInput('bossMaxWaitMin', 1, 30, 48)),
+    ));
+
+    // 🎯 v6.282
+    panel.appendChild(row(
+      '🎯 เข้าโหมด "ล่าบอสอย่างเดียว" อัตโนมัติก่อนถึงเวลา',
+      'พอเหลืออีก N นาทีจะถึงเวลาบอส → **หยุดฟาร์มทันที** (ไม่ตกปลา/ขาย/เควส/NPC) แล้วรอออกเดินทางตาม "ไปก่อน (นาที)" · จบทริปแล้ว**กลับมาฟาร์มเองอัตโนมัติ** · '
+      + 'ทำไมต้องหยุดก่อนออกเดินทาง: งานที่ค้างอยู่ตอนถึงเวลา (กำลังดึงปลา · เปิดกระเป๋าขาย · ทริปเมือง NPC) คือสาเหตุที่ทำให้ออกช้าและไปถึงถ้ำไม่ทันมาหลายรอบ · '
+      + 'ค่านี้ต้อง **≥ "ไปก่อน (นาที)"** เสมอ (ระบบบังคับให้เอง) — ตั้งน้อยกว่าจะไม่มีผล เพราะโหมดจะเปิดหลังออกเดินทางไปแล้ว · '
+      + '⚠️ เป็นสถานะชั่วคราว ไม่ทับปุ่มม่วงที่กดค้างไว้เอง',
+      labeled('เปิด', checkbox('bossOnlyAuto')),
+      labeled('ก่อนถึงเวลา (นาที)', numInput('bossOnlyLeadMin', 1, 60, 52)),
     ));
 
     // ❤️ v6.270
