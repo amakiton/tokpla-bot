@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.285
+// @version      6.286
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.285';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.286';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -231,6 +231,8 @@
     // 👹 v6.278: โหมดล่าบอสอย่างเดียว — ระบบแยกจากการตกปลาโดยสิ้นเชิง (ดูเหตุผลเต็มที่จุดใช้ใน tick)
     bossOnly: false,             // true = ทำเฉพาะเรื่องบอส ไม่ตกปลา/ขาย/เควส/NPC เลย (ผู้ใช้กดค้างไว้เอง)
     // 🎯 v6.282: สลับเข้าโหมดล่าอย่างเดียว "อัตโนมัติ" ก่อนถึงเวลาบอส แล้วออกเองเมื่อจบทริป
+    // 🎣 v6.286: ลุงหยัด (NPC แลกปลา · ท่าเรือทะเล) — เก็บปลาที่ลุงต้องการไว้ ไม่เอาไปขาย
+    npcYad: true,                // เปิด = กันขายปลาที่ลุงหยัดต้องการ (รายการอ่านจากแผงลุงเอง ไม่ hardcode)
     bossBaitStockMax: 6,         // 🎲 v6.284: ตุนเหยื่อขั้น 1..N ไว้ก่อนล่าบอส (จุดอ่อนสุ่มต่อรอบ ทำนายไม่ได้) · ขั้น 7-8 แพงเกินคุ้ม
     bossOnlyAuto: true,          // เปิด = พอใกล้เวลาบอส หยุดฟาร์มเองก่อนออกเดินทาง (กันงานค้างทำให้ไปสาย)
     bossOnlyLeadMin: 5,          // กี่นาทีก่อนเวลาบอส ให้เข้าโหมดล่าอย่างเดียว (ระบบบังคับ ≥ "ไปก่อน (นาที)")
@@ -1796,6 +1798,7 @@
   }
   let bossHudCache = null, bossHudCacheAt = 0;
   let weakParseWarned = false, rodPinWarned = false, hpStockNullSaid = false;
+  let lastYadChk = 0, yadPanelWarned = false;   // v6.286: ตัวเฝ้าดูแผงลุงหยัด
   // 🎯 v6.283: **ตารางจุดอ่อนที่เรียนรู้เอง** — ปมสำคัญคือ "รู้จุดอ่อนตอนอยู่ในถ้ำ แต่ซื้อได้ตอนอยู่นอกถ้ำเท่านั้น"
   //   ⇒ รอบแรกที่เจอบอสตัวหนึ่ง = จดไว้ · รอบต่อ ๆ ไปของบอสตัวนั้น = ซื้อเหยื่อจุดอ่อนได้ "ก่อน" ออกเดินทาง
   //   นี่คือเหตุผลที่ระบบต้องเรียนรู้ ไม่ใช่แค่อ่าน HUD สด ๆ (อ่านสดตอนนั้นสายเกินจะไปซื้อแล้ว)
@@ -7518,6 +7521,44 @@
   // ================= ระบบขายอัตโนมัติ =================
 
   // ตัดสินว่าชนิดไหนขายได้บ้าง โดยดู 3 ชั้น: ระดับความหายาก -> ปลา ✨ -> รายชื่อที่ระบุ
+  // ═══ 🎣 v6.286: ระบบ "ลุงหยัด" (NPC แลกปลา · แมพท่าเรือทะเล) ═══
+  //   ⚠️ **ห้าม hardcode ว่าลุงต้องการปลาอะไรกี่ตัว** — บทเรียนเดียวกับตารางบอส:
+  //     คอนฟิกในบันเดิลมีรายการเดียว `{npc:"yad", species:"ปลาหยุด", qty:200, reward:coffee_energy×1}`
+  //     แต่ "ปลาหยุด" **ไม่มีอยู่ในตารางปลาของเกม** (ค้นแล้วเจอเฉพาะในบรรทัดนี้กับ label ของมันเอง)
+  //     = ข้อมูล placeholder · ของจริงมาจากเซิร์ฟเวอร์ผ่าน `getExchangesForNpc` เหมือน `getRaidBossMeta`
+  //   ⇒ ต้อง **อ่านจากแผงของ NPC สดๆ** แล้วจำไว้ · แล้วสั่งระบบขาย "กันปลาชนิดนั้นไม่ให้ขาย"
+  const YAD_KEY = 'tokpla_yad_wants';
+  const yadWants = () => { try { return JSON.parse(W.localStorage.getItem(YAD_KEY) || '{}') || {}; } catch { return {}; } };
+  function yadSaveWants(map) {
+    try {
+      const old = yadWants();
+      if (JSON.stringify(old) === JSON.stringify(map)) return;
+      W.localStorage.setItem(YAD_KEY, JSON.stringify(map));
+      const txt = Object.entries(map).map(([s, n]) => `${s} ${n} ตัว`).join(' · ');
+      logInfo(`🎣 ลุงหยัดต้องการ: ${txt || '(ไม่มีรายการ)'} — บอทจะเก็บปลาพวกนี้ไว้ ไม่เอาไปขาย`);
+      if (isOn('tgOn')) void tgSend(`🎣 <b>ลุงหยัด</b> ต้องการ: ${esc(txt)}`);
+    } catch {}
+  }
+  // อ่านรายการจากแผง NPC ที่เปิดอยู่ — จับรูปแบบ "<ชื่อปลา> ... <จำนวน>/<เป้า>" หรือ "<ชื่อปลา> x<เป้า>"
+  //   ตัด UI บอทออกเสมอ (กฎเหล็ก #7) · คืน null ถ้าไม่เจอแผง = ผู้เรียกต้องไม่เดา
+  function yadReadPanel() {
+    try {
+      const scope = [...document.querySelectorAll('div')].find((d) => !isBotUI(d) && d.offsetParent
+        && /ลุงหยัด|แลกปลา/.test(d.textContent || '') && (d.textContent || '').length < 1200);
+      if (!scope) return null;
+      const txt = (scope.innerText || '');
+      const map = {};
+      // รูปแบบที่พบได้: "ปลาทู 12/200" · "ปลาทู ×200" · "ปลาทู 200 ตัว"
+      for (const m of txt.matchAll(/([฀-๿][^\n\d]{1,24}?)\s*(?:[×x]\s*)?(\d{1,4})\s*(?:\/\s*(\d{1,4}))?\s*(?:ตัว)?/g)) {
+        const name = m[1].trim();
+        const target = m[3] ? +m[3] : +m[2];
+        if (!name || name.length < 3 || !target || target < 2) continue;
+        if (/แลก|รางวัล|ปิด|ยืนยัน|ลุงหยัด|เหรียญ|กาแฟ|ยา/.test(name)) continue;
+        map[name] = target;
+      }
+      return { map, raw: txt.replace(/\s+/g, ' ').slice(0, 220) };
+    } catch { return null; }
+  }
   function pickSpecies(cards) {
     const list = cfg.speciesList.split(',').map((s) => s.trim()).filter(Boolean);
 
@@ -7538,6 +7579,15 @@
     const locked = new Map();   // ชนิด -> เหตุผลที่ไม่ขาย
     const keep = (s, why) => { if (!locked.has(s)) locked.set(s, why); };
 
+    // 🎣 v6.286: **กันขายปลาที่ลุงหยัดต้องการ** — หัวใจของระบบแลกของ
+    //   ถ้าไม่กันตรงนี้ ระบบขายจะระบายปลาที่ต้องสะสมทิ้งทุกครั้งที่กระเป๋าถึงเกณฑ์ = สะสมไม่มีวันครบ
+    //   (คลาสเดียวกับบทเรียน "ใช้ของที่มี ถูกล่ามกับปุ่มซื้อ" — ระบบหนึ่งทำลายงานของอีกระบบเงียบๆ)
+    if (isOn('npcYad')) {
+      for (const [sp, need] of Object.entries(yadWants())) {
+        const have = sellableOf.get(sp) || 0;
+        if (have > 0) keep(sp, `ลุงหยัดต้องการ ${need} ตัว (มี ${have})`);
+      }
+    }
     let want = all;
     if (cfg.speciesMode === 'only') {
       for (const s of all) if (!list.includes(s)) keep(s, 'ไม่อยู่ในรายชื่อที่ระบุ');
@@ -8250,6 +8300,15 @@ ${esc(reason)}
         //   ไม่เปลี่ยนพฤติกรรม (พัก = ผู้ใช้อยากคุมเอง ห้ามบอทเดินเอง) แต่ต้อง **ส่งเสียงเตือน** ไม่ใช่เงียบหาย
         if (paused) { warnPausedNearBoss(); updateBadge(); return requestAnimationFrame(tick); }
 
+        // 🎣 v6.286: เฝ้าดูแผงลุงหยัด — ใครก็ตามที่เปิดแผง (บอทหรือผู้ใช้เดินไปคุยเอง) บอทจะอ่านรายการแล้วจำ
+        //   ทำแบบ "อ่านอย่างเดียว" ไม่กดอะไร = ปลอดภัย และได้ข้อมูลจริงโดยไม่ต้องเดา
+        //   ตั้งใจไม่ให้บอทเดินไปหาลุงเอง จนกว่าจะรู้ว่ารายการคืออะไรและคุ้มไหม (ดูเหตุผลใน CHANGELOG)
+        if (isOn('npcYad') && now() - lastYadChk > 3000) {
+          lastYadChk = now();
+          const r = yadReadPanel();
+          if (r && Object.keys(r.map).length) yadSaveWants(r.map);
+          else if (r && !yadPanelWarned) { yadPanelWarned = true; logWarn(`🎣 เปิดแผงลุงหยัดแล้วแต่แกะรายการไม่ออก — ข้อความจริง: ${JSON.stringify(r.raw)}`); }
+        }
         // 🛡️ v6.218: ยามเฝ้าป๊อบอัพค้างทั่วไป — "ควรตกได้แต่ตกไม่ได้เพราะมี dialog ค้าง ≥3 วิ" → เคลียร์อัตโนมัติ
         //   จุดเดียวคุมทุกฟีเจอร์ (หีบ/รางวัล/error) แทนการไล่แก้ทีละป๊อบอัพ · ไม่แตะหน้าต่างรับรางวัล (auto-claim จัดการ)
         if (popupWatchdog()) return requestAnimationFrame(tick);
@@ -9297,6 +9356,32 @@ ${esc(reason)}
       + '💰 ตุนถึงขั้น 6 ≈ 30,700 🪙 ครั้งเดียว · ขั้น 7 (+25,000) และ 8 (+45,000) แพงเกินคุ้มกับรางวัลบอสตอนนี้ (150-1,250 🪙/รอบ)',
       labeled('ตุนถึงขั้น', numInput('bossBaitStockMax', 1, 8, 44)),
     ));
+
+    // 🎣 v6.286
+    {
+      const yadBtn = document.createElement('button');
+      yadBtn.setAttribute('data-tkbot', '1');
+      yadBtn.textContent = '🎣 สถานะลุงหยัด';
+      yadBtn.style.cssText = 'padding:5px 10px;border-radius:7px;border:1px solid #4a5568;background:#2d3748;color:#e2e8f0;font-size:11px;cursor:pointer;margin:2px 3px 6px 0;';
+      yadBtn.addEventListener('click', () => {
+        const w = yadWants();
+        const ks = Object.keys(w);
+        const NL = String.fromCharCode(10);
+        say(ks.length
+          ? `🎣 ลุงหยัดต้องการ:${NL}${ks.map((k) => `  ${k} → ${w[k]} ตัว (บอทกันไม่ให้ขายแล้ว)`).join(NL)}`
+          : '🎣 ยังไม่รู้ว่าลุงหยัดต้องการอะไร — เดินไปคุยกับลุงที่ท่าเรือทะเลสักครั้ง บอทจะอ่านรายการจากแผงแล้วจำเอง (ไม่ต้องตั้งค่า)');
+      });
+      panel.appendChild(row(
+        '🎣 ลุงหยัด — เก็บปลาที่ลุงต้องการไว้แลกของ (ท่าเรือทะเล)',
+        '**บอทจะไม่ขายปลาที่ลุงหยัดต้องการ** — ถ้าไม่กันตรงนี้ ระบบขายจะระบายทิ้งทุกครั้งที่กระเป๋าถึงเกณฑ์ = สะสมไม่มีวันครบ · '
+        + 'รายการที่ลุงต้องการ **อ่านจากแผงของลุงเอง ไม่ได้ตั้งค่าตายตัว** — เพราะคอนฟิกในเกมมีแค่รายการ placeholder '
+        + '(`ปลาหยุด 200 ตัว` ซึ่งไม่มีปลาชื่อนี้อยู่จริงในตารางปลา) ของจริงมาจากเซิร์ฟเวอร์เหมือนตารางบอส · '
+        + '📌 **วิธีใช้: เดินไปคุยกับลุงสักครั้ง** บอทจะอ่านแล้วจำเอง จากนั้นกันปลาชนิดนั้นไว้อัตโนมัติ · '
+        + '⚠️ ยังไม่ให้บอทเดินไปแลกเอง จนกว่าจะเห็นของจริงว่าแลกอะไรได้และคุ้มไหม',
+        labeled('เปิด', checkbox('npcYad')),
+      ));
+      panel.appendChild(yadBtn);
+    }
 
     // ❤️ v6.270
     panel.appendChild(row(
