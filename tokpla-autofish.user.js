@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.271
+// @version      6.272
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.271';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.272';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -224,6 +224,10 @@
     bossHpPotionBuy: true,       // 🛒 ซื้อยาตุนก่อนเข้าถ้ำ (ในถ้ำซื้อไม่ได้) — เสียเงินจริง 2,500 🪙/ขวด
     bossHpPotionKeep: 2,         // อยากมีติดตัวกี่ขวดก่อนเข้าถ้ำ (เกมถือได้สูงสุด 5)
     bossHpPotionMaxBuy: 2,       // เพดานซื้อต่อ 1 รอบล่า (กันดูดเงินถ้าอ่านจำนวนเพี้ยน)
+    // 🍲 v6.272: ต้มปลาร้อน — เลือดสูงสุด ×1.20 นาน 20 นาที · ต้องกิน "ก่อน" ไฟต์เริ่มถึงจะมีผล
+    bossStew: true,              // 🍲 กินต้มปลาร้อนก่อนเข้าถ้ำ (Lv.67: เลือด 234 → 281)
+    bossStewBuy: true,           // 🛒 ซื้อถ้าไม่มีในกระเป๋า — 3,000 🪙 (เกมจำกัด 2/วัน)
+    bossStewMaxDay: 2,           // เพดานซื้อของเราเองต่อวัน (≤ 2 ตามเกม)
     potionWeight: true,          // 🐋 ยาปลาตัวใหญ่ (+15% น้ำหนัก=ราคาขาย 30 นาที · 2,000 🪙)
     potionLuck: false,           // 🍀 ยาโชคปลาแรร์ (+8% โอกาสแรร์ 30 นาที · 2,500 🪙)
     potionMinCph: 25000,         // ซื้อยาเฉพาะเมื่อรายได้ ≥ กี่ 🪙/ชม. (ต่ำกว่านี้ไม่คุ้มต้นทุนยา)
@@ -3416,6 +3420,75 @@
       }
     } catch (e) { logErr('ตุนยาฟื้นเลือดล้มเหลว', e); }
   }
+  // 🍲 v6.272: "ต้มปลาร้อน" (potion_stew) — **เลือดสูงสุด ×1.20 นาน 20 นาที** · 3,000 🪙 · เกมจำกัดซื้อ 2/วัน
+  //   สูตรเลือดสู้บอสที่ถอดจากโค้ดเกม (คูณกัน ไม่ใช่บวก):
+  //     maxHp = (raidPlayerHpBase 100 + เลเวล × raidPlayerHpPerLevel 2) × (stew ? 1.2 : 1) × (armor ? 1.1 : 1)
+  //   Lv.67 → 234 ปกติ · 281 ถ้ามีต้มปลาร้อน (+47)
+  //   🔑 **ต้องกินก่อนไฟต์เริ่ม** — เกมคิด playerHp ตอน "สร้าง state ของไฟต์" ครั้งเดียว (`playerHp: P()`)
+  //      กินกลางไฟต์ = ไม่ช่วยรอบนั้น · จึงทำตอนเตรียมของนอกถ้ำ = ไม่เสียจังหวะตีเลยสักวินาที
+  //   ✅ เช็คบัฟได้จาก localStorage `tokpla_buff_stew_until` โดยไม่ต้องเปิดกระเป๋า (เกมเขียนคีย์นี้เอง)
+  const STEW_RE = /ต้มปลาร้อน/, STEW_PRICE = 3000, STEW_DAILY_MAX = 2;
+  const stewUntil = () => { try { const v = Number(W.localStorage.getItem('tokpla_buff_stew_until')); return Number.isFinite(v) ? v : 0; } catch { return 0; } };
+  // ต้องเหลือคลุมรอบล่าทั้งรอบ (~10 นาที) ไม่ใช่แค่ "ยังไม่หมด" — เหลือ 2 นาทีแล้วกินใหม่ดีกว่าหมดกลางไฟต์
+  const stewCovers = () => stewUntil() > Date.now() + 8 * 60000;
+  // ตัวนับซื้อรายวัน (เกมจำกัด 2/วันอยู่แล้ว — ของเราเป็นชั้นที่สอง กันยิงซ้ำถ้าอ่านสถานะเพี้ยน)
+  const STEW_DAY_KEY = 'tokpla_stew_buy_day';
+  function stewBoughtToday() {
+    try { const o = JSON.parse(W.localStorage.getItem(STEW_DAY_KEY) || 'null'); const d = new Date().toDateString();
+      return (o && o.d === d) ? (o.n || 0) : 0; } catch { return 0; }
+  }
+  function bumpStewBought() {
+    try { W.localStorage.setItem(STEW_DAY_KEY, JSON.stringify({ d: new Date().toDateString(), n: stewBoughtToday() + 1 })); } catch {}
+  }
+  function stewShopRow() {
+    try {
+      const row = [...document.querySelectorAll('div[class*="tk-inner"]')].find((r) => STEW_RE.test(r.textContent || ''));
+      if (!row) return { row: null, stock: null };
+      const m = /(?:มี|คงเหลือ|x|×)\s*(\d+)/.exec(row.textContent || '');
+      return { row, stock: m ? +m[1] : null };
+    } catch { return { row: null, stock: null }; }
+  }
+  async function stockBossStew() {
+    if (!isOn('bossStew') || !isOn('bossStewBuy')) return;
+    if (stewCovers()) return;                                   // บัฟยังคลุมรอบนี้อยู่ ไม่ต้องซื้อ
+    const usedToday = stewBoughtToday();
+    if (usedToday >= Math.min(clamp(cfg.bossStewMaxDay || 2, 1, STEW_DAILY_MAX), STEW_DAILY_MAX)) return;
+    try {
+      await shopTab('🧪 ยา'); await sleep(300);
+      const { row, stock } = stewShopRow();
+      if (!row) { logWarn('🍲 หา "ต้มปลาร้อน" ในร้านไม่เจอ — ข้าม (เกมอาจเปลี่ยนชื่อ/ย้ายแท็บ)'); return; }
+      if (stock == null) { logWarn('🍲 อ่านจำนวนต้มปลาร้อนที่มีไม่ออก — ไม่ซื้อ (กันซื้อซ้ำ)'); return; }
+      if (stock > 0) return;                                    // มีในกระเป๋าอยู่แล้ว เดี๋ยวกินตอน drinkBossStew
+      const add = [...row.querySelectorAll('button')].find((b) => /ใส่ตะกร้า/.test(b.textContent) && !b.disabled);
+      if (!add) { logInfo('🍲 ซื้อต้มปลาร้อนไม่ได้ (อาจครบโควตา 2/วันของเกมแล้ว)'); return; }
+      fireClick(add); await sleep(300);
+      const buy = btnByText('ซื้อเลย!') || btnByText('เหรียญไม่พอ');
+      if (!buy || buy.disabled || /เหรียญไม่พอ/.test(buy.textContent)) { say('🍲 เงินไม่พอซื้อต้มปลาร้อน — ข้าม'); return; }
+      fireClick(buy);
+      const done = await waitFor(() => { const t = document.body.innerText; if (t.includes('✅ ซื้อสำเร็จ!')) return 'ok'; if (t.includes('❌')) return 'fail'; return null; }, 8000);
+      if (done !== 'ok') return;
+      bumpStewBought();
+      profit.life.potionCost += STEW_PRICE; saveProfit(); refreshProfit();
+      say(`🍲 ซื้อต้มปลาร้อน 1 ถ้วย (−${STEW_PRICE.toLocaleString()} 🪙 · วันนี้ซื้อไป ${usedToday + 1}/${STEW_DAILY_MAX})`);
+      if (isOn('tgOn')) void tgSend(`🍲 ซื้อต้มปลาร้อน (<b>${STEW_PRICE.toLocaleString()} 🪙</b>) ก่อนล่าบอส — เลือดสูงสุด +20%`);
+      await sleep(350);
+    } catch (e) { logErr('ซื้อต้มปลาร้อนล้มเหลว', e); }
+  }
+  async function drinkBossStew() {
+    if (!isOn('bossStew')) return;
+    if (stewCovers()) return;
+    const before = stewUntil();
+    try { await useConsumable(STEW_RE); } catch {}
+    await sleep(500);
+    // ✅ ยืนยันด้วย "คีย์ที่เกมเขียนเอง" ไม่ใช่ค่าที่ useConsumable คืน (บทเรียนเดิม: คืน true ทั้งที่ไม่เกิดอะไร)
+    const after = stewUntil();
+    if (after > before && after > Date.now()) {
+      const min = Math.round((after - Date.now()) / 60000);
+      say(`🍲 ซดต้มปลาร้อน — เลือดสูงสุด +20% อีก ~${min} นาที (พร้อมเข้าถ้ำ)`);
+    } else {
+      logWarn('🍲 กินต้มปลาร้อนไม่สำเร็จ — ไม่มีในกระเป๋า หรือกดไม่ติด (เข้าถ้ำด้วยเลือดปกติ)');
+    }
+  }
   async function ensureBossBaitStock() {
     if (isBossMap(bossMapId())) return;
     const bt = cfg.bossBaitTier;
@@ -3450,7 +3523,11 @@
       // 3) ❤️ v6.271: ตุน "กาแฟเข้ม" (ยาฟื้นเลือด) ก่อนเข้าถ้ำ — ในถ้ำซื้อไม่ได้เหมือนเหยื่อ
       //   ร้านอยู่คนละแท็บ (🧪 ยา) จึงทำท้ายสุด แล้วปิดร้านทีเดียว
       await stockBossHpPotion();
+      // 4) 🍲 v6.272: ซื้อ "ต้มปลาร้อน" ถ้าจะต้องกิน (ยังอยู่ในร้าน แท็บเดียวกัน)
+      await stockBossStew();
       await sleep(200); await closeShop();
+      // 5) 🍲 กินต้มปลาร้อน — ต้องทำ "หลังปิดร้าน" เพราะกินจากกระเป๋า (เปิดร้าน+กระเป๋าพร้อมกันไม่ได้)
+      await drinkBossStew();
     } catch (e) { logErr('เตรียมเหยื่อบอสล้มเหลว', e); await closeShop(); }
     finally { busy = false; }
   }
@@ -8757,6 +8834,20 @@ ${esc(reason)}
       labeled('🛒 ซื้อตุนก่อนเข้าถ้ำ', checkbox('bossHpPotionBuy')),
       labeled('อยากมีติดตัว (ขวด)', numInput('bossHpPotionKeep', 1, 5, 44)),
       labeled('ซื้อได้สูงสุด/รอบ', numInput('bossHpPotionMaxBuy', 1, 5, 44)),
+    ));
+
+    // 🍲 v6.272
+    panel.appendChild(row(
+      '🍲 ต้มปลาร้อน — เพิ่มเลือดสูงสุดก่อนเข้าถ้ำ',
+      'กินก่อนออกเดินทาง → **เลือดสูงสุด ×1.20 นาน 20 นาที** (บัฟ 20 นาทีคลุมรอบล่า ~10 นาทีสบายๆ) · '
+      + 'สูตรจริงในเกม: `(100 + เลเวล×2) × (ต้มปลาร้อน ? 1.2 : 1) × (เกราะ ? 1.1 : 1)` — **คูณกัน ไม่ใช่บวก** · Lv.67 = 234 → **281** · '
+      + '🔑 **ต้องกินก่อนไฟต์เริ่ม** เกมคิดเลือดตอนสร้างไฟต์ครั้งเดียว กินกลางไฟต์ไม่ช่วยรอบนั้น — ทำตอนเตรียมของนอกถ้ำจึง **ไม่เสียจังหวะตีเลย** · '
+      + 'ต่างจากกาแฟเข้ม: อันนี้กัน "ตาย" ล่วงหน้า อีกอันฟื้นตอนจะหมด — ใช้คู่กันได้ (เพดานสูงขึ้น = กาแฟเข้มฟื้นได้เยอะขึ้นตาม) · '
+      + 'ราคา 3,000 🪙 · **เกมจำกัดซื้อ 2/วัน** และบอทนับของตัวเองอีกชั้น · ตรวจบัฟจาก `tokpla_buff_stew_until` ที่เกมเขียนเอง (ไม่ต้องเปิดกระเป๋า) · '
+      + 'มีบัฟเหลือคลุมรอบอยู่แล้ว = ไม่กินซ้ำ ไม่ซื้อซ้ำ',
+      labeled('เปิด', checkbox('bossStew')),
+      labeled('🛒 ซื้อถ้าไม่มี', checkbox('bossStewBuy')),
+      labeled('ซื้อได้สูงสุด/วัน', numInput('bossStewMaxDay', 1, 2, 44)),
     ));
 
     {
