@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.267
+// @version      6.268
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.267';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.268';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -173,7 +173,10 @@
 
     sell: false,                 // ขายอัตโนมัติ
     sellEvery: 10,               // เปิดกระเป๋าเช็คทุกๆ กี่ครั้งที่เหวี่ยง
-    sellAtPct: 80,               // ขายเมื่อกระเป๋าเต็มกี่ % (0 = ไม่ใช้เงื่อนไขนี้) — ปรับตาม bagSlots จริง
+    // 🎒 v6.268: 75 ไม่ใช่เลขสวยๆ — คอนฟิกเกมมี `bagHeavyStart: 0.8` และสูตรโทษคือ
+    //   `heavy = fill <= 0.8 ? 0 : (fill-0.8)/(1-0.8)` แล้วเอาไปคูณ bagSlowPct 0.4 / bagWalkDrainPct 0.12
+    //   → เกิน 80% = เดินช้าลงถึง 40% + เปลืองพลังงาน · ตั้ง 75 = ขายจบก่อนแตะเส้นโทษเสมอ
+    sellAtPct: 75,               // ขายเมื่อกระเป๋าเต็มกี่ % (0 = ไม่ใช้เงื่อนไขนี้) — ปรับตาม bagSlots จริง
     sellAtCount: 0,              // ขายเมื่อของในกระเป๋าถึงกี่ชิ้น (0 = ไม่ใช้เงื่อนไขนี้)
     sellAtCoins: 0,              // ขายเมื่อมูลค่ารวมถึงกี่เหรียญ (0 = ไม่ใช้เงื่อนไขนี้)
     sellJunk: true,              // ขายกลุ่มขยะ 🗑️ ทั้งหมดด้วยทุกครั้งที่ขาย (ขยะไม่มีล็อก ขายเกลี้ยง)
@@ -395,6 +398,13 @@
         if (!('sellAtPct' in old)) {
           if (old.sellAtCount === undefined || old.sellAtCount === 40) { c.sellAtCount = 0; c.sellAtPct = 80; }
           else c.sellAtPct = 0;
+        }
+        // 🎒 v6.268: เกมแพตช์ใหม่ทำโทษกระเป๋าหนัก (เกิน 80% = เดินช้าถึง 40% + เปลืองพลัง)
+        //   ค่าที่เคยตั้งไว้ ≥80 จึงกลายเป็น "ขายตอนโดนโทษไปแล้ว" → ดึงลงมา 75 ครั้งเดียว
+        //   (ต่ำกว่า 80 อยู่แล้ว = ผู้ใช้ตั้งเองอย่างตั้งใจ ไม่แตะ)
+        if (!('bagHeavyMigrated' in old)) {
+          if ((c.sellAtPct || 0) >= 80) c.sellAtPct = 75;
+          c.bagHeavyMigrated = 1;
         }
         // ย้ายค่าเก่า adaptUse → statWin (หน้าต่างสถิติ)
         if ('adaptUse' in old && !('statWin' in old)) c.statWin = old.adaptUse;
@@ -4621,6 +4631,29 @@
   //   ผลกระทบจริง: เกณฑ์ `sellAtCoins` ตายสนิท (total ไม่มีวัน ≥ ค่าที่ตั้ง) + ตัวเลขในรายงานผิด
   //   แก้: รับได้ทั้ง 🪙 / 💰 / "เหรียญ" และ **ยอมรับตัวเลขล้วน**ถ้าปุ่มไม่มีสัญลักษณ์เลย
   //        อ่านไม่ออก = log ข้อความดิบครั้งเดียว (ให้รู้ของจริง ไม่ต้องเดารอบหน้า)
+  // 🗑️ v6.268: เกมขายขยะให้อัตโนมัติเมื่อเลเวล ≥ tuning.autoSellJunkLevel (=20) — เช็คจากเลเวลที่เกมเก็บไว้
+  //   อ่านไม่ได้ = คืน false (ขายเองเหมือนเดิม) · ห้ามเดาว่า "คงถึงแล้วมั้ง" แล้วข้ามขั้นตอนทิ้ง
+  // 🎒 v6.268: ย่นระยะเช็คกระเป๋าเมื่อใกล้เต็ม (เหตุผลเต็มอยู่ที่จุดเรียกใน tick)
+  //   ใช้ `lastBagPct` ตัวเดิมของ v6.165 — มันถูกอัปเดตจาก readBagCount() ในรอบตรวจสุขภาพอยู่แล้ว
+  //   (ไม่ประกาศใหม่: ตัวแปรซ้ำชื่อในสโคปเดียวกัน = SyntaxError ทั้งไฟล์ · node --check จับได้)
+  function sellEveryNow() {
+    const base = Math.max(1, cfg.sellEvery || 10);
+    if (lastBagPct == null) return base;                 // ยังไม่เคยอ่านได้ = ใช้ค่าที่ผู้ใช้ตั้ง
+    const target = cfg.sellAtPct > 0 ? cfg.sellAtPct : 75;
+    if (lastBagPct >= target - 8) return Math.min(base, 5);    // จ่อเกณฑ์แล้ว — เช็คแทบทุกไม้
+    if (lastBagPct >= target - 20) return Math.min(base, 15);
+    if (lastBagPct >= target - 35) return Math.min(base, 40);
+    return base;
+  }
+  const AUTO_SELL_JUNK_LV = 20;
+  let junkAutoSaid = false;
+  function junkAutoSold() {
+    let lv = null;
+    try { const v = +W.localStorage.getItem('tokpla_level_seen'); if (Number.isFinite(v) && v > 0) lv = v; } catch {}
+    if (lv == null || lv < AUTO_SELL_JUNK_LV) return false;
+    if (!junkAutoSaid) { junkAutoSaid = true; logInfo(`🗑️ Lv.${lv} ≥ ${AUTO_SELL_JUNK_LV} — เกมขายขยะให้เองตอนตกแล้ว ข้ามขั้นตอนเปิดแท็บขยะ`); }
+    return true;
+  }
   let totalCoinsWarned = false;
   function readTotalCoins() {
     const b = sellAllBtn();
@@ -5675,6 +5708,20 @@
   }
   // (v6.137 ตัดฟีเจอร์ "🛟 อัพเกรดทุ่นอัตโนมัติ" ออกตามผู้ใช้ — ไม่ซื้อทุ่นอีก · profit.life.floatCost เดิมยังนับในกำไรสุทธิ เพราะเป็นเงินที่จ่ายไปจริง)
 
+  // 🎯 v6.268: **ขั้นเหยื่อจำกัดเพดานความหายากที่ตกได้** — ค่าจริงจาก tuning.baitRarityCeiling ในบันเดิลเกม
+  //   index = ขั้นเหยื่อ−1 · ค่า = index สูงสุดของ rarityWeights [common,uncommon,rare,epic,legendary,mythic]
+  //   ⚠️ นี่คือข้อจำกัด "แข็ง" ที่ตัวเลขกำไรเฉลี่ยมองไม่เห็น: ขั้น 1–2 ต่อให้ตกเป็นล้านครั้งก็ไม่มีวันเจอ epic ขึ้นไป
+  //   Advisor เลือกจากกำไรที่วัดได้จริงจึงไม่ได้ "ผิด" — แต่ผู้ใช้ควรรู้ว่ากำลังแลกอะไรไป (ปลาแพง + XP ก้อนใหญ่)
+  const BAIT_RARITY_CEILING = [2, 2, 3, 4, 4, 5, 5, 5];
+  const RARITY_TH = ['ธรรมดา', 'ไม่ค่อยเจอ', 'แรร์', 'เอปิก', 'ตำนาน', 'เทพ'];
+  function baitCeilingNote(tier) {
+    const c = BAIT_RARITY_CEILING[(tier | 0) - 1];
+    if (c == null) return `ขั้น ${tier}: ไม่รู้เพดานความหายาก (นอกตาราง)`;
+    const blocked = RARITY_TH.slice(c + 1);
+    return blocked.length
+      ? `เพดานขั้น ${tier} = ${RARITY_TH[c]} — ตก ${blocked.join('/')} ไม่ได้เลย (ต้องขั้น ${BAIT_RARITY_CEILING.findIndex((v) => v > c) + 1}+)`
+      : `เพดานขั้น ${tier} = ${RARITY_TH[c]} (สูงสุดแล้ว — ตกได้ทุกระดับ)`;
+  }
   // ===== 🧠 Advisor: สมองเลือกเหยื่อ + จัดสรรยา (โหมดเดียว 2 ระดับ: แนะนำ / ลงมือเอง) =====
   // หลักคิด (จากข้อมูลจริง 1,300+ casts): ขั้นเหยื่อแทบไม่เปลี่ยนคุณภาพปลา · ปลาแพง (legendary/mythic)
   // คือฟลุ๊คที่เกิดเท่ากันทุกขั้น → เทียบขั้นด้วย "กำไร/ครั้งแบบตัดฟลุ๊ค" (trimmed) · prior = ขั้นถูกสุดชนะ
@@ -5840,9 +5887,10 @@
     const lines = [
       `🧠 Advisor${curMap ? ` · 🗺️ ${curMap}` : ''}${isOn('advisorAuto') ? ' · โหมดลงมือเอง' : ' · โหมดแนะนำ'}`,
       `🪱 เหยื่อ: ${bestTier === curT ? `คงขั้น ${curT}` : `แนะนำขั้น ${curT} → ${bestTier}`} — ${why}`,
+      `🎯 ${baitCeilingNote(bestTier)}`,   // v6.268: บอกเพดานความหายากของขั้นที่เลือก
       ...pot.note.map((n) => `🧪 ${n}`),
     ];
-    return { bestTier, curT, why, urgent, pot, lines };
+    return { bestTier, curT, why, urgent, pot, lines, ceiling: BAIT_RARITY_CEILING[bestTier - 1] ?? null };
   }
 
   // รอบทำงาน Advisor (เรียกจาก tick ทุก 5 นาที · เว้นตอนทดสอบ) — แนะนำ หรือ ลงมือ ตามโหมด
@@ -5868,7 +5916,10 @@
         const from = cfg.baitTier;
         cfg.baitTier = adv.bestTier; saveCfg(); syncPanel();
         if (adv.bestTier < from) sessionOff.delete('autoBuy');   // ลงขั้นถูก = เงินพอแล้ว — ปลุก autoBuy ที่เคยพักเพราะเงินไม่พอ
-        say(`🧠 Advisor เปลี่ยนเหยื่อ ขั้น ${from} → ${adv.bestTier} — ${adv.why}`);
+        // v6.268: แนบเพดานความหายากไปด้วย — ลดขั้นแล้วเงียบ = ไม่รู้ตัวว่าเลิกลุ้นปลาแพง/XP ก้อนใหญ่ไปแล้ว
+        const cFrom = BAIT_RARITY_CEILING[from - 1], cTo = BAIT_RARITY_CEILING[adv.bestTier - 1];
+        const warn = (cTo != null && cFrom != null && cTo < cFrom) ? ` · ⚠️ เพดานลดจาก ${RARITY_TH[cFrom]} → ${RARITY_TH[cTo]}` : '';
+        say(`🧠 Advisor เปลี่ยนเหยื่อ ขั้น ${from} → ${adv.bestTier} — ${adv.why}${warn}`);
         if (isOn('tgOn')) void tgSend(`🧠 <b>Advisor เปลี่ยนเหยื่อ</b> ขั้น ${from} → ${adv.bestTier}\n${esc(adv.why)}`);
       }
     } else advisorPotionVerdict = null;
@@ -7069,6 +7120,7 @@
       // ---- เงื่อนไขว่าถึงเวลาขายหรือยัง (คิดจากปลาในกระเป๋า) ----
       // เกณฑ์ % คิดจาก bagSlots จริง เผื่อผู้เล่นอัปเกรดกระเป๋า (50 -> สูงสุด 200 ช่อง)
       const pctNow = bag.slots > 0 ? (bag.count / bag.slots) * 100 : 0;
+      lastBagPct = pctNow;   // v6.268: ค่าจริงจากรอบนี้ → sellEveryNow() ย่นระยะเช็คเมื่อจ่อเกณฑ์
       const byPct = cfg.sellAtPct > 0 && pctNow >= cfg.sellAtPct;
       const byCount = cfg.sellAtCount > 0 && bag.count >= cfg.sellAtCount;
       const byCoins = cfg.sellAtCoins > 0 && total >= cfg.sellAtCoins;
@@ -7125,7 +7177,11 @@
 
       // ================= ขายขยะ (แท็บ 🗑️) =================
       // เกมแยกกระเป๋าเป็นแท็บ ปลา/ขยะ — ต้องสลับไปแท็บขยะแล้วกด "ขายขยะทั้งหมด" ต่างหาก
-      if (cfg.sellJunk) {
+      // 🗑️ v6.268: เลเวล ≥ `autoSellJunkLevel` (=20 ในคอนฟิกเกม) **เกมขายขยะให้เองตอนตกได้เลย**
+      //   หลักฐาน: catch log เขียน `🎣 ขยะ(?) 0.34กก 4🪙` = ได้เงินทันที · และทุกครั้งที่บอทเปิดแท็บขยะเจอ "ไม่มีขยะให้ขาย"
+      //   เราอยู่ Lv.66 → ขั้นตอนนี้เป็นการสลับแท็บ+รอ React เปล่าๆ ทุกรอบขาย · ข้ามไปเลย
+      //   ⚠️ ไม่ลบทิ้ง — อ่านเลเวลไม่ได้/เลเวลต่ำกว่าเกณฑ์ ต้องยังขายเองได้เหมือนเดิม
+      if (cfg.sellJunk && !junkAutoSold()) {
         const jt = junkTabBtn();
         if (jt) {
           fireClick(jt);
@@ -7867,7 +7923,11 @@ ${esc(reason)}
         }
 
         // ถึงเวลาแวะเช็คกระเป๋าไหม (โหมด bot: อิงจำนวนครั้งที่ตก)
-        if (isOn('sell') && casts > 0 && casts !== lastCheck && casts % Math.max(1, cfg.sellEvery) === 0) {
+        // 🎒 v6.268: `sellEvery` ห่างๆ (ผู้ใช้ตั้ง 100) แปลว่ากระเป๋าอาจพุ่งข้ามเกณฑ์ไปไกลก่อนถูกเช็ค —
+        //   100 ครั้ง ≈ 100 ชิ้น ≈ 29% ของกระเป๋า 350 ช่อง → จาก 74% ทะลุไป 100% (เต็ม/ตกต่อไม่ได้) ได้สบายๆ
+        //   แก้แบบไม่ทับค่าที่ผู้ใช้ตั้ง: ใช้ `sellEvery` เป็นค่าตั้งต้น แต่ **บีบให้สั้นลงเมื่อกระเป๋าใกล้เต็ม**
+        //   (ใช้ % ที่อ่านได้จริงจากรอบเช็คก่อนหน้า — ไม่เดา ถ้ายังไม่เคยอ่านได้ก็ใช้ค่าเดิม)
+        if (isOn('sell') && casts > 0 && casts !== lastCheck && casts % Math.max(1, sellEveryNow()) === 0) {
           lastCheck = casts;
           void runSell(false);
           return requestAnimationFrame(tick);
