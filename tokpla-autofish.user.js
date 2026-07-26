@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.283
+// @version      6.284
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.283';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.284';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -231,6 +231,7 @@
     // 👹 v6.278: โหมดล่าบอสอย่างเดียว — ระบบแยกจากการตกปลาโดยสิ้นเชิง (ดูเหตุผลเต็มที่จุดใช้ใน tick)
     bossOnly: false,             // true = ทำเฉพาะเรื่องบอส ไม่ตกปลา/ขาย/เควส/NPC เลย (ผู้ใช้กดค้างไว้เอง)
     // 🎯 v6.282: สลับเข้าโหมดล่าอย่างเดียว "อัตโนมัติ" ก่อนถึงเวลาบอส แล้วออกเองเมื่อจบทริป
+    bossBaitStockMax: 6,         // 🎲 v6.284: ตุนเหยื่อขั้น 1..N ไว้ก่อนล่าบอส (จุดอ่อนสุ่มต่อรอบ ทำนายไม่ได้) · ขั้น 7-8 แพงเกินคุ้ม
     bossOnlyAuto: true,          // เปิด = พอใกล้เวลาบอส หยุดฟาร์มเองก่อนออกเดินทาง (กันงานค้างทำให้ไปสาย)
     bossOnlyLeadMin: 5,          // กี่นาทีก่อนเวลาบอส ให้เข้าโหมดล่าอย่างเดียว (ระบบบังคับ ≥ "ไปก่อน (นาที)")
     potionWeight: true,          // 🐋 ยาปลาตัวใหญ่ (+15% น้ำหนัก=ราคาขาย 30 นาที · 2,000 🪙)
@@ -1809,11 +1810,20 @@
       // seq = ลำดับการพบแบบเพิ่มขึ้นเสมอ — `at` (Date.now) ชนกันได้ถ้าเรียนรู้ 2 ตัวในมิลลิวินาทีเดียวกัน
       //   แล้วการเรียง "ล่าสุดก่อน" จะไม่แน่นอน (เทสต์จับได้) · seq ทำให้ผลเดิมทุกครั้ง
       const seq = Math.max(0, ...Object.keys(t).map((k) => t[k].seq || 0)) + 1;
-      t[name] = { tiers: tiers.slice(), names: (names || []).slice(), at: Date.now(), seq, seen: (old?.seen || 0) + 1 };
+      // 🎲 v6.284: เก็บ "ทุกรูปแบบที่เคยเจอของบอสตัวนี้" — ใช้พิสูจน์ว่าจุดอ่อนสุ่มต่อรอบจริงไหม
+      //   (โค้ดเกมชี้ว่าสุ่ม แต่ต้องมีหลักฐานจากสนามจริงยืนยันด้วย — ไม่เชื่อการอ่านโค้ดอย่างเดียว)
+      const key = tiers.slice().sort((a, b) => a - b).join('+');
+      const variants = Array.from(new Set([...(old?.variants || []), key]));
+      t[name] = { tiers: tiers.slice(), names: (names || []).slice(), at: Date.now(), seq, seen: (old?.seen || 0) + 1, variants };
       W.localStorage.setItem(BOSS_WEAK_KEY, JSON.stringify(t));
       if (!same) {
-        logInfo(`🎯 จำจุดอ่อนของ "${name}" แล้ว: ขั้น ${tiers.join('+')} (${(names || []).join('/')}) — รอบหน้าจะซื้อเหยื่อไว้ก่อนออกเดินทาง`);
-        bossEvent(`🧠 เรียนรู้จุดอ่อน: ${name} → ขั้น ${tiers.join('+')}`);
+        logInfo(`🎯 จดจุดอ่อนรอบนี้ของ "${name}": ขั้น ${tiers.join('+')} (${(names || []).join('/')})`);
+        bossEvent(`🧠 จุดอ่อนรอบนี้: ${name} → ขั้น ${tiers.join('+')}`);
+      }
+      if (variants.length > 1 && (old?.variants || []).length <= 1) {
+        // 🎲 พิสูจน์ได้จากสนามจริงแล้วว่าสุ่มต่อรอบ — ยืนยันว่ายุทธศาสตร์ "ตุนทุกขั้น" ถูกทาง
+        logWarn(`🎲 ยืนยันแล้ว: "${name}" ให้จุดอ่อนต่างกันในแต่ละรอบ (${variants.join(' · ')}) — ทำนายล่วงหน้าไม่ได้ ต้องตุนเหยื่อทุกขั้นไว้`);
+        bossEvent(`🎲 จุดอ่อนสุ่มต่อรอบ (ยืนยันจากสนามจริง): ${name} เคยเจอ ${variants.join(' / ')}`);
       }
     } catch {}
   }
@@ -1850,15 +1860,26 @@
     out.push('\nℹ️ ตรงจุดอ่อน = เกมให้ x1.5 · ถ้าตัวเลข "ดาเมจ/กด" ของขั้นจุดอ่อนไม่สูงกว่าชัด แปลว่าเหยื่อไม่ใช่คอขวด');
     return out.join('\n');
   }
-  function bossWeakTiersWanted(maxTiers = 2) {
+  // 🎲 v6.284 — **หลักฐานชี้ขาด: จุดอ่อนสุ่มใหม่ "ต่อรอบ" ไม่ได้คงที่ต่อบอส**
+  //   ถอดจากบันเดิลเกม: `weakBaitTiers` เป็นฟิลด์ของ **raid state ต่อรอบ** (อยู่ชุดเดียวกับ
+  //   `raidId · bossId · hp · maxHp · phase · status · endsIn · players · myDamage`) = เซิร์ฟเวอร์สุ่มให้ต่อ raid
+  //   ต่างจาก `hitMode` ที่มาจาก `getRaidBossMeta(bossId)` = ตารางคงที่ต่อบอส
+  //   ⇒ **การทำนายจุดอ่อนล่วงหน้าเป็นไปไม่ได้โดยหลักการ** — ต่อให้จำบอสตัวนั้นได้ รอบหน้าก็สุ่มใหม่
+  //   ⇒ ยุทธศาสตร์ที่ถูกจึงไม่ใช่ "เดาให้แม่น" แต่คือ **"มีทุกขั้นติดตัวไว้"** แล้วสลับตอนเห็น HUD จริง
+  //   ทำได้เพราะเหยื่อเสียเฉพาะตอนเหวี่ยง (~20-70 ครั้ง/ไฟต์) — 100 ชิ้นอยู่ได้หลายรอบ
+  //   💰 ตุน 100 ชิ้น/ขั้น: ①500 ②1,200 ③2,500 ④4,500 ⑤8,000 ⑥14,000 ⑦25,000 ⑧45,000
+  //      ค่าเริ่มต้นถึงขั้น 6 = ~30,700 🪙 ครั้งเดียว · ขั้น 7-8 แพงเกินคุ้มกับรางวัลบอสตอนนี้ (150-1,250)
+  function bossWeakTiersWanted() {
+    const upto = clamp(cfg.bossBaitStockMax || 6, 1, 8);
+    return Array.from({ length: upto }, (_, i) => i + 1);
+  }
+  // ตรวจจากข้อมูลของเราเองว่า "สุ่มจริงไหม" — บอสตัวเดียวกันเคยโชว์จุดอ่อนต่างกันหรือยัง
+  function bossWeakRandomProof() {
     try {
       const t = loadBossWeak();
-      const rows = Object.keys(t).map((k) => ({ name: k, ...t[k] }))
-        .sort((a, b) => ((b.seq || 0) - (a.seq || 0)) || ((b.at || 0) - (a.at || 0)));
-      const out = [];
-      for (const r of rows) for (const ti of (r.tiers || [])) if (!out.includes(ti) && out.length < maxTiers) out.push(ti);
-      return out;
-    } catch { return []; }
+      for (const k of Object.keys(t)) if ((t[k].variants || []).length > 1) return { boss: k, variants: t[k].variants };
+      return null;
+    } catch { return null; }
   }   // v6.276: เตือน "อ่านจุดอ่อนไม่ออก" ครั้งเดียวต่อเซสชัน (bossHudMeta ถูกเรียกถี่มาก)
   // อ่าน meta ของบอสรอบนี้จาก HUD — cache 1 วิ (สแกน DOM แพง แต่ค่าพวกนี้เปลี่ยนช้า ยกเว้น HP)
   function bossHudMeta(force) {
@@ -3724,14 +3745,14 @@
       //   ระบบเดิมพึ่ง `cfg.bossBaitTier` ที่ผู้ใช้ตั้งเอง · ค่าจริงคือ 0 = **ขาซื้อไม่เคยทำงานเลย**
       //   และ HUD บอกจุดอ่อนตอนอยู่ในถ้ำ ซึ่งสายเกินจะออกมาซื้อ → ต้องใช้ "ของที่จำไว้จากรอบก่อน"
       {
-        const want = bossWeakTiersWanted(2);
+        const want = bossWeakTiersWanted();   // v6.284: ตุน "ทุกขั้น" เพราะจุดอ่อนสุ่มต่อรอบ ทำนายไม่ได้
         for (const wt of want) {
           const wr2 = rows.find((r) => r.tier === wt);
           if (!wr2) { say(`👹 หาเหยื่อจุดอ่อนขั้น ${wt} ในร้านไม่เจอ`); continue; }
           if (wr2.lockedLv) { say(`👹 เหยื่อจุดอ่อนขั้น ${wt} ยังไม่ปลดล็อก (Lv.${wr2.lockedLv})`); continue; }
           if ((wr2.stock || 0) >= 100) continue;                       // มีพอแล้ว ไม่ต้องเสียเงิน
-          if (await buyBaitRow(wr2)) say(`🎯 ซื้อเหยื่อจุดอ่อนขั้น ${wt} (จำจากบอสที่เคยเจอ) — พร้อมตี x1.5`);
-          else say(`🎯 ซื้อเหยื่อจุดอ่อนขั้น ${wt} ไม่สำเร็จ (เงินไม่พอ/ล็อก?) — จะใช้เหยื่อที่มี`);
+          if (await buyBaitRow(wr2)) say(`🎯 ตุนเหยื่อขั้น ${wt} ไว้ (จุดอ่อนสุ่มต่อรอบ — ต้องมีครบทุกขั้นถึงจะได้ x1.5 เสมอ)`);
+          else say(`🎯 ตุนเหยื่อขั้น ${wt} ไม่สำเร็จ (เงินไม่พอ/ล็อก?) — รอบนี้อาจไม่มีขั้นที่ตรงจุดอ่อน`);
         }
         if (want.length) rows = shopRows().filter((r) => r.tier);      // อ่านสต๊อกใหม่หลังซื้อ
       }
@@ -9249,6 +9270,18 @@ ${esc(reason)}
       labeled('ก่อนถึงเวลา (นาที)', numInput('bossOnlyLeadMin', 1, 60, 52)),
     ));
 
+    // 🎲 v6.284
+    panel.appendChild(row(
+      '🎲 ตุนเหยื่อทุกขั้นก่อนล่าบอส (จุดอ่อนสุ่มต่อรอบ)',
+      '**เกมสุ่มจุดอ่อนใหม่ทุกรอบ** — ยืนยันจากโค้ดเกม: `weakBaitTiers` เป็นฟิลด์ของ raid state ต่อรอบ '
+      + '(อยู่ชุดเดียวกับ raidId/hp/phase/players) ต่างจาก `hitMode` ที่มาจากตารางคงที่ต่อบอส · '
+      + '⇒ **ทำนายล่วงหน้าไม่ได้โดยหลักการ** ต่อให้จำบอสตัวนั้นได้ รอบหน้าก็สุ่มใหม่ · '
+      + 'ทางออกคือ **มีทุกขั้นติดตัวไว้** แล้วสลับตอนเห็น HUD จริงในถ้ำ (บอทสลับให้อยู่แล้ว) · '
+      + 'เหยื่อเสียเฉพาะตอนเหวี่ยง (~20-70 ครั้ง/ไฟต์) 100 ชิ้นจึงอยู่ได้หลายรอบ · '
+      + '💰 ตุนถึงขั้น 6 ≈ 30,700 🪙 ครั้งเดียว · ขั้น 7 (+25,000) และ 8 (+45,000) แพงเกินคุ้มกับรางวัลบอสตอนนี้ (150-1,250 🪙/รอบ)',
+      labeled('ตุนถึงขั้น', numInput('bossBaitStockMax', 1, 8, 44)),
+    ));
+
     // ❤️ v6.270
     panel.appendChild(row(
       '❤️ กินยาฟื้นเลือดตอนสู้บอส',
@@ -9358,9 +9391,14 @@ ${esc(reason)}
       baitBtn.addEventListener('click', () => {
         const t = loadBossWeak();
         const known = Object.keys(t).length
-          ? Object.keys(t).map((k) => `  ${k} → ขั้น ${t[k].tiers.join('+')} (${(t[k].names || []).join('/')}) · เจอ ${t[k].seen || 1} รอบ`).join('\n')
+          ? Object.keys(t).map((k) => `  ${k} → รอบล่าสุด ขั้น ${t[k].tiers.join('+')} · เคยเจอ ${(t[k].variants || []).length} รูปแบบ (${(t[k].variants || []).join(' / ')}) · ${t[k].seen || 1} รอบ`).join('\n')
           : '  (ยังไม่เคยอ่านจุดอ่อนได้เลย)';
-        say(`🎯 จุดอ่อนที่จำไว้:\n${known}\n\n${bossBaitReport()}`);
+        // 🎲 v6.284: สรุปคำตัดสินเรื่อง "สุ่มต่อรอบไหม" — แยกให้ชัดว่าอันไหนหลักฐานจากโค้ด อันไหนจากสนามจริง
+        const rnd = bossWeakRandomProof();
+        const verdict = rnd
+          ? `🎲 พิสูจน์แล้วจากสนามจริง: "${rnd.boss}" เคยให้จุดอ่อนต่างกัน ${rnd.variants.length} แบบ (${rnd.variants.join(' / ')})\n   → สุ่มต่อรอบจริง ทำนายไม่ได้ · ตอนนี้ตุนเหยื่อถึงขั้น ${clamp(cfg.bossBaitStockMax || 6, 1, 8)}`
+          : '🎲 โค้ดเกมชี้ว่าจุดอ่อนสุ่มต่อรอบ (weakBaitTiers อยู่ใน raid state ต่อรอบ) — แต่ยังไม่มีหลักฐานสนามจริงยืนยัน\n   (ต้องเจอบอส "ตัวเดิม" ≥2 รอบที่อ่านจุดอ่อนติด)';
+        say(`🎯 จุดอ่อนที่บันทึกไว้:\n${known}\n\n${verdict}\n\n${bossBaitReport()}`);
       });
       panel.appendChild(baitBtn);
       panel.appendChild(row(
