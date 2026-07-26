@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.265
+// @version      6.266
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.265';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.266';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1699,6 +1699,62 @@
     } catch {}
     return clampExit;
   }
+  // 🥁 v6.266: **ระบบตีบอสเป็นเกมจังหวะ** — ถอดจาก tuning ในบันเดิล (ค่าจริง ไม่ได้เดา):
+  //   raidTapBeatMs 1200 · raidTapPerfectMs 150 (x1.5) · raidTapGoodMs 300 (x1.15) · พลาด x0.6 · ไม่มีบีต x1.0
+  //   คอมโบ +5% ต่อครั้งติดกัน เพดาน +30% · เพดานดาเมจต่อครั้ง 6,000
+  //   เฟสบีตของเกม: `(Date.now() - state.startedAt) % beatMs` — แต่ state อยู่ใน closure ของโมดูล เรียกตรงไม่ได้
+  //   (ลองแล้ว: globalThis.TURBOPACK เปิดแค่ `push` ไม่มี registry ให้เรียก getRaidState)
+  //   ⚠️ `beatOn` เป็น **ธงต่อบอส** — บอสบางตัวไม่มีบีต (ตัวคูณ 1.0 เท่ากันหมด) ห้ามสมมติว่ามีเสมอ
+  //   → กลยุทธ์: **วัดก่อน ล็อกทีหลัง** ยิงตามเดิมพร้อมจดว่ากดที่เฟสไหนแล้วเกมตอบว่าอะไร
+  //     พอมีหลักฐานพอ (บักเก็ตชนะชัด) ค่อยเปลี่ยนไปยิงตรงบีต · ไม่มีหลักฐาน = ไม่เปลี่ยนพฤติกรรม (กันทำให้แย่ลง)
+  const BEAT_MS = 1200, BEAT_BUCKET = 100, BEAT_NB = BEAT_MS / BEAT_BUCKET;   // 12 ช่อง ช่องละ 100ms
+  // ข้อความที่เกมเด้งหลังกด (i18n จริง): "เป๊ะเวอร์! 💯" / "เป๊ะ!" / "ดี" / "หลุดจังหวะ" · + "คอมโบ ×N +M%"
+  function readTapFeedback() {
+    try {
+      const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      let n, fb = null, combo = null;
+      while ((n = tw.nextNode())) {
+        if (n.parentElement && n.parentElement.closest('[data-tkbot]')) continue;   // กฎเหล็ก #7
+        const t = (n.textContent || '').trim();
+        if (t.length > 24) continue;
+        if (!fb) {
+          if (/เป๊ะเวอร์/.test(t)) fb = 'perfect';
+          else if (/^เป๊ะ!?$/.test(t)) fb = 'perfect';
+          else if (/หลุดจังหวะ/.test(t)) fb = 'miss';
+          else if (/^ดี$/.test(t)) fb = 'good';
+        }
+        const m = /คอมโบ\s*[×x]\s*(\d+)/.exec(t);
+        if (m) combo = +m[1];
+      }
+      return { fb, combo };
+    } catch { return { fb: null, combo: null }; }
+  }
+  // หา startedAt ของไฟต์จาก React fiber (ถ้าเจอ = คำนวณบีตได้เป๊ะ ไม่ต้องเดาจากสถิติ)
+  //   state ของ raid มีลายเซ็นชัด: มีทั้ง startedAt + combo + playerHp พร้อมกัน
+  function findRaidStartedAt() {
+    try {
+      const seen = new Set();
+      const walk = (node, d) => {
+        if (!node || d > 40) return null;
+        for (const o of [node.memoizedState, node.memoizedProps]) {
+          if (o && typeof o === 'object' && !seen.has(o)) {
+            seen.add(o);
+            try {
+              if (typeof o.startedAt === 'number' && o.startedAt > 0 && 'combo' in o) return o.startedAt;
+              const st = o.memoizedState;   // hook chain
+              if (st && typeof st === 'object' && typeof st.startedAt === 'number' && 'combo' in st) return st.startedAt;
+            } catch {}
+          }
+        }
+        return walk(node.child, d + 1) || walk(node.sibling, d + 1);
+      };
+      const el = document.querySelector('#__next') || document.body.firstElementChild;
+      for (const k in el) if (k.startsWith('__reactFiber') || k.startsWith('__reactContainer')) {
+        const r = walk(el[k], 0); if (r) return r;
+      }
+    } catch {}
+    return 0;
+  }
   let bossHudCache = null, bossHudCacheAt = 0;
   // อ่าน meta ของบอสรอบนี้จาก HUD — cache 1 วิ (สแกน DOM แพง แต่ค่าพวกนี้เปลี่ยนช้า ยกเว้น HP)
   function bossHudMeta(force) {
@@ -2846,6 +2902,51 @@
     //   `weakTiers: []` (อ่านตอนจบไฟต์ = HUD หายไปแล้ว) · `baitUsed: null` (อ่านหลังสลับเหยื่อคืนเป็นเหยื่อฟาร์มแล้ว)
     //   → ต้อง "จับภาพตอนกำลังสู้จริง" แล้วเก็บไว้ ไม่ใช่ไปอ่านย้อนตอนจบ
     let snapWeak = [], snapWeakNames = [], snapBait = null, snapBossName = null, snapHpMax = null, snapHpMaxEnd = null;
+    // 🥁 v6.266: สถิติจังหวะ — จดว่า "กดที่เฟสไหนของบีต แล้วเกมตอบว่าอะไร" เพื่อหาว่าบีตอยู่ตรงไหน
+    const beatBuckets = Array.from({ length: BEAT_NB }, () => ({ n: 0, score: 0 }));
+    let beatLockSlot = null;          // ช่องที่ล็อกแล้ว (ms ใน 0..1199) · null = ยังวัดอยู่
+    let beatStartedAt = 0;            // startedAt จริงจาก fiber (ถ้าหาเจอ = แม่นสุด)
+    let beatFindTried = false;
+    let tapWait = null;               // { at, slot } — การกดที่รอผลตอบกลับ
+    const tapFb = { perfect: 0, good: 0, miss: 0, none: 0 };
+    let comboMax = 0, stunSkips = 0;
+    // เก็บผลของการกดครั้งก่อน แล้วให้คะแนนช่องที่กด (perfect +2 · good +1 · miss −1)
+    const beatSettle = () => {
+      if (!tapWait || now() - tapWait.at < 260) return;   // รอ HUD เด้งก่อน (เกมเด้งเร็วกว่านี้ไม่ทัน)
+      const { fb, combo } = readTapFeedback();
+      if (combo != null && combo > comboMax) comboMax = combo;
+      const b = beatBuckets[Math.floor(tapWait.slot / BEAT_BUCKET) % BEAT_NB];
+      if (fb === 'perfect') { tapFb.perfect++; b.n++; b.score += 2; }
+      else if (fb === 'good') { tapFb.good++; b.n++; b.score += 1; }
+      else if (fb === 'miss') { tapFb.miss++; b.n++; b.score -= 1; }
+      else tapFb.none++;
+      tapWait = null;
+      // ล็อกได้เมื่อมีตัวอย่างพอ + ช่องที่ดีสุดชนะขาด (กันล็อกจากเสียงรบกวน)
+      if (beatLockSlot == null && tapFb.perfect + tapFb.good + tapFb.miss >= 24) {
+        const ranked = beatBuckets.map((v, i) => ({ i, avg: v.n ? v.score / v.n : -9, n: v.n })).filter((v) => v.n >= 2).sort((a, b2) => b2.avg - a.avg);
+        if (ranked.length >= 3 && ranked[0].avg >= 0.8 && ranked[0].avg - ranked[ranked.length - 1].avg >= 1.2) {
+          beatLockSlot = ranked[0].i * BEAT_BUCKET + BEAT_BUCKET / 2;
+          logInfo(`🥁 ล็อกจังหวะได้ — บีตอยู่ช่อง ${ranked[0].i} (~${beatLockSlot}ms) คะแนน ${ranked[0].avg.toFixed(2)} จาก ${ranked[0].n} ครั้ง · จากนี้ยิงตรงบีต`);
+        }
+      }
+    };
+    // ตอนนี้ควรกดไหม (โหมดล็อกแล้วเท่านั้น) — ห่างจากบีตไม่เกิน ±110ms คือได้ perfect/good
+    const beatOkNow = () => {
+      if (beatLockSlot == null && !beatStartedAt) return true;   // ยังวัดอยู่ = กดตามเดิม ไม่เปลี่ยนพฤติกรรม
+      const slot = beatStartedAt ? (Date.now() - beatStartedAt) % BEAT_MS : Date.now() % BEAT_MS;
+      const target = beatStartedAt ? 0 : beatLockSlot;
+      let d = Math.abs(slot - target); if (d > BEAT_MS / 2) d = BEAT_MS - d;
+      return d <= 110;
+    };
+    // 🛡️ v6.266: เกมปฏิเสธการกดตอน downed/stunned (โค้ดเกม: Promise.reject('downed'/'stunned'))
+    //   กดตอนนั้น = เสียเปล่า + เสี่ยงตัดคอมโบ · scene มีธงพวกนี้ให้อ่านตรงๆ
+    const bossDisabledNow = () => {
+      try {
+        const s = getPhaserScene(); if (!s) return false;
+        const t = s.time && s.time.now != null ? s.time.now : 0;
+        return (s.stunVisualUntil > t) || (s.frozenUntil > t);
+      } catch { return false; }
+    };
     // 🛡️ v6.175: เดิมเงื่อนไขลูปมี isOn('bossHunt') → **ปิดโหมดล่าบอสกลางไฟต์ = ทิ้งบอสทันที**
     //   เจอสด 16:30:14: เข้าตีตอน 16:30:00 แล้วโดนตัดจบใน 14 วิ ("กดเกจ 0") ทั้งที่บอสยืนอยู่ตรงหน้า
     //   ซ้ำร้าย พอเปิดโหมดใหม่ ขา "เข้าถ้ำ" ชนกับขา "กลับบ้าน" → แมพเด้ง ถ้ำ↔บ่อตกปลา 6 รอบ โดนตีฟรีจน HP เหลือ 16%
@@ -3001,6 +3102,14 @@
       // (1.5) 👊 v6.252: โหมดตีของบอสรอบนี้ — อ่านจาก HUD ทุกครั้ง (เกมกำหนดต่อบอส ห้ามเดา)
       //   melee  = ต้องเข้าใกล้ ≤60px ก่อนฟาด · charge = กดค้าง 1.8 วิแล้วปล่อย (x2) · cast = แบบเดิม (เกจ)
       if (present) {
+        // 🥁 v6.266: เก็บผลการกดครั้งก่อน + หา startedAt ครั้งเดียวต่อไฟต์ (fiber walk แพง)
+        beatSettle();
+        if (!beatFindTried && fightT0) {
+          beatFindTried = true;
+          beatStartedAt = findRaidStartedAt();
+          logInfo(beatStartedAt ? `🥁 อ่าน startedAt ของไฟต์ได้ (${beatStartedAt}) — คำนวณบีตได้เป๊ะ ไม่ต้องเดา`
+            : '🥁 หา startedAt ไม่เจอใน fiber — ใช้วิธีวัดจากผลตอบกลับแทน (เป๊ะ/ดี/หลุดจังหวะ)');
+        }
         const meta = bossHudMeta();
         // 🐛 v6.264: จับภาพข้อมูลไฟต์ "ตอนบอสยังอยู่" — จบไฟต์แล้ว HUD หาย อ่านย้อนไม่ได้
         if (!snapWeak.length && meta.weakTiers.length) { snapWeak = meta.weakTiers.slice(); snapWeakNames = meta.weakNames.slice(); }
@@ -3056,14 +3165,22 @@
           const zs = g.zones.map((z) => `${z.c} ${Math.round(z.d0)}-${Math.round(z.d1)}°`).join(' · ');
           bossEvent(`🎨 โซนเกจไฟต์นี้: ${zs}`);
         }
+        // 🥁 v6.266: กันกดตอนสตัน/แช่แข็ง (เกมปฏิเสธการกดอยู่แล้ว = เสียเปล่า) + ยิงตรงบีตเมื่อล็อกจังหวะได้แล้ว
         if ((spamNow || inRed) && orb && !orb.disabled && now() - lastPress > 60) {
-          if (gabBlock) gabBlock.p++;
-          lastPress = now(); lastBossPressAt = Date.now(); fireClick(orb); gaugePresses++;
+          if (bossDisabledNow()) { stunSkips++; }
+          else if (!beatOkNow()) { /* รอบีต — อีกไม่เกิน 110ms ก็ถึง ไม่เสียจังหวะเกจเพราะเกจหมุนเร็วกว่านั้น */ }
+          else {
+            if (gabBlock) gabBlock.p++;
+            lastPress = now(); lastBossPressAt = Date.now(); fireClick(orb); gaugePresses++;
+            if (!tapWait) tapWait = { at: now(), slot: (beatStartedAt ? (Date.now() - beatStartedAt) : Date.now()) % BEAT_MS };
+          }
         }
         await sleep(30);   // ถี่พอจับเข็ม
       } else if (orb && !orb.disabled && now() - lastEngage > 220) {
+        if (bossDisabledNow()) { stunSkips++; await sleep(120); continue; }
         lastEngage = now(); lastBossPressAt = Date.now(); fireClick(orb); hits++;   // ไม่มีเกจ + ปุ่มกดได้ = เริ่มตีครั้งใหม่ (คลิก orb ตีบอส)
         if (gabBlock) gabBlock.p++;                   // v6.235: นับด้วย ไม่งั้นคอลัมน์ "กด/วิ" ต่ำกว่าจริง
+        if (!tapWait) tapWait = { at: now(), slot: (beatStartedAt ? (Date.now() - beatStartedAt) : Date.now()) % BEAT_MS };
         await sleep(60);
       } else { await sleep(120); }
     }
@@ -3092,6 +3209,13 @@
       try { say('🎣 สลับกลับเบ็ดสำหรับฟาร์ม'); await equipRodBy('farm'); }
       catch (e) { logErr('เลือกเบ็ดฟาร์มล้มเหลว', e); }
       finally { busy = false; }
+    }
+    // 🥁 v6.266: รายงานจังหวะเป็น log เดียว — ตัวชี้ขาดว่าบอสตัวนี้ `beatOn` ไหม และบอทเกาะบีตได้หรือยัง
+    if (tapFb.perfect + tapFb.good + tapFb.miss > 0) {
+      const tot = tapFb.perfect + tapFb.good + tapFb.miss;
+      bossEvent(`🥁 จังหวะ: เป๊ะ ${tapFb.perfect} · ดี ${tapFb.good} · หลุด ${tapFb.miss} (${Math.round((tapFb.perfect + tapFb.good) / tot * 100)}% เข้าจังหวะ) · คอมโบสูงสุด ${comboMax} · ${beatStartedAt ? 'บีตจาก startedAt' : beatLockSlot != null ? `ล็อกเองที่ ${beatLockSlot}ms` : 'ยังล็อกไม่ได้'}${stunSkips ? ` · ข้ามตอนสตัน ${stunSkips}` : ''}`);
+    } else if (bossSeen) {
+      bossEvent(`🥁 ไฟต์นี้ไม่มีข้อความจังหวะเลย (กด ${gaugePresses} ครั้ง) → บอสตัวนี้น่าจะปิดบีต (beatOn=false) หรืออ่านข้อความไม่เจอ${stunSkips ? ` · ข้ามตอนสตัน ${stunSkips}` : ''}`);
     }
     const outcome = killed ? '✅ บอสตาย!' : bossSeen ? '🏁 บอสหมดเวลา/หายไป — เก็บ reward ตามส่วนที่ช่วยตี' : '⌛ บอสไม่มาในเวลาที่รอ';
     // v6.169: เพิ่มตัวเลขวัดผลของใหม่ — recenter (v6.162) · ความเร็วเข็มที่วัดได้ (เกจอัจฉริยะ v6.162) · จุดกลางวง AoE ที่เรียนรู้
@@ -3123,6 +3247,10 @@
       hitMode: bossHitMode, approaches: meleeApproaches, charges: chargeShots,
       bossName: snapBossName, weakTiers: snapWeak, weakNames: snapWeakNames,
       baitUsed: snapBait, bossHpMax: snapHpMax, bossHpMaxEnd: snapHpMaxEnd,
+      // 🥁 v6.266: หลักฐานว่าระบบจังหวะมีจริงไหม/ล็อกได้ไหม — ไฟต์หน้าจะได้ตัดสินใจจากข้อมูล ไม่ใช่เดา
+      tapPerfect: tapFb.perfect, tapGood: tapFb.good, tapMiss: tapFb.miss, tapNoFb: tapFb.none,
+      comboMax, stunSkips, beatLock: beatLockSlot, beatSrc: beatStartedAt ? 'startedAt' : (beatLockSlot != null ? 'วัดเอง' : 'ยังไม่ล็อก'),
+      beatBuckets: beatBuckets.map((b) => (b.n ? +(b.score / b.n).toFixed(2) : null)),
     });
     if (isOn('tgOn')) void tgSend(`👹 <b>จบสู้บอส</b> ${esc(outcome)}\n${esc(stat)}\nกำลังกลับไปฟาร์ม`);
     say(`👹 ${outcome}`);
