@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.287
+// @version      6.288
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.287';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.288';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -7528,6 +7528,14 @@
   //     = ข้อมูล placeholder · ของจริงมาจากเซิร์ฟเวอร์ผ่าน `getExchangesForNpc` เหมือน `getRaidBossMeta`
   //   ⇒ ต้อง **อ่านจากแผงของ NPC สดๆ** แล้วจำไว้ · แล้วสั่งระบบขาย "กันปลาชนิดนั้นไม่ให้ขาย"
   const YAD_KEY = 'tokpla_yad_wants';
+  // 🧹 v6.288: รุ่นแรกเก็บขยะจาก HUD ลง storage (`{"ขั้น":9}` — จับคำว่า "ขั้น9" ของแถบเบ็ด/ทุ่น)
+  //   ถ้าปล่อยไว้ ระบบขายจะ "กันขาย" ชนิดที่ไม่มีอยู่จริงตลอดไป → ล้างคีย์ที่ไม่ผ่านกติกาใหม่ทิ้งครั้งเดียว
+  try {
+    const bad = JSON.parse(W.localStorage.getItem('tokpla_yad_wants') || '{}');
+    const clean = {};
+    for (const [k, v] of Object.entries(bad)) if (k.length >= 4 && !/^(ขั้น|Lv|เลเวล|ระดับ|เหลือ)/.test(k)) clean[k] = v;
+    if (JSON.stringify(bad) !== JSON.stringify(clean)) W.localStorage.setItem('tokpla_yad_wants', JSON.stringify(clean));
+  } catch {}
   const yadWants = () => { try { return JSON.parse(W.localStorage.getItem(YAD_KEY) || '{}') || {}; } catch { return {}; } };
   function yadSaveWants(map) {
     try {
@@ -7541,22 +7549,40 @@
   }
   // อ่านรายการจากแผง NPC ที่เปิดอยู่ — จับรูปแบบ "<ชื่อปลา> ... <จำนวน>/<เป้า>" หรือ "<ชื่อปลา> x<เป้า>"
   //   ตัด UI บอทออกเสมอ (กฎเหล็ก #7) · คืน null ถ้าไม่เจอแผง = ผู้เรียกต้องไม่เดา
+  //   🐛 v6.288 — รุ่นแรกจับผิดหมด เพราะ scope กว้างเกิน (ยืนยันจาก log จริง 19:03-19:04):
+  //     `🎣 ลุงหยัดต้องการ: ขั้น 9 ตัว` ← ไปจับคำว่า "ขั้น9" ของ HUD เบ็ด/ทุ่น ที่ไม่เกี่ยวอะไรเลย
+  //     สาเหตุ: หา element ที่มีคำว่า "แลกปลา" ซึ่งตรงกับ **ปุ่มพร้อมท์ `🎣 แลกปลา (E)`** ด้วย
+  //     = อ่านตอนแผงยังไม่เปิด แล้วเก็บขยะลง storage (`{"ขั้น":9}`)
+  //   ✅ แต่ log 19:04:17 จับของจริงได้ตอนแผงเปิดแวบเดียว: **"ปลาหยุด 100 ตัว · เหยื่อปลอมปลาเงิน 20 ตัว"**
+  //     ⇒ แก้ความเข้าใจผิดของผมเอง: **"ปลาหยุด" มีอยู่จริง** ไม่ใช่ placeholder · และจำนวนจริงคือ 100 (คอนฟิกบอก 200)
+  //       = เซิร์ฟเวอร์ override จริงตามที่คาด · "เหยื่อปลอมปลาเงิน 20" น่าจะเป็น **ของรางวัล** ไม่ใช่ของที่ต้องเก็บ
+  //   ⇒ กติกาใหม่: ต้องมั่นใจว่า "แผงเปิดจริง" ก่อน แล้วค่อยอ่าน · และต้องแยกของที่ต้องเก็บ/ของรางวัลให้ออก
+  //     ตราบใดที่ยังแยกไม่ออก = **ไม่บันทึกอะไรเลย** แต่ dump ข้อความจริงมาให้ดู (ดีกว่าเก็บของผิด)
   function yadReadPanel() {
     try {
-      const scope = [...document.querySelectorAll('div')].find((d) => !isBotUI(d) && d.offsetParent
-        && /ลุงหยัด|แลกปลา/.test(d.textContent || '') && (d.textContent || '').length < 1200);
-      if (!scope) return null;
+      // ① ต้องเป็น "แผงที่เปิดอยู่" ไม่ใช่ปุ่มพร้อมท์ — ตัวชี้วัด: ไม่ใช่ <button> · มีข้อความมากพอ
+      //    และต้องมีคำที่โผล่เฉพาะในแผงแลก (ต้องการ/สะสม/แลกเลย) ไม่ใช่แค่ "แลกปลา" ที่ปุ่มพร้อมท์ก็มี
+      const cands = [...document.querySelectorAll('div,section')].filter((d) => {
+        if (isBotUI(d) || !d.offsetParent || d.closest('button')) return false;
+        const t = d.textContent || '';
+        return t.length >= 40 && t.length < 900 && /ต้องการ|สะสม|แลกเลย|นำมาแลก|ครบแล้ว/.test(t);
+      });
+      if (!cands.length) return null;
+      const scope = cands.sort((a, b) => (a.textContent || '').length - (b.textContent || '').length)[0];
       const txt = (scope.innerText || '');
+      const raw = txt.replace(/\s+/g, ' ').slice(0, 400);
       const map = {};
-      // รูปแบบที่พบได้: "ปลาทู 12/200" · "ปลาทู ×200" · "ปลาทู 200 ตัว"
-      for (const m of txt.matchAll(/([฀-๿][^\n\d]{1,24}?)\s*(?:[×x]\s*)?(\d{1,4})\s*(?:\/\s*(\d{1,4}))?\s*(?:ตัว)?/g)) {
-        const name = m[1].trim();
+      for (const m of txt.matchAll(/([฀-๿][^\n\d/]{2,24}?)\s*(?:[×x]\s*)?(\d{1,4})\s*(?:\/\s*(\d{1,4}))?\s*(?:ตัว|ชิ้น)?/g)) {
+        const name = m[1].trim().replace(/^[·•\-\s]+/, '');
         const target = m[3] ? +m[3] : +m[2];
-        if (!name || name.length < 3 || !target || target < 2) continue;
-        if (/แลก|รางวัล|ปิด|ยืนยัน|ลุงหยัด|เหรียญ|กาแฟ|ยา/.test(name)) continue;
+        if (!name || !target || target < 2) continue;
+        // ② กรองคำที่ "ไม่ใช่ชื่อของ" — `ขั้น` คือตัวที่หลอกรุ่นแรกได้จริง จึงต้องอยู่ในรายการนี้
+        if (/^(ขั้น|Lv|เลเวล|ระดับ|เหลือ|ครบ|แลก|รางวัล|ปิด|ยืนยัน|ลุงหยัด|เหรียญ|ผู้เล่น|ช่อง)/.test(name)) continue;
+        if (name.length < 4) continue;               // ชื่อของในเกมยาว ≥4 อักษรเสมอ
         map[name] = target;
       }
-      return { map, raw: txt.replace(/\s+/g, ' ').slice(0, 220) };
+      // ③ ยังแยก "ของที่ต้องเก็บ" กับ "ของรางวัล" ไม่ได้ → ไม่เดา · ให้ผู้เรียกตัดสินจาก raw
+      return { map, raw, ok: Object.keys(map).length > 0 };
     } catch { return null; }
   }
   function pickSpecies(cards) {
@@ -8051,8 +8077,20 @@ ${esc(reason)}
     if (isOn('npcYad') && now() - lastYadChk > 2000) {
       lastYadChk = now();
       const r = yadReadPanel();
-      if (r && Object.keys(r.map).length) yadSaveWants(r.map);
-      else if (r && !yadPanelWarned) { yadPanelWarned = true; logWarn(`🎣 เปิดแผงลุงหยัดแล้วแต่แกะรายการไม่ออก — ข้อความจริง: ${JSON.stringify(r.raw)}`); }
+      if (r) {
+        // 🐛 v6.288: บันทึกข้อความ **ดิบ** ของแผงทุกครั้งที่เจอ (เก็บ 5 อันล่าสุด) — จำเป็นเพราะ
+        //   ยังแยกไม่ออกว่าอันไหน "ของที่ต้องเก็บ" อันไหน "ของรางวัล" (log จริงเห็นทั้ง ปลาหยุด 100 และ เหยื่อปลอมปลาเงิน 20)
+        //   แผงปิดเร็วมาก (จับได้แวบเดียวตอน 19:04:17) → ต้องเก็บไว้ดูย้อนหลัง ไม่ใช่หวังอ่านสดให้ทัน
+        try {
+          const arr = JSON.parse(W.localStorage.getItem('tokpla_yad_raw') || '[]');
+          if (!arr.length || arr[arr.length - 1].raw !== r.raw) {
+            arr.push({ at: Date.now(), raw: r.raw, map: r.map });
+            W.localStorage.setItem('tokpla_yad_raw', JSON.stringify(arr.slice(-5)));
+            logInfo(`🎣 จับข้อความแผงลุงหยัดได้: ${JSON.stringify(r.raw.slice(0, 160))}`);
+          }
+        } catch {}
+        if (r.ok) yadSaveWants(r.map);
+      }
     }
     if (enabled && !busy && !orchestrating) {
       // 👹 v6.138: เช็ค "ยึดถ้ำบอส" ก่อนคิดตกปลา — ถ้ำบอสมีบ่อตกปลาด้วย บอสโผล่มาบอทต้องตีทันที ไม่ใช่ตกปลาแทน
