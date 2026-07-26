@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.275
+// @version      6.276
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.275';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.276';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1789,6 +1789,7 @@
     return 0;
   }
   let bossHudCache = null, bossHudCacheAt = 0;
+  let weakParseWarned = false, rodPinWarned = false;   // v6.276: เตือน "อ่านจุดอ่อนไม่ออก" ครั้งเดียวต่อเซสชัน (bossHudMeta ถูกเรียกถี่มาก)
   // อ่าน meta ของบอสรอบนี้จาก HUD — cache 1 วิ (สแกน DOM แพง แต่ค่าพวกนี้เปลี่ยนช้า ยกเว้น HP)
   function bossHudMeta(force) {
     if (!force && bossHudCache && now() - bossHudCacheAt < 1000) return bossHudCache;
@@ -1802,7 +1803,12 @@
       // "ไกลไป!" = เกมบอกเองว่าเรายังไกลเกินฟาด (ground truth ดีกว่าคำนวณระยะเอง)
       out.tooFar = /ไกลไป|Too far/i.test(txt);
       // จุดอ่อน: "จุดอ่อน: 🐛 ไส้เดือน 🐌 หนอนทอง (x1.5)" → หาเหยื่อที่ชื่อ "ตรงหรือใกล้เคียง" ในตาราง 8 ขั้น
-      const wm = txt.match(/จุดอ่อน[:：]?\s*([^\n]{0,80}?)\s*\(\s*x?1\.5\s*\)/);
+      // 🐛 v6.276: เดิมใช้ `[^\n]` = บังคับให้ "จุดอ่อน…(x1.5)" อยู่บรรทัดเดียว
+      //   คลิปผู้ใช้ 16:39 โชว์ชัดว่าเกมประกาศ `จุดอ่อน: 🦐 กุ้งฝอย · 🐟 ปลาซิว (x1.5)` จริง
+      //   แต่สถิติทุกไฟต์บันทึก `weakTiers: []` → แปลว่า regex ไม่ติด · ต้นเหตุที่เป็นไปได้สูงสุดคือ
+      //   เกมวางชื่อเหยื่อคนละ text node → innerText แทรก \n คั่น (เคยเจอเป๊ะๆ กับตัวนับหน้าประตู v6.245)
+      //   → ยอมให้ข้ามบรรทัดได้ · ผลเสียถ้าเกินจริง = ไม่มี (จำกัด 80 ตัวอักษรอยู่แล้ว)
+      const wm = txt.match(/จุดอ่อน[:：]?\s*([\s\S]{0,80}?)\s*\(\s*x?1\.5\s*\)/);
       if (wm) {
         const seg = wm[1];
         for (const b of BAIT_TIERS) {
@@ -1816,6 +1822,17 @@
         if (out.weakTiers.includes(1) && out.weakTiers.includes(2) && !/มัด|อ้วน/.test(seg)) {
           const i = out.weakTiers.indexOf(2); out.weakTiers.splice(i, 1); out.weakNames.splice(i, 1);
         }
+        // v6.276: จับข้อความได้แต่แปลงเป็นขั้นไม่ได้ = ชื่อเหยื่อในเกมไม่ตรงตาราง → ฟ้องข้อความดิบครั้งเดียว
+        //   (เช่นคลิปมี "ปลาซิว" ซึ่งไม่มีในตาราง 8 ขั้นของเรา — ต้องรู้ว่ามันคือขั้นไหนถึงจะใช้ x1.5 ได้)
+        if (!out.weakTiers.length && !weakParseWarned) {
+          weakParseWarned = true;
+          logWarn(`🎯 อ่านจุดอ่อนบอสไม่ออก — เกมเขียนว่า ${JSON.stringify(seg.replace(/\s+/g, ' ').slice(0, 60))} แต่จับคู่กับเหยื่อ 8 ขั้นไม่ได้ (เสียตัวคูณ x1.5 ไปฟรีๆ)`);
+        }
+      } else if (/จุดอ่อน/.test(txt) && !weakParseWarned) {
+        // มีคำว่า "จุดอ่อน" บนจอ แต่ regex ไม่ติดเลย = รูปแบบข้อความเปลี่ยน (ไม่ใช่ไม่มีจุดอ่อน)
+        weakParseWarned = true;
+        const around = (txt.match(/[\s\S]{0,20}จุดอ่อน[\s\S]{0,70}/) || [''])[0].replace(/\s+/g, ' ');
+        logWarn(`🎯 เจอคำว่า "จุดอ่อน" แต่รูปแบบไม่ตรงที่รอไว้ — ข้อความจริง: ${JSON.stringify(around.slice(0, 90))}`);
       }
       const pm = txt.match(/เฟส\s*(\d)/); if (pm) out.phase = +pm[1];
       // 🐛 v6.264: `name` ถูกประกาศไว้แต่**ไม่เคยมีใครเขียนค่า** → สถิติ `bossName` เป็น null ทุกไฟต์
@@ -5446,6 +5463,14 @@
     const best = ordered.find((s) => (s.val ?? 0) > 0);
     const stats = (s) => [`ปลา${s.fish ?? '–'}`, s.luck != null ? `โชค${s.luck}` : null, s.crit != null ? `คริ${s.crit}` : null, s.boss != null ? `บอส${s.boss}` : null].filter(Boolean).join('/');
     const brief = scored.map((s) => `${s.name}${s.orb ? `(${s.orb})` : ''}=${stats(s)}`).join(' · ');
+    // ⚠️ v6.276: ปุ่ม "👹 จำเป็นเบ็ดบอส / 🎣 จำเป็นเบ็ดฟาร์ม" เขียน cfg.bossRodId/farmRodId ลง config
+    //   แต่ **ไม่มีโค้ดไหนอ่านค่านั้นเลย** (grep แล้ว 0 จุด) — ผู้ใช้เห็นปุ่มขึ้น "จำไว้แล้ว: bb7590f6…" แล้วเข้าใจว่าล็อกได้
+    //   ความจริงการเลือกเบ็ดตัดสินด้วยคะแนนล้วน → ต้องบอกตรงๆ ไม่ปล่อยให้เข้าใจผิด (คลิป 16:39 ทำให้เจอเรื่องนี้)
+    const pinId = kind === 'boss' ? cfg.bossRodId : cfg.farmRodId;
+    if (pinId && !rodPinWarned) {
+      rodPinWarned = true;
+      logWarn(`🎣 คุณปักหมุดเบ็ด${kind === 'boss' ? 'บอส' : 'ฟาร์ม'}ไว้ (${String(pinId).slice(0, 8)}…) แต่ระบบ**ไม่ได้ใช้ค่านั้น** — เลือกจากค่าหินที่สแกนได้เสมอ · ที่สแกน: ${brief}`);
+    }
     if (!best) { logWarn(`🎣 ไม่มีเบ็ดชิ้นไหนมี ${label} เลย — ใช้ชิ้นเดิม · ที่สแกนได้: ${brief}`); await closeBagUI(); return false; }
     const cur = scored.find((s) => s.equipped);
     if (cur && cmp(cur, best) <= 0) {   // ชิ้นที่ใส่อยู่ดีที่สุดตามลำดับนี้แล้ว → ไม่ต้องแตะแผง (มีปุ่มขายอยู่)
@@ -5479,6 +5504,17 @@
     await closeBagUI();
     if (after && after !== before) {
       logInfo(`🎣 สลับเบ็ดสำหรับ${kind === 'boss' ? 'ตีบอส' : 'ฟาร์ม'}แล้ว: ${best.name}${best.orb ? `(${best.orb})` : ''} ${stats(best)} (${before.slice(0, 8)}→${after.slice(0, 8)}) · ที่สแกน: ${brief}`);
+      // 🔎 v6.276: **ยืนยันว่าได้ชิ้นที่ตั้งใจจริง** — เดิมเช็คแค่ "id เปลี่ยน" ซึ่งผ่านแม้จะได้ชิ้นผิด
+      //   หลักฐานที่ทำให้ต้องเพิ่ม: รอบ 16:31 สแกนเจอ `ดุกนรก=บอส27` แต่ลงเอยใส่ `มังกร=บอส6` (ต่างกัน 4.5 เท่า)
+      //   ขณะที่รอบ 10:26 เลือกถูก → เป็นอาการ "บางครั้ง" ที่อ่านโค้ดเฉยๆ ชี้ต้นตอไม่ได้ ต้องมีหลักฐานจากไฟต์จริง
+      if (kind === 'boss') {
+        const bestBoss = best.boss ?? 0;
+        const topBoss = Math.max(...scored.map((s) => s.boss ?? 0));
+        if (bestBoss < topBoss) {
+          logWarn(`🎣 ⚠️ ใส่เบ็ดที่ดาเมจบอสไม่ใช่สูงสุด — ได้ ${bestBoss} แต่มีชิ้นที่ ${topBoss} · ที่สแกน: ${brief}`);
+          if (isOn('tgOn') && isOn('tgWarn')) void tgSend(`🎣 <b>เลือกเบ็ดบอสผิดชิ้น</b> — ใส่ดาเมจ ${bestBoss} ทั้งที่มีชิ้น ${topBoss}`);
+        }
+      }
       return true;
     }
     logWarn(`🎣 กด "${ROD_USE_TXT}" แล้วแต่เบ็ดไม่เปลี่ยน (${(before || '').slice(0, 8)}) — ใช้ชิ้นเดิมต่อ`);
