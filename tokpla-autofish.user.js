@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.290
+// @version      6.291
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.290';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.291';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1655,7 +1655,7 @@
   const bossMapNever = () => {
     const s = new Set(['village', 'fisher_town']);
     // ห่อ try ทั้งก้อน — ตัวแปรพวกนี้ประกาศทีหลังในไฟล์ (FISH_MAP_KEY ~5,970) การกันพลาดต้องไม่ทำให้พังเอง
-    try { const f = W.localStorage.getItem(FISH_MAP_KEY); if (f) s.add(f); if (cfg.bossHomeMap) s.add(cfg.bossHomeMap); } catch {}
+    try { const f = W.localStorage.getItem(FISH_MAP_KEY); if (f) s.add(f); const hm = homeMapId(); if (hm) s.add(hm); } catch {}
     return s;
   };
   // 🐛 v6.249: `force` = ผู้ใช้สั่งเองผ่าน /bosscaves add — **ต้องข้ามบัญชีดำได้**
@@ -3832,7 +3832,7 @@
     let stamped = false;       // 🐛 v6.251: early-return ที่ตั้งคูลดาวน์เองแล้ว = ห้าม finally ไปตั้งทับ
     // 🐛 v6.117: บ้านต้องไม่ใช่ boss_cave — ถ้าเริ่มล่าตอนอยู่ในถ้ำแล้ว ใช้แมพฟาร์มล่าสุด/ที่ตั้ง/village
     const here = bossMapId();
-    bossHome = resumeHome || cfg.bossHomeMap || (here && !isBossMap(here) ? here : bossLastMapId) || 'village';
+    bossHome = resumeHome || homeMapId() || (here && !isBossMap(here) ? here : bossLastMapId) || 'village';
     if (isBossMap(bossHome)) bossHome = 'village';   // กันเหนียว: บ้านห้ามเป็นถ้ำบอส
     try {
       // 🛡️ v6.107: ถ้าอยู่ boss_cave อยู่แล้ว ไม่ต้องเดินไป (ข้ามเทสต์คุมตัว) · ไม่งั้นต้องคุมตัวละครได้ก่อน
@@ -4098,7 +4098,7 @@
     if (orchestrating || busy) return;
     orchestrating = true;
     try {
-      const home = cfg.bossHomeMap || 'village';
+      const home = homeMapId() || 'village';
       if (!await bossCanControl()) {
         bossEscapeFails++;
         lastBossEscapeAt = now() + (bossEscapeFails >= 2 ? 300000 : 0);   // ล้มเหลว 2 ครั้ง → เว้น 5 นาที กันสแปม
@@ -4121,7 +4121,7 @@
   async function bossFightHere() {
     if (orchestrating || busy) return;
     // ตั้งบ้านก่อนเซฟ state — ไม่งั้น bossHome ว่าง (เข้าตีโดยไม่ผ่าน runBossHunt) → รีโหลดกลางไฟต์แล้ว resume ไม่ทำงาน
-    bossHome = cfg.bossHomeMap || bossLastMapId || 'village';
+    bossHome = homeMapId() || bossLastMapId || 'village';
     if (isBossMap(bossHome)) bossHome = 'village';
     orchestrating = true; bossPhase = 'fight'; saveBossState();
     try {
@@ -4366,7 +4366,7 @@
     //   home จะเป็น fisher_town → บรรทัดเดินกลับข้ามตัวเอง (`home !== 'fisher_town'`) = **ไม่เดินกลับเลย ค้างในเมืองที่ไม่มีบ่อ**
     //   เจอจริงใน log: 23:23:34 → บ่อตกปลา แล้วเด้งกลับ → เมืองชาวประมง แล้วขึ้น "ปุ่มตกปลากดไม่ได้" รัวๆ
     const here = bossMapId();
-    const home = (here && here !== 'fisher_town') ? here : (lastFishMap() || cfg.bossHomeMap || 'village');   // v6.248: cfg.bossHome ไม่มีจริง (dead code)
+    const home = (here && here !== 'fisher_town') ? here : (lastFishMap() || homeMapId() || 'village');   // v6.248: cfg.bossHome ไม่มีจริง (dead code)
     try {
       // 🔗 B (v6.155): มาเมืองทีเดียว = ทำ "ทุกบริการที่เปิด" เลย (ไม่ต้องรอ threshold แยกของแต่ละอัน) —
       //   เช่น trip นี้ถูก trigger เพราะแก่นครบ → ฝาก legendary ที่มี + สุ่มหิน ไปเลยในคราวเดียว (แม้ legendary ยังไม่ครบ min)
@@ -4600,6 +4600,14 @@
   function mapIdOfName(nm) {
     try { const learned = JSON.parse(W.localStorage.getItem(MAP_NAME_KEY) || '{}')[nm]; if (learned) return learned; } catch {}
     return (MYTHIC_MAPS.find(([n]) => n === nm) || [])[1] || null;
+  }
+  // 🏠 v6.291: ช่อง "แมพบ้าน" รับได้ทั้งชื่อไทย ("ท่าเรือทะเล") และ id ("sea_dock")
+  //   เดิมรับเฉพาะ id → ผู้ใช้พิมพ์ชื่อไทยตามธรรมชาติ = bossTravelTo หาเส้นทางไม่เจอ = กลับบ้านไม่ถูก (พังเงียบ)
+  //   mapIdOfName คืน id ถ้าเป็นชื่อไทยที่รู้จัก · ถ้าเป็น id อยู่แล้ว/ไม่รู้จัก = คงค่าเดิม (ผ่านได้)
+  function homeMapId() {
+    const v = String(cfg.bossHomeMap || '').trim();
+    if (!v) return '';
+    return mapIdOfName(v) || v;
   }
   // ---- 🧠 ออโต้เลือกขั้นเหยื่อจากผลปลาเทพจริง (explore → exploit) ----
   //   ปัญหา: ปลาเทพ ~1%/cast → ตัวอย่างเล็กหลอกง่ายมาก · ทางแก้: (1) seed จากประวัติ recs ที่มีอยู่ (ไม่เริ่มตาบอด)
@@ -7196,11 +7204,11 @@
     let m = null;
     try { m = W.localStorage.getItem(FISH_MAP_KEY); } catch {}
     if (m && (isBossMap(m) || m === 'fisher_town')) {
-      logInfo(`🗺️ แมพบ้านที่จำไว้ (${m}) ใช้ไม่ได้แล้ว — เป็นถ้ำบอส/แมพไม่มีบ่อ · ล้างทิ้งแล้วกลับไป ${cfg.bossHomeMap || 'lotus_marsh'}`);
+      logInfo(`🗺️ แมพบ้านที่จำไว้ (${m}) ใช้ไม่ได้แล้ว — เป็นถ้ำบอส/แมพไม่มีบ่อ · ล้างทิ้งแล้วกลับไป ${homeMapId() || 'lotus_marsh'}`);
       try { W.localStorage.removeItem(FISH_MAP_KEY); } catch {}
       m = null;
     }
-    return m || cfg.bossHomeMap || 'lotus_marsh';
+    return m || homeMapId() || 'lotus_marsh';
   };
   let lastPondWalk = 0, lastPondSay = 0, pondWalkStart = 0;
   // 🐛 v6.260 (ผู้ใช้อัดวิดีโอมา 2 รอบ: "ถึงจุดหมายเควสแล้ว เด้งรัวไม่หยุด"):
@@ -9475,10 +9483,10 @@ ${esc(reason)}
     panel.appendChild(row(
       '🎯 เหยื่อจุดอ่อน & แมพบ้าน',
       '"เหยื่อจุดอ่อน" = สลับเป็นเหยื่อขั้นนี้ตอนตีบอส เพื่อดาเมจ x1.5 (จากวิดีโอจริง: มัดอ้วนขั้น 2 / กุ้งฝอยขั้น 4) · 0 = ไม่สลับ (ใช้เหยื่อเดิม) · '
-      + '"แมพบ้าน" = แมพที่จะกลับไปฟาร์มต่อหลังตีเสร็จ (ว่าง = แมพที่อยู่ตอนเริ่มล่า) · '
+      + '"แมพบ้าน" = แมพที่จะกลับไปฟาร์มต่อหลังตีเสร็จ (ว่าง = แมพที่อยู่ตอนเริ่มล่า) · พิมพ์ชื่อไทยได้เลย เช่น "ท่าเรือทะเล" (หรือ id เช่น sea_dock ก็ได้) · '
       + 'ไม่ต้องกลัวตาย: โดนบอสตีแค่สลบชั่วคราวแล้ว respawn HP เต็ม (พิสูจน์จาก log จริง — จึงไม่มีตัวเลือกถอยหนี)',
       labeled('เหยื่อจุดอ่อน (ขั้น)', numInput('bossBaitTier', 0, 8, 44)),
-      labeled('แมพบ้าน', smallTextInput('bossHomeMap', 'ว่าง=อัตโนมัติ', 96)),
+      labeled('แมพบ้าน', smallTextInput('bossHomeMap', 'เช่น ท่าเรือทะเล', 110)),
     ));
 
     // 🎥 v6.239: ปุ่มดูข้อมูลดักเลขดาเมจต่อครั้ง (ตัวดักเปิดตลอด ไม่มีสวิตช์ — อ่านอย่างเดียว)
