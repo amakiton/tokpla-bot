@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.305
+// @version      6.306
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.305';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.306';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3070,9 +3070,11 @@
     let wantBait = cfg.bossBaitTier;
     const hudMeta = bossHudMeta(true);
     if (hudMeta.weakTiers.length) {
-      // เหยื่อที่ติดเบ็ดอยู่ตรงจุดอ่อนแล้ว = ไม่ต้องสลับ (ประหยัดเวลา+ไม่เสี่ยง cycleTo พลาดกลางไฟต์)
-      // ไม่งั้นเลือก "ขั้นถูกสุดในบรรดาจุดอ่อน" — ถ้าไม่มีของ cycleTo จะสลับไม่สำเร็จเอง แล้วใช้เหยื่อเดิมตีต่อ (ไม่พัง)
-      const pick = (cb0 && hudMeta.weakTiers.includes(cb0.tier)) ? cb0.tier : hudMeta.weakTiers.slice().sort((a, b) => a - b)[0];
+      // 🎯 v6.306 (ผู้ใช้สั่ง): เลือก "ขั้นถูกสุดในบรรดาจุดอ่อน" **เสมอ** — ทุกจุดอ่อนให้ x1.5 เท่ากัน → ขั้นต่ำสุด = ถูกสุด = คุ้มสุด
+      //   (ราคา BAIT_TIERS เรียงตามขั้น: ต1=5 … ต8=450 → ขั้นต่ำ = ถูกสุดเสมอ) · ตีบอสหลายครั้ง = ประหยัดเยอะ
+      //   เดิมมีเงื่อนไข "ถ้าติดเหยื่อจุดอ่อนอยู่แล้วคงไว้" ซึ่งอาจคงขั้น "แพงกว่า" ไว้ → ตัดออกตามที่ผู้ใช้ขอ
+      //   ถ้าติดขั้นถูกสุดอยู่แล้ว = ไม่สลับเอง (เช็ค cb0?.tier !== wantBait ด้านล่าง) · ไม่มีของ = cycleTo ไม่สำเร็จ ใช้เหยื่อเดิมตีต่อ (ไม่พัง)
+      const pick = hudMeta.weakTiers.slice().sort((a, b) => a - b)[0];
       if (pick && pick !== cfg.bossBaitTier) {
         say(`🎯 จุดอ่อนบอสรอบนี้ = ${hudMeta.weakNames.join(' / ')} → ใช้ขั้น ${pick} (ที่ตั้งไว้เอง ${cfg.bossBaitTier})`);
         bossEvent(`🎯 จุดอ่อนที่เกมประกาศ: ${hudMeta.weakNames.join(' + ')} → เลือกขั้น ${pick} · ตั้งเองไว้ ${cfg.bossBaitTier}`);
