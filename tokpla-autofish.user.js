@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.304
+// @version      6.305
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.304';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.305';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -8748,9 +8748,12 @@ ${esc(reason)}
         // 🎣 v6.301 (ผู้ใช้เจอสด): สลับ "เบ็ดฟาร์ม" (ค่าหินโบนัสปลาสูงสุด) ตอนฟาร์ม — ตอนเริ่ม + ทุก 20 นาที
         //   เดิม equipRodBy('farm') ถูกเรียกเฉพาะหลังตีบอส → เลือกเบ็ดบอสไว้แล้วเปิดบอทฟาร์ม = ไม่เคยสลับกลับเบ็ดฟาร์ม
         //   ต้อง rodSwitchOn + ว่างจริง + ไม่ทดสอบ/ไม่ล่าบอส · lastFarmRodAt เริ่ม 0 → รันตอนเริ่มฟาร์มทันที
+        // 🐛 v6.305: now() = performance.now() (ms ตั้งแต่โหลดหน้า) → `now()-0 > 20นาที` จริงก็ต่อเมื่อหน้าเปิดครบ 20 นาที!
+        //   เดิม reset lastFarmRodAt=0 ตั้งใจให้ "ยิงทันทีตอนเริ่ม" แต่หลังรีโหลด (now() ยังน้อย) กลับไม่ยิงจนครบ 20 นาที
+        //   แก้: lastFarmRodAt===0 = "ยังไม่เคยเช็ค → เช็คเลย" (ผู้ใช้เจอสด: เปิดบอทหลังอัปเดตแล้วบอทไม่เช็คเบ็ด/ทุ่น)
         if ((isOn('rodSwitchOn') || isOn('floatSwitchOn')) && !testRunning && !busy && !orchestrating && bossPhase === 'idle'
-            && now() - lastFarmRodAt > 20 * 60000) {
-          lastFarmRodAt = now();
+            && (lastFarmRodAt === 0 || now() - lastFarmRodAt > 20 * 60000)) {
+          lastFarmRodAt = now() || 1;   // now()||1: กัน now() คืน 0 เป๊ะตอนโหลด (จะได้ไม่ตีความเป็น "ยังไม่เคยเช็ค" อีก)
           void farmRodSwitch();   // ⭕ v6.303: สลับเบ็ดฟาร์ม + ทุ่น (แท็บเดียวกัน) ในครั้งเดียว
           return requestAnimationFrame(tick);
         }
