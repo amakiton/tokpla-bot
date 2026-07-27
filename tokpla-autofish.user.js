@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.301
+// @version      6.302
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.301';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.302';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2686,7 +2686,9 @@
         if (stuck > 20) { bossReleaseAll(); return 'stuck'; }
         // 🧱 v6.144: ติด → "สไลด์" แกนตั้งฉากเป็นชุดยาว (~12 tick) สลับทิศทุกครั้งที่ติดใหม่ (up↔down / left↔right)
         //   เดิม: แค่สลับแกนราย tick + ยอมแพ้ stuck>10 → ข้ามสะพาน/เลี่ยงแม่น้ำไม่ได้ · พิสูจน์สด: สไลด์ยาวสลับทิศ = ข้ามสะพาน river_bank สำเร็จ
-        if (stuck >= 4 && slide === 0) { slide = 12; slideDir = -slideDir; }
+        // 🕵️ v6.302 (ผู้ใช้: "เดินซ้าย-ขวารัวๆ ดูเป็นบอท"): สไลด์ทิศเดียว "ยาวขึ้น+สุ่ม" ก่อนกลับทิศ
+        //   เดิม 12 tick คงที่ + กลับทิศทุกครั้งที่ติดใหม่ = ping-pong ซ้าย-ขวาถี่ (ลายเซ็นบอท) · ยาวขึ้น = เหมือนเดินเลี่ยงสิ่งกีดขวางจริง
+        if (stuck >= 4 && slide === 0) { slide = randInt(16, 24); slideDir = -slideDir; }
         let dir;
         if (slide > 0) {
           slide--;
@@ -2696,7 +2698,9 @@
           dir = (Math.abs(dx) > Math.abs(dy)) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
         }
         bossHold(dir);
-        await sleep(140);
+        // 🕵️ v6.302: จังหวะกดปุ่มเดิน "สุ่ม" (เดิม 140ms เป๊ะ = จังหวะหุ่นยนต์ ตรวจจับง่าย) · ช้าลงนิด = ดูรัวน้อยลง
+        //   ยังตอบสนองไว (~ครึ่งวินาที) พอเดิน/หลบได้ทัน · แต่ไม่เป็นจังหวะตายตัวแบบบอท
+        await sleep(randInt(190, 320));
       }
     } finally { bossReleaseAll(); }
     return 'timeout';
