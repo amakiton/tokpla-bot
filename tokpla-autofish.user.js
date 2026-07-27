@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.308
+// @version      6.309
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.308';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.309';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1963,6 +1963,7 @@
   }
   const BOSS_GRAPH_KEY = 'tokpla_boss_graph', BOSS_STATE_KEY = 'tokpla_boss_state';
   let bossPhase = 'idle';        // idle | travel | fight | return — persist กันหลุดตอนรีโหลด
+  let forceBossHuntNow = false;  // 🚨 v6.309: ปุ่ม "ล่าบอสด่วน" ตั้งธงนี้ → tick วิ่งเข้าถ้ำล่าบอสทันที ข้ามทุกเงื่อนไข
   let bossHome = '';             // แมพบ้านที่จะกลับ (จำตอนเริ่มล่า)
   const heldKeys = new Set();    // ปุ่มทิศที่กดค้างอยู่ (ต้องปล่อยเสมอเมื่อจบ)
 
@@ -8475,6 +8476,15 @@ ${esc(reason)}
       }
     }
     if (enabled && !busy && !orchestrating) {
+      // 🚨 v6.309 (ผู้ใช้ขอ): "ล่าบอสด่วน" — บังคับวิ่งเข้าถ้ำล่าบอสทันที ข้ามทุกเงื่อนไข (คูลดาวน์/ตัวนับ/armed/เวลา/ฟาร์ม)
+      //   busy/orchestrating กันด้วย if ด้านบนแล้ว → ถ้าบอทติดงานอยู่ ธงจะรอจนว่างค่อยยิง (ไม่ทับงานค้าง) · ยิงครั้งเดียวแล้วล้างธง
+      if (forceBossHuntNow && bossPhase === 'idle') {
+        forceBossHuntNow = false;
+        say('🚨 ล่าบอสด่วน — วิ่งเข้าถ้ำล่าบอสเดี๋ยวนี้ (ข้ามทุกเงื่อนไข)');
+        bossEvent('🚨 ล่าบอสด่วน (ผู้ใช้กดเอง) — บังคับออกล่าทันที ไม่รอคูลดาวน์/เวลา');
+        void runBossHunt();
+        return requestAnimationFrame(tick);
+      }
       // 👹 v6.138: เช็ค "ยึดถ้ำบอส" ก่อนคิดตกปลา — ถ้ำบอสมีบ่อตกปลาด้วย บอสโผล่มาบอทต้องตีทันที ไม่ใช่ตกปลาแทน
       //   บั๊ก: เดิมเช็คนี้อยู่ในสาขา idle (เข้าถึงเฉพาะตอนว่าง) → บอทตกปลารัวจนแทบไม่ได้ยิง = บอสมา 110 วิ ตกปลาเฉยๆ
       if (isOn('bossHunt') && bossPhase === 'idle' && now() - lastBossHereChk > 800) {
@@ -9790,6 +9800,25 @@ ${esc(reason)}
       paint();
       panel.appendChild(soloBtn);
       bossSoloPaint = paint;   // ให้ syncPanel เรียกทาสีใหม่ได้เวลาค่าถูกเปลี่ยนจากที่อื่น
+    }
+
+    // 🚨 v6.309 (ผู้ใช้ขอ): ปุ่ม "ล่าบอสด่วน" — บังคับวิ่งเข้าถ้ำล่าบอสทันที ข้ามทุกเงื่อนไข (คูลดาวน์/ตัวนับ/armed/เวลา/ฟาร์ม)
+    {
+      const rushBtn = document.createElement('button');
+      rushBtn.setAttribute('data-tkbot', '1');
+      rushBtn.textContent = '🚨 ล่าบอสด่วน (วิ่งเข้าถ้ำเดี๋ยวนี้)';
+      rushBtn.style.cssText = 'width:100%;padding:7px;border-radius:8px;border:none;background:#b83232;color:#fff;font-weight:800;font-size:11.5px;cursor:pointer;margin:0 0 6px;';
+      rushBtn.title = 'บังคับบอทวิ่งเข้าถ้ำล่าบอสทันที (ไม่สนคูลดาวน์/เวลา/ฟาร์ม) — ใช้ตอนเห็นบอสแล้วอยากให้ไปเลย';
+      rushBtn.addEventListener('click', () => {
+        if (!enabled) toggle();                                        // ยังไม่เปิดบอท = เปิดให้เลย
+        cfg.bossHunt = true; sessionOff.delete('bossHunt'); saveCfg();  // ต้องเปิดล่าบอส (bossFightHere/กลับบ้านใช้)
+        if (bossPhase !== 'idle') { say('🚨 บอทกำลังล่าบอสอยู่แล้ว — ไม่ต้องสั่งซ้ำ'); refreshBossBtn(); return; }
+        forceBossHuntNow = true;                                        // tick จะยิง runBossHunt ทันทีที่ว่าง
+        say('🚨 ล่าบอสด่วน! — วิ่งเข้าถ้ำล่าบอสทันทีที่ว่าง (ข้ามคูลดาวน์/เวลา/ฟาร์ม) · เปิดแท็บเกมไว้หน้าสุด');
+        if (isOn('tgOn')) void tgSend('🚨 <b>ล่าบอสด่วน</b> — บังคับออกล่าทันที');
+        refreshBossBtn();
+      });
+      panel.appendChild(rushBtn);
     }
 
     panel.appendChild(row(
