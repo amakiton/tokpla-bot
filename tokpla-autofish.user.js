@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.306
+// @version      6.307
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.306';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.307';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3084,7 +3084,15 @@
     if (wantBait > 0 && cb0?.tier !== wantBait) {
       prevBaitTier = cb0 ? cb0.tier : null;
       busy = true;
-      try { say(`👹 สลับเหยื่อจุดอ่อนขั้น ${wantBait} (x1.5 ดาเมจ)${cb0 ? '' : ' [เหยื่อเพิ่งหมด — ติดเบ็ดใหม่]'}`); await cycleTo('เลือกเหยื่อ', wantBait, () => currentBait()?.tier); } catch {}
+      try {
+        say(`👹 สลับเหยื่อจุดอ่อนขั้น ${wantBait} (x1.5 ดาเมจ)${cb0 ? '' : ' [เหยื่อเพิ่งหมด — ติดเบ็ดใหม่]'}`);
+        const okSwap = await cycleTo('เลือกเหยื่อ', wantBait, () => currentBait()?.tier);
+        // 🔎 v6.307 (ผู้ใช้เจอสด: ตอนตีบอสไม่มี "วงส้ม" บนเหยื่อ + เหยื่อไม่ลด = สงสัยเหยื่อจุดอ่อนไม่ติด → ไม่ได้ x1.5):
+        //   ยืนยันด้วยค่าจริงว่าเหยื่อที่เลือกอยู่ = ขั้นจุดอ่อนหรือไม่ · log ชัดเพื่อวินิจฉัยรอบสด
+        const nbTier = currentBait()?.tier;
+        if (nbTier === wantBait) bossEvent(`✅ เหยื่อจุดอ่อนติดแล้ว — ขั้น ${wantBait} (x1.5 พร้อม · currentBait ยืนยัน)`);
+        else { bossEvent(`⚠️ เหยื่อจุดอ่อนไม่ติด! ต้องขั้น ${wantBait} แต่ currentBait = ${nbTier ?? 'ไม่มี'} (cycleTo คืน ${okSwap}) → ตีบอสอาจไม่ได้ x1.5`); logWarn(`👹 เหยื่อจุดอ่อนไม่ติด — ขั้นเป้า ${wantBait} · ปัจจุบัน ${nbTier ?? 'ไม่มี'} · cycleTo=${okSwap}`); }
+      } catch (e) { logErr('สลับเหยื่อจุดอ่อนล้มเหลว', e); }
       finally { busy = false; }
     }
     gameEscape();   // ⎋ v6.165: ล้าง dialog/หน้าต่างค้างก่อนเริ่มตี (popup ตกปลา/ร้าน/story ฤๅษีเงา บังปุ่มตี+ยึด input)
