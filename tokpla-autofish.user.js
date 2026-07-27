@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.302
+// @version      6.303
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.302';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.303';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -142,6 +142,7 @@
     gaugeABBlockSec: 7,          // ความยาวช่วงละกลยุทธ์ (วินาที)
     gaugeABFights: 9,            // วัดกี่ไฟต์แล้วปิดเอง + สรุปผล · v6.245: 6→9 — ไฟต์ยุคใหม่สั้น (27 วิ ≈ 2-3 บล็อก) 9 ไฟต์ ≈ แขนละ ~7 บล็อก
     rodSwitchOn: true,           // 🎣 v6.190+: สลับเบ็ด "ผ่านกระเป๋า" (เลือกชิ้นที่ดาเมจบอสสูงสุดตอนตีบอส · โบนัสปลาสูงสุดตอนฟาร์ม)
+    floatSwitchOn: true,         // ⭕ v6.303: เลือกทุ่นอัตโนมัติ (ทุ่นที่โบนัสปลาสูงสุด) ผ่านกระเป๋า — เหมือนระบบเลือกเบ็ด
                                  //   (คอมเมนต์เดิมบอก "ปิดไว้" เป็นของยุค v6.189 ที่ใช้ปุ่ม G ซึ่งสลับได้แค่ tier — เลิกใช้แล้ว)
     bossRodId: '',               // 🎣 v6.174: UUID "ชิ้นเบ็ด" ที่ใช้ตอนตีบอส (เช่นชิ้นที่ติดหินดาเมจบอส) · ว่าง = ไม่สลับ
     farmRodId: '',               // 🎣 v6.174: UUID "ชิ้นเบ็ด" ที่ใช้ตอนฟาร์มปกติ · ว่าง = กลับไปชิ้นเดิมก่อนเข้าไฟต์
@@ -5828,15 +5829,91 @@
 
   async function closeBagUI() { try { gameEscape(); } catch {} await sleep(250); }
 
+  // ⭕ v6.303 (ผู้ใช้ขอ): ระบบเลือก "ทุ่น" อัตโนมัติ — มิเรอร์ระบบเลือกเบ็ด (ตรวจสดจากกระเป๋าจริง 27/7)
+  //   ทุ่นอยู่ **แท็บเดียวกับเบ็ด** (bagOpenRodTab) แต่กลุ่ม "⭕ ทุ่นที่มี" อยู่ล่างสุด (ใต้เบ็ด+เหยื่อ) → ต้องเลื่อนให้ render ก่อน
+  //   ⚠️ อิโมจิเปลี่ยนแล้ว: 🛟 → ⭕ (v6.255 comment) · ปุ่มใช้ = "ใช้ทุ่นนี้" · ทุ่นมีค่าหิน %โบนัสปลา (อ่านด้วย rodDetail ตัวเดิม)
+  const FLOAT_HEAD = '⭕ ทุ่นที่มี';
+  const FLOAT_USE_TXT = 'ใช้ทุ่นนี้';
+  const currentFloatId = () => { try { return W.localStorage.getItem('tokpla_float_instance') || ''; } catch { return ''; } };
+  function floatGroupCards() {
+    const head = [...document.querySelectorAll('span,div')].find((e) => !isBotUI(e) && e.offsetParent && (e.textContent || '').trim() === FLOAT_HEAD);
+    if (!head) return [];
+    let box = head;
+    for (let i = 0; i < 6 && box; i++) {
+      const c = [...box.querySelectorAll('button.tk-inner')].filter((b) => b.offsetParent && !isBotUI(b));
+      if (c.length) return c.map((el) => ({
+        el, name: el.getAttribute('title') || '',
+        equipped: /ใช้อยู่/.test(el.getAttribute('aria-label') || ''),
+        orb: ((el.getAttribute('style') || '').match(/#[0-9a-f]{6}/i) || [''])[0],
+      }));
+      box = box.parentElement;
+    }
+    return [];
+  }
+  // ทุ่นอยู่ท้ายลิสต์ (ใต้เบ็ด+เหยื่อ) → เลื่อนคอนเทนเนอร์ลงจนการ์ดทุ่น render
+  async function scrollBagToFloats() {
+    for (let i = 0; i < 6; i++) {
+      if (floatGroupCards().length) return true;
+      const sc = [...document.querySelectorAll('div')].filter((d) => !isBotUI(d) && d.scrollHeight > d.clientHeight + 40 && d.clientHeight > 120 && d.offsetParent);
+      if (!sc.length) break;
+      sc.forEach((s) => { s.scrollTop = s.scrollHeight; });
+      await sleep(350);
+    }
+    return floatGroupCards().length > 0;
+  }
+  // เลือกทุ่นที่ "โบนัสปลาสูงสุด" (เสมอ → โชคปลาแรร์) — ปรัชญาเดียวกับ equipRodBy('farm')
+  async function equipFloatBy() {
+    if (!await bagOpenRodTab()) { logWarn('⭕ เปิดกระเป๋าเลือกทุ่นไม่ได้ — ข้าม'); return false; }
+    if (!await scrollBagToFloats()) { logWarn('⭕ ไม่พบการ์ดทุ่นในกระเป๋า (เลื่อนแล้วไม่เจอ) — ข้าม'); await closeBagUI(); return false; }
+    const n = floatGroupCards().length;
+    const scored = [];
+    for (let i = 0; i < n; i++) {
+      const c = floatGroupCards()[i]; if (!c) continue;
+      c.el.click(); await sleep(420);
+      const d = rodDetail();   // ทุ่นใช้ค่าหินชุดเดียวกับเบ็ด (โบนัสปลา/โชค/คริ)
+      scored.push({ i, name: c.name, orb: c.orb, equipped: c.equipped, fish: d.fish, luck: d.luck, crit: d.crit });
+    }
+    const rank = (s) => [s.fish ?? -1, s.luck ?? 0, s.crit ?? 0];
+    const cmp = (a, b) => { const ra = rank(a), rb = rank(b); for (let k = 0; k < ra.length; k++) if (rb[k] !== ra[k]) return rb[k] - ra[k]; return 0; };
+    const ordered = scored.slice().sort(cmp);
+    const best = ordered.find((s) => (s.fish ?? 0) > 0) || ordered[0];
+    const stats = (s) => [`ปลา${s.fish ?? '–'}`, s.luck != null ? `โชค${s.luck}` : null, s.crit != null ? `คริ${s.crit}` : null].filter(Boolean).join('/');
+    const brief = scored.map((s) => `${s.name}${s.orb ? `(${s.orb})` : ''}=${stats(s)}`).join(' · ');
+    if (!best) { logWarn(`⭕ อ่านค่าทุ่นไม่ได้เลย — ใช้ทุ่นเดิม · ที่สแกน: ${brief}`); await closeBagUI(); return false; }
+    const cur = scored.find((s) => s.equipped);
+    if (cur && cmp(cur, best) <= 0) { logInfo(`⭕ คงทุ่นเดิม — ${cur.name} โบนัสปลาสูงสุดแล้ว (${stats(cur)}) · ที่สแกน: ${brief}`); await closeBagUI(); return true; }
+    const before = currentFloatId();
+    const findCard = () => floatGroupCards().find((c) => c.name === best.name && c.orb === best.orb) || floatGroupCards()[best.i];
+    if (!findCard()) { await closeBagUI(); return false; }
+    let btns = [];
+    for (let a = 0; a < 3; a++) {
+      const card = findCard(); if (!card) break;
+      card.el.click(); await sleep(500);
+      btns = [...document.querySelectorAll('button')].filter((b) => b.offsetParent && !isBotUI(b) && (b.textContent || '').trim() === FLOAT_USE_TXT);
+      if (btns.length === 1) break;
+    }
+    if (btns.length !== 1) { logWarn(`⭕ ยกเลิกสลับทุ่น — หาปุ่ม "${FLOAT_USE_TXT}" ได้ ${btns.length} ปุ่ม (ต้อง 1) · เป้า: ${best.name} · ที่สแกน: ${brief}`); await closeBagUI(); return false; }
+    if (/ขาย/.test(btns[0].textContent || '')) { logWarn('⭕ ยกเลิก — ปุ่มที่จะกดมีคำว่า "ขาย"'); await closeBagUI(); return false; }
+    btns[0].click(); await sleep(700);
+    const after = currentFloatId();
+    await closeBagUI();
+    if (after && after !== before) { logInfo(`⭕ สลับทุ่นแล้ว: ${best.name} ${stats(best)} (${(before || '').slice(0, 8)}→${after.slice(0, 8)}) · ที่สแกน: ${brief}`); return true; }
+    logWarn(`⭕ กด "${FLOAT_USE_TXT}" แล้วแต่ทุ่นไม่เปลี่ยน (${(before || '').slice(0, 8)}) — ใช้อันเดิม · ที่สแกน: ${brief}`);
+    return false;
+  }
+
   // 🎣 v6.301 (ผู้ใช้เจอสด: เลือกเบ็ดบอสไว้ เปิดบอทฟาร์ม แล้วบอทไม่สลับเป็นเบ็ดฟาร์ม):
   //   เดิม equipRodBy('farm') ถูกเรียก **เฉพาะหลังตีบอสจบ** (bossFight return) เท่านั้น → ฟาร์มปกติไม่มีอะไรเรียก = ไม่เคยสลับ
   //   แก้: ให้ tick เรียกตัวนี้ตอนฟาร์ม (ตอนเริ่ม + เป็นระยะ) — เลือกเบ็ดโบนัสปลาสูงสุดจากค่าหิน (ตามที่ผู้ใช้เลือก "ออโต้")
   //   ครอบ busy กันชนงานอื่น + เว้นช่วงยาว (เปิดกระเป๋าสแกน = สะดุดการตกไม่กี่วิ ไม่ควรถี่)
   async function farmRodSwitch() {
-    if (busy || orchestrating || !isOn('rodSwitchOn')) return;
+    if (busy || orchestrating || (!isOn('rodSwitchOn') && !isOn('floatSwitchOn'))) return;
     busy = true;
-    try { await equipRodBy('farm'); }
-    catch (e) { logErr('สลับเบ็ดฟาร์มล้มเหลว', e); }
+    try {
+      if (isOn('rodSwitchOn')) await equipRodBy('farm');
+      if (isOn('floatSwitchOn')) await equipFloatBy();   // ⭕ v6.303: เลือกทุ่นโบนัสปลาสูงสุดด้วย (แท็บเดียวกัน)
+    }
+    catch (e) { logErr('สลับเบ็ด/ทุ่นฟาร์มล้มเหลว', e); }
     finally { busy = false; lastCast = now(); pendingCast = 0; }
   }
 
@@ -8655,10 +8732,10 @@ ${esc(reason)}
         // 🎣 v6.301 (ผู้ใช้เจอสด): สลับ "เบ็ดฟาร์ม" (ค่าหินโบนัสปลาสูงสุด) ตอนฟาร์ม — ตอนเริ่ม + ทุก 20 นาที
         //   เดิม equipRodBy('farm') ถูกเรียกเฉพาะหลังตีบอส → เลือกเบ็ดบอสไว้แล้วเปิดบอทฟาร์ม = ไม่เคยสลับกลับเบ็ดฟาร์ม
         //   ต้อง rodSwitchOn + ว่างจริง + ไม่ทดสอบ/ไม่ล่าบอส · lastFarmRodAt เริ่ม 0 → รันตอนเริ่มฟาร์มทันที
-        if (isOn('rodSwitchOn') && !testRunning && !busy && !orchestrating && bossPhase === 'idle'
+        if ((isOn('rodSwitchOn') || isOn('floatSwitchOn')) && !testRunning && !busy && !orchestrating && bossPhase === 'idle'
             && now() - lastFarmRodAt > 20 * 60000) {
           lastFarmRodAt = now();
-          void farmRodSwitch();
+          void farmRodSwitch();   // ⭕ v6.303: สลับเบ็ดฟาร์ม + ทุ่น (แท็บเดียวกัน) ในครั้งเดียว
           return requestAnimationFrame(tick);
         }
 
@@ -9917,6 +9994,7 @@ ${esc(reason)}
         + 'เบ็ด tier เดียวกันชิ้นอื่นจึงเลือกด้วย G ไม่ได้ และพอหลุดออกมาแล้วกลับเข้าไม่ได้ (ต้องเลือกเองจากกระเป๋า) · '
         + 'เปิดใช้มีประโยชน์กรณีเดียวคือเบ็ดสองชิ้นอยู่คนละ tier กันจริงๆ · ไม่งั้นแนะนำใส่เบ็ดที่ต้องการค้างไว้เอง',
         labeled('เปิดใช้', checkbox('rodSwitchOn')),
+        labeled('⭕ เลือกทุ่นออโต้', checkbox('floatSwitchOn')),   // ⭕ v6.303: เลือกทุ่นโบนัสปลาสูงสุดอัตโนมัติ (แท็บเดียวกับเบ็ด)
         mkRodBtn('bossRodId', '👹 จำเป็นเบ็ดบอส', 'ใส่เบ็ดที่แรงกับบอส (เช่นติดหินดาเมจบอส) แล้วกดปุ่มนี้'),
         mkRodBtn('farmRodId', '🎣 จำเป็นเบ็ดฟาร์ม', 'ใส่เบ็ดที่ใช้ตกปลาปกติ แล้วกดปุ่มนี้'),
       ));
