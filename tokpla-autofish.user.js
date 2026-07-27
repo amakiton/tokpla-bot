@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.303
+// @version      6.304
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.303';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.304';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3050,6 +3050,14 @@
     } else {
       logInfo('👹 ปิดการสลับเบ็ดไว้ — ใช้เบ็ดที่ใส่อยู่ตีบอส');
     }
+    // ⭕ v6.304 (ผู้ใช้เจอสด: ทุ่น "ตาดุก" = ของรางวัลบอส มี "ตีบอสแรงขึ้น 15%"): สลับเป็นทุ่นดาเมจบอสสูงสุดก่อนตี
+    //   (สลับกลับทุ่นฟาร์มหลังสู้จบ — ดูจุด equipFloatBy('farm') ตอน return) · ไม่มีทุ่นบอส = คงทุ่นเดิม
+    if (isOn('floatSwitchOn')) {
+      busy = true;
+      try { say('👹 เลือกทุ่นที่ตีบอสแรงสุด'); await equipFloatBy('boss'); }
+      catch (e) { logErr('เลือกทุ่นบอสล้มเหลว', e); }
+      finally { busy = false; }
+    }
     let prevBaitTier = null;
     // 🐛 v6.243: เดิมมีเงื่อนไข `currentBait() &&` → **เหยื่อหมด (currentBait null) = ข้ามการสลับ = ตีบอสไม่ได้** (ผู้ใช้เจอ)
     //   ใหม่: สลับเป็นเหยื่อจุดอ่อนแม้ตอนนี้ไม่มีเหยื่อติดเบ็ด — cycleTo จะ equip ให้ (ensureBossBaitStock ซื้อมารอแล้ว)
@@ -3575,11 +3583,16 @@
       try { await cycleTo('เลือกเหยื่อ', prevBaitTier, () => currentBait()?.tier); } catch {}
       finally { busy = false; }
     }
-    // 🎣 v6.190: คืนเบ็ด — เลือกชิ้นที่ "โบนัสปลา" สูงสุดกลับมาฟาร์ม (ไม่อิง UUID เดิมแล้ว)
-    if (isOn('rodSwitchOn')) {
+    // 🎣 v6.190: คืนเบ็ด — เลือกชิ้นที่ "โบนัสปลา" สูงสุดกลับมาฟาร์ม (ไม่อิง UUID เดิมแล้ว) · ⭕ v6.304: ทุ่นด้วย
+    if (isOn('rodSwitchOn') || isOn('floatSwitchOn')) {
       busy = true;
-      try { say('🎣 สลับกลับเบ็ดสำหรับฟาร์ม'); await equipRodBy('farm'); lastFarmRodAt = now(); }   // v6.301: กัน idle-check สแกนซ้ำทันทีหลังบอส
-      catch (e) { logErr('เลือกเบ็ดฟาร์มล้มเหลว', e); }
+      try {
+        say('🎣 สลับกลับเบ็ด/ทุ่นสำหรับฟาร์ม');
+        if (isOn('rodSwitchOn')) await equipRodBy('farm');
+        if (isOn('floatSwitchOn')) await equipFloatBy('farm');   // ⭕ v6.304: สลับทุ่นกลับฟาร์ม (โบนัสปลาสูงสุด) ด้วย
+        lastFarmRodAt = now();
+      }   // v6.301: กัน idle-check สแกนซ้ำทันทีหลังบอส
+      catch (e) { logErr('เลือกเบ็ด/ทุ่นฟาร์มล้มเหลว', e); }
       finally { busy = false; }
     }
     // 🥁 v6.266: รายงานจังหวะเป็น log เดียว — ตัวชี้ขาดว่าบอสตัวนี้ `beatOn` ไหม และบอทเกาะบีตได้หรือยัง
@@ -5861,8 +5874,9 @@
     }
     return floatGroupCards().length > 0;
   }
-  // เลือกทุ่นที่ "โบนัสปลาสูงสุด" (เสมอ → โชคปลาแรร์) — ปรัชญาเดียวกับ equipRodBy('farm')
-  async function equipFloatBy() {
+  // ⭕ เลือกทุ่นที่เก่งด้าน kind ที่สุด · kind: 'boss' (ตีบอสแรงขึ้น — เช่นตาดุก +15%) | 'farm' (โบนัสปลา — เช่นโฟม EVA +34%)
+  //   🐟 v6.304: ทุ่น "ของรางวัลบอส" (ตาดุก) มี "ตีบอสแรงขึ้น 15%" ในคำโปรย = boss bonus เหมือนเบ็ดดุกนรก (rodDetail อ่าน d.boss ได้)
+  async function equipFloatBy(kind = 'farm') {
     if (!await bagOpenRodTab()) { logWarn('⭕ เปิดกระเป๋าเลือกทุ่นไม่ได้ — ข้าม'); return false; }
     if (!await scrollBagToFloats()) { logWarn('⭕ ไม่พบการ์ดทุ่นในกระเป๋า (เลื่อนแล้วไม่เจอ) — ข้าม'); await closeBagUI(); return false; }
     const n = floatGroupCards().length;
@@ -5870,18 +5884,20 @@
     for (let i = 0; i < n; i++) {
       const c = floatGroupCards()[i]; if (!c) continue;
       c.el.click(); await sleep(420);
-      const d = rodDetail();   // ทุ่นใช้ค่าหินชุดเดียวกับเบ็ด (โบนัสปลา/โชค/คริ)
-      scored.push({ i, name: c.name, orb: c.orb, equipped: c.equipped, fish: d.fish, luck: d.luck, crit: d.crit });
+      const d = rodDetail();   // ทุ่นใช้ค่าชุดเดียวกับเบ็ด (โบนัสปลา/โชค/คริ + ตีบอสในคำโปรย)
+      scored.push({ i, name: c.name, orb: c.orb, equipped: c.equipped, boss: d.boss, fish: d.fish, luck: d.luck, crit: d.crit });
     }
-    const rank = (s) => [s.fish ?? -1, s.luck ?? 0, s.crit ?? 0];
+    // boss = ดาเมจบอสก่อน (เสมอดูโบนัสปลา) · farm = โบนัสปลาก่อน (เสมอ → โชค → คริ) — เหมือน equipRodBy
+    const rank = (s) => kind === 'boss' ? [s.boss ?? -1, s.fish ?? -1] : [s.fish ?? -1, s.luck ?? 0, s.crit ?? 0];
     const cmp = (a, b) => { const ra = rank(a), rb = rank(b); for (let k = 0; k < ra.length; k++) if (rb[k] !== ra[k]) return rb[k] - ra[k]; return 0; };
+    const field = kind === 'boss' ? 'boss' : 'fish';
     const ordered = scored.slice().sort(cmp);
-    const best = ordered.find((s) => (s.fish ?? 0) > 0) || ordered[0];
-    const stats = (s) => [`ปลา${s.fish ?? '–'}`, s.luck != null ? `โชค${s.luck}` : null, s.crit != null ? `คริ${s.crit}` : null].filter(Boolean).join('/');
+    const best = ordered.find((s) => (s[field] ?? 0) > 0) || ordered[0];
+    const stats = (s) => [`ปลา${s.fish ?? '–'}`, s.boss != null ? `บอส${s.boss}` : null, s.luck != null ? `โชค${s.luck}` : null, s.crit != null ? `คริ${s.crit}` : null].filter(Boolean).join('/');
     const brief = scored.map((s) => `${s.name}${s.orb ? `(${s.orb})` : ''}=${stats(s)}`).join(' · ');
     if (!best) { logWarn(`⭕ อ่านค่าทุ่นไม่ได้เลย — ใช้ทุ่นเดิม · ที่สแกน: ${brief}`); await closeBagUI(); return false; }
     const cur = scored.find((s) => s.equipped);
-    if (cur && cmp(cur, best) <= 0) { logInfo(`⭕ คงทุ่นเดิม — ${cur.name} โบนัสปลาสูงสุดแล้ว (${stats(cur)}) · ที่สแกน: ${brief}`); await closeBagUI(); return true; }
+    if (cur && cmp(cur, best) <= 0) { logInfo(`⭕ คงทุ่นเดิม — ${cur.name} เหมาะกับ${kind === 'boss' ? 'ตีบอส' : 'ฟาร์ม'}ที่สุดแล้ว (${stats(cur)}) · ที่สแกน: ${brief}`); await closeBagUI(); return true; }
     const before = currentFloatId();
     const findCard = () => floatGroupCards().find((c) => c.name === best.name && c.orb === best.orb) || floatGroupCards()[best.i];
     if (!findCard()) { await closeBagUI(); return false; }
@@ -5897,7 +5913,7 @@
     btns[0].click(); await sleep(700);
     const after = currentFloatId();
     await closeBagUI();
-    if (after && after !== before) { logInfo(`⭕ สลับทุ่นแล้ว: ${best.name} ${stats(best)} (${(before || '').slice(0, 8)}→${after.slice(0, 8)}) · ที่สแกน: ${brief}`); return true; }
+    if (after && after !== before) { logInfo(`⭕ สลับทุ่นสำหรับ${kind === 'boss' ? 'ตีบอส' : 'ฟาร์ม'}แล้ว: ${best.name} ${stats(best)} (${(before || '').slice(0, 8)}→${after.slice(0, 8)}) · ที่สแกน: ${brief}`); return true; }
     logWarn(`⭕ กด "${FLOAT_USE_TXT}" แล้วแต่ทุ่นไม่เปลี่ยน (${(before || '').slice(0, 8)}) — ใช้อันเดิม · ที่สแกน: ${brief}`);
     return false;
   }
@@ -5911,7 +5927,7 @@
     busy = true;
     try {
       if (isOn('rodSwitchOn')) await equipRodBy('farm');
-      if (isOn('floatSwitchOn')) await equipFloatBy();   // ⭕ v6.303: เลือกทุ่นโบนัสปลาสูงสุดด้วย (แท็บเดียวกัน)
+      if (isOn('floatSwitchOn')) await equipFloatBy('farm');   // ⭕ v6.303: เลือกทุ่นโบนัสปลาสูงสุด (แท็บเดียวกัน)
     }
     catch (e) { logErr('สลับเบ็ด/ทุ่นฟาร์มล้มเหลว', e); }
     finally { busy = false; lastCast = now(); pendingCast = 0; }
