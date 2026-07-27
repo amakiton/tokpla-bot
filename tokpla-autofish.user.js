@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.307
+// @version      6.308
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -40,7 +40,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.307';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.308';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3081,6 +3081,8 @@
       }
       if (pick) wantBait = pick;
     }
+    // 🔎 v6.308: log กรณี "เหยื่อจุดอ่อนติดอยู่แล้ว" ด้วย (ไม่งั้นรอบที่ไม่ต้องสลับ = เงียบ วินิจฉัยไม่ได้ว่าเริ่มถูกหรือไม่)
+    if (wantBait > 0 && cb0?.tier === wantBait) bossEvent(`✅ เหยื่อจุดอ่อนติดอยู่แล้วตอนเริ่ม — ขั้น ${wantBait} (ไม่ต้องสลับ)`);
     if (wantBait > 0 && cb0?.tier !== wantBait) {
       prevBaitTier = cb0 ? cb0.tier : null;
       busy = true;
