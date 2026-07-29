@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.313
+// @version      6.314
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.313';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.314';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -130,6 +130,84 @@
   // ขนาดแพ็คของขั้นนั้น (ขั้นล่างขายแพ็คเล็ก) — ใช้แทน PACK_SIZE ทุกจุดที่คิดเงิน/นับชิ้นของ "ขั้นหนึ่ง ๆ"
   const baitPack = (t) => BAIT_TIERS[t - 1]?.pack ?? PACK_SIZE;
 
+  // ===== 🌐 v6.314: อ่าน "คอนฟิกจริง" จากเซิร์ฟเวอร์เกม (/api/config) แทนการฝังตารางไว้ในบอท =====
+  //   ที่มา: 29 ก.ค. 69 เกมอัปเดตใหญ่ ตารางที่ฝังไว้ผิดยกแผง (ราคาเหยื่อ · จำนวนขั้น · ระดับปลา · ตารางบอส)
+  //   → เจอว่าเกมเปิด endpoint เดียวกับที่ตัวเกมใช้: **GET /api/config** (same-origin, ไม่ต้องล็อกอิน)
+  //     คืนของจริงทั้งหมด: fish[] (111 ตัว) · junk[] · shopPrices · tuning (120 ค่า) · mapPools ต่อแมพ ·
+  //     raidSpawnMinutes (ตารางบอสจากเซิร์ฟเวอร์!) · flags (ฟีเจอร์ที่เปิดอยู่) · configVersion
+  //   ⚠️ ค่าที่ฝังในบันเดิลเกม (chunk) เป็นแค่ "ค่าเริ่มต้น" — เซิร์ฟเวอร์ทับได้ (เจอจริง: บันเดิลบอกแพ็ค 100 ทุกขั้น
+  //     แต่ของจริงคือ 25/25/50/100…) → **ต้องอ่านจาก /api/config เท่านั้น** ห้ามอ่านจากบันเดิล
+  //   ปรัชญา: ตารางที่ฝังไว้ข้างบนคือ "ค่าสำรองตอนออฟไลน์" · ถ้าดึงคอนฟิกได้ ให้ทับด้วยของจริงเสมอ
+  const GCFG_KEY = 'tokpla_game_cfg';
+  const GCFG_TTL = 6 * 3600 * 1000;      // ดึงใหม่ทุก 6 ชม. (คอนฟิกไม่ได้เปลี่ยนบ่อย + เก็บ cache กันยิงถี่)
+  let gameCfg = null, gameCfgAt = 0, gameCfgFetching = false;
+  let FISH_BY_NAME = new Map();          // ชื่อปลา → {rarity, price, minKg, maxKg}
+  let MAP_POOLS = {};                    // mapId → [ชื่อปลาที่ออกในแมพนั้น]
+  let SERVER_BOSS_TIMES = null;          // ['10:30','13:30',…] จาก raidSpawnMinutes
+  let GAME_FLAGS = {};
+  try { const raw = W.localStorage.getItem(GCFG_KEY); if (raw) { const o = JSON.parse(raw); gameCfg = o.cfg; gameCfgAt = o.at || 0; } } catch {}
+
+  const mmToHHMM = (m) => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+
+  // ทับค่าคงที่ในบอทด้วยของจริงจากเซิร์ฟเวอร์ (เรียกทั้งตอนโหลด cache และตอนดึงใหม่)
+  function applyGameConfig(c, opts) {
+    if (!c || typeof c !== 'object') return false;
+    const changed = [];
+    try {
+      // 🪱 ราคาเหยื่อ/ขนาดแพ็ค — shopPrices.baitN = ราคา "ต่อชิ้น" · tuning.baitPackSizes[i] = ชิ้น/แพ็ค
+      const sp = c.shopPrices || {}, packs = (c.tuning || {}).baitPackSizes || [];
+      for (let i = 0; i < BAIT_TIERS.length; i++) {
+        const b = BAIT_TIERS[i];
+        const unit = +sp['bait' + b.tier], pack = +packs[i];
+        if (unit > 0 && unit !== b.unit) { changed.push(`เหยื่อขั้น ${b.tier} ราคา ${b.unit}→${unit}`); b.unit = unit; }
+        if (pack > 0 && pack !== b.pack) { changed.push(`เหยื่อขั้น ${b.tier} แพ็ค ${b.pack}→${pack}`); b.pack = pack; }
+      }
+      // 🐟 ตารางปลา + ปลาต่อแมพ — ใช้อ่านระดับความหายากจาก "ชื่อ" ได้ตรงๆ (แม่นกว่าเดาจากสีการ์ด)
+      if (Array.isArray(c.fish)) {
+        const m = new Map();
+        for (const f of c.fish) if (f && f.name) m.set(f.name, { rarity: f.rarity, price: f.price, minKg: f.minKg, maxKg: f.maxKg });
+        if (m.size) { if (m.size !== FISH_BY_NAME.size) changed.push(`ตารางปลา ${FISH_BY_NAME.size || 0}→${m.size} ชนิด`); FISH_BY_NAME = m; }
+      }
+      if (c.mapPools && typeof c.mapPools === 'object') MAP_POOLS = c.mapPools;
+      // 🕐 ตารางบอสจากเซิร์ฟเวอร์ (นาทีตั้งแต่เที่ยงคืน) — ของจริง 29/7/69 มี 6 รอบ (บอทฝังไว้แค่ 5 รอบ ตกหล่น 20:00)
+      if (Array.isArray(c.raidSpawnMinutes) && c.raidSpawnMinutes.length) {
+        const times = [...new Set(c.raidSpawnMinutes.filter((x) => Number.isFinite(x)))].sort((a, b) => a - b).map(mmToHHMM);
+        if (times.join(',') !== (SERVER_BOSS_TIMES || []).join(',')) changed.push(`ตารางบอส → ${times.join(',')}`);
+        SERVER_BOSS_TIMES = times;
+      }
+      if (c.flags && typeof c.flags === 'object') GAME_FLAGS = c.flags;
+    } catch (e) { try { logErr('อ่านคอนฟิกเกมล้มเหลว', e); } catch {} return false; }
+    if (changed.length && opts && opts.log) {
+      try { logInfo(`🌐 อัปเดตค่าจากเซิร์ฟเวอร์เกม (configVersion ${c.configVersion ?? '?'}): ${changed.slice(0, 8).join(' · ')}${changed.length > 8 ? ` · (+${changed.length - 8})` : ''}`); } catch {}
+    }
+    return true;
+  }
+
+  async function loadGameConfig(force) {
+    if (gameCfgFetching) return false;
+    if (!force && gameCfg && Date.now() - gameCfgAt < GCFG_TTL) return applyGameConfig(gameCfg, { log: false });
+    gameCfgFetching = true;
+    try {
+      const r = await fetch('/api/config', { credentials: 'omit', cache: 'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const c = await r.json();
+      if (!c || !Array.isArray(c.fish)) throw new Error('รูปแบบคอนฟิกไม่ตรงที่คาด');
+      const oldVer = gameCfg && gameCfg.configVersion;
+      gameCfg = c; gameCfgAt = Date.now();
+      try { W.localStorage.setItem(GCFG_KEY, JSON.stringify({ at: gameCfgAt, cfg: c })); } catch {}
+      applyGameConfig(c, { log: true });
+      if (oldVer != null && oldVer !== c.configVersion) {
+        try { logWarn(`🌐 เกมเปลี่ยนคอนฟิก (v${oldVer} → v${c.configVersion}) — บอทดึงค่าใหม่มาใช้แล้ว`); } catch {}
+      }
+      return true;
+    } catch (e) {
+      try { logErr('ดึง /api/config ไม่สำเร็จ — ใช้ตารางสำรองในบอทต่อ', e); } catch {}
+      return false;
+    } finally { gameCfgFetching = false; }
+  }
+  // ระดับความหายากจาก "ชื่อปลา" (ตารางเซิร์ฟเวอร์) — null = ไม่รู้จักชื่อนี้ (ปลาใหม่/ขยะ)
+  const rarityFromFishName = (name) => (name && FISH_BY_NAME.get(String(name).trim())?.rarity) || null;
+
   const DEFAULTS = {
     // 🎣 โหมดตกปลา (กลไกใหม่ = มินิเกมจับจังหวะหลายเฟส):
     //   'bot'      = บอทเล่นมินิเกมเองครบทุกเฟส (v6.84 — ถอดรหัส UI overlay สำเร็จ ทดสอบสดได้ปลาจริง)
@@ -154,7 +232,8 @@
     // 🕐 v6.240: รายการเวลาเกิดบอส "ตามที่ป้ายในเกมบอกเอง" — วันละ 5 รอบ มีช่วงว่างข้ามคืน 12 ชม.
     //   (v6.230 เคยเดาเป็น "ทุก 3 ชม.ตลอดวัน" → งอกรอบผี 01:30/04:30/07:30 บอทไปเก้อคืนละ 3 เที่ยว)
     //   ว่าง = กลับไปใช้แบบ "รอบแรก + ทุก N นาที" ข้างล่าง
-    bossSchedTimes: '10:30,13:30,16:30,19:30,22:30',
+    bossSchedFromServer: true,   // 🌐 v6.314: ใช้ตารางบอสจาก /api/config (raidSpawnMinutes) — ของจริงมี 6 รอบ (เพิ่ม 20:00) · ปิด = ใช้ bossSchedTimes ที่ตั้งเอง
+    bossSchedTimes: '10:30,13:30,16:30,19:30,20:00,22:30',
     bossSchedFirst: '10:30',     // (ใช้เมื่อ bossSchedTimes ว่าง) เวลาบอสรอบแรกของวัน — รอบถัดไป = +bossIntervalMin
     // 🔬 v6.238: **ถอดสวิตช์ "โหมดวัดเกจ" (gaugeProbe) ออกแล้ว** — ตอบภารกิจจบไปแล้ว และเป็นกับดัก
     //   ตอบได้: กด 464 ครั้ง อยู่ในแดงแค่ 62 แต่ดาเมจ 21,717 = 10 เท่าของทฤษฎี "แดงเท่านั้น" → นอกแดงได้ดาเมจแน่นอน
@@ -2534,6 +2613,15 @@
   //   หลักฐานยืนยัน: สถิติ 20 ไฟต์ตลอด 4 วัน อยู่ที่ชั่วโมง 10·13·16·19·22 เท่านั้น — ไม่มี 01·04·07 เลยสักครั้ง
   //   บทเรียน: "ช่วงห่างเท่ากัน" ไม่ได้แปลว่า "วนรอบทั้งวัน" — และเกมบอกตารางไว้ตรงๆ อยู่แล้ว แค่ไปอ่าน
   function bossSchedList() {
+    // 🌐 v6.314: ตารางจริงมาจากเซิร์ฟเวอร์ (raidSpawnMinutes ใน /api/config) — เชื่อค่านี้ก่อนเสมอ
+    //   ของจริง 29/7/69 = 10:30 · 13:30 · 16:30 · 19:30 · **20:00** · 22:30 = 6 รอบ
+    //   ค่าที่ฝังไว้ในบอท (และในหน่วยความจำผม) มีแค่ 5 รอบ → **พลาดรอบ 20:00 ทุกวัน** (รอบ 20:02 ที่ฆ่าได้คือรอบนี้)
+    //   ปิดได้ด้วย /set bossSchedFromServer off ถ้าอยากปักตารางเอง
+    if (isOn('bossSchedFromServer') && SERVER_BOSS_TIMES && SERVER_BOSS_TIMES.length) {
+      const out = [];
+      for (const s of SERVER_BOSS_TIMES) { const m = /^(\d{1,2})[:.](\d{1,2})$/.exec(s); if (m) out.push(+m[1] * 60 + +m[2]); }
+      if (out.length) return [...new Set(out)].sort((a, b) => a - b);
+    }
     const raw = String(cfg.bossSchedTimes || '').trim();
     if (!raw) return null;                                   // ว่าง = ผู้ใช้เลือกใช้แบบ "รอบแรก + ทุก N นาที" (ของเดิม)
     const out = [];
@@ -5488,7 +5576,10 @@
 
     return {
       name: junk ? 'ขยะ' : (nameEl?.textContent.trim() || '?'),
-      rarity, shiny, junk,
+      // 🌐 v6.314: อ่านสีการ์ดไม่ออก → เปิดตารางปลาจากเซิร์ฟเวอร์ (ชื่อ → ระดับ) เป็นชั้นสำรอง
+      //   สำคัญกับปลาระดับใหม่ (เทพ/บรรพกาล) ที่ราคาหลักแสน — อ่านระดับพลาด = เข้าสถิติผิด/เสี่ยงโดนขาย
+      rarity: rarity || (junk ? null : rarityFromFishName(nameEl?.textContent.trim())),
+      shiny, junk,
       weight: parseFloat(/น้ำหนัก\s*([\d.]+)/.exec(text)?.[1] ?? '0'),
       price: parseInt((/ขายได้\s*([\d,]+)/.exec(text)?.[1] ?? '0').replace(/,/g, ''), 10),
       score: parseInt(/คะแนนรวม\s*(\d+)/.exec(text)?.[1] ?? '0', 10),
@@ -8837,6 +8928,10 @@ ${esc(reason)}
         //   ไม่เปลี่ยนพฤติกรรม (พัก = ผู้ใช้อยากคุมเอง ห้ามบอทเดินเอง) แต่ต้อง **ส่งเสียงเตือน** ไม่ใช่เงียบหาย
         if (paused) { warnPausedNearBoss(); updateBadge(); return requestAnimationFrame(tick); }
 
+        // 🌐 v6.314: ต่ออายุคอนฟิกเกมทุก 6 ชม. (ราคาเหยื่อ/ตารางบอส/ตารางปลา เปลี่ยนได้ทุกเมื่อจากฝั่งเซิร์ฟเวอร์)
+        //   ยิงแบบไม่รอผล (void) — ไม่ตั้ง busy เพราะไม่แตะ DOM/ตัวละคร แค่ fetch เบา ๆ ครั้งเดียวต่อ 6 ชม.
+        if (Date.now() - gameCfgAt > GCFG_TTL && !gameCfgFetching) void loadGameConfig(true);
+
         // 🛡️ v6.218: ยามเฝ้าป๊อบอัพค้างทั่วไป — "ควรตกได้แต่ตกไม่ได้เพราะมี dialog ค้าง ≥3 วิ" → เคลียร์อัตโนมัติ
         //   จุดเดียวคุมทุกฟีเจอร์ (หีบ/รางวัล/error) แทนการไล่แก้ทีละป๊อบอัพ · ไม่แตะหน้าต่างรับรางวัล (auto-claim จัดการ)
         if (popupWatchdog()) return requestAnimationFrame(tick);
@@ -11311,6 +11406,11 @@ ${esc(reason)}
   // ดักจับ error/promise reject ที่หลุด → ลง log ring (ไว้ดูย้อนหลังเวลาบอทพังเงียบๆ)
   W.addEventListener('error', (e) => { try { logErr('JS error', e?.error?.stack || e?.message || e); } catch {} });
   W.addEventListener('unhandledrejection', (e) => { try { logErr('Promise reject', e?.reason?.stack || e?.reason); } catch {} });
+  // 🌐 v6.314: ดึงคอนฟิกจริงจากเซิร์ฟเวอร์ทันทีที่บูต (ใช้ cache ถ้ายังไม่เกิน 6 ชม.)
+  //   ทำก่อนบอทเริ่มทำงาน → ราคาเหยื่อ/ตารางบอส/ตารางปลา เป็นของจริงตั้งแต่รอบแรก
+  if (gameCfg) applyGameConfig(gameCfg, { log: false });   // ใช้ cache ก่อน (ไม่ต้องรอเน็ต)
+  void loadGameConfig(false);
+
   autoResumeAfterReload();
 
   // ⌨️ v6.164: เกมอัปเดต UI แล้ว "ยึด" ปุ่มลัดเปล่าไปหมด — B=กระเป๋า · P=ร้านค้า · C=ตัวละคร · Q=เควส · R=อันดับ · F=ตกปลา
