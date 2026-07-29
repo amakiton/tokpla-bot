@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.311
+// @version      6.312
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.311';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.312';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -54,13 +54,19 @@
 
   // ระดับความหายากของเกม — การ์ดปลาฝังสีขอบไว้ใน inline style (--tw-ring-color)
   // จึงอ่านระดับกลับมาจากสีได้ตรงๆ (แกะจาก RARITY_STYLE ในโค้ดเกม)
+  // 🆕 v6.312: เกมเพิ่ม 2 ระดับเหนือ mythic (เทพ / บรรพกาล) + ระดับ tiny ใต้ common
+  //   ค่าสีดึงจากบันเดิลเกมจริง (RARITY_STYLE: fishing.rarity.* → color) ไม่ใช่การเดา
+  //   ⚠️ tiny ต้องอยู่ "ก่อน" common เพราะ rarityRank ใช้ index เป็นลำดับความหายาก (ยิ่งมากยิ่งหายาก)
   const RARITY = [
-    { key: 'common',    label: 'ทั่วไป',     color: '#9ca3af' },
-    { key: 'uncommon',  label: 'ไม่ธรรมดา',  color: '#22c55e' },
-    { key: 'rare',      label: '💙 หายาก',   color: '#3b82f6' },
-    { key: 'epic',      label: '💜 สุดยอด',  color: '#a855f7' },
-    { key: 'legendary', label: '🏅 ตำนาน',   color: '#f59e0b' },
-    { key: 'mythic',    label: '🌈 เทพนิยาย', color: '#ec4899' },
+    { key: 'tiny',       label: 'จิ๋ว',        color: '#d4d4d4' },
+    { key: 'common',     label: 'ทั่วไป',     color: '#9ca3af' },
+    { key: 'uncommon',   label: 'ไม่ธรรมดา',  color: '#22c55e' },
+    { key: 'rare',       label: '💙 หายาก',   color: '#3b82f6' },
+    { key: 'epic',       label: '💜 สุดยอด',  color: '#a855f7' },
+    { key: 'legendary',  label: '🏅 ตำนาน',   color: '#f59e0b' },
+    { key: 'mythic',     label: '🌈 เทพนิยาย', color: '#ec4899' },
+    { key: 'divine',     label: '✨ เทพ',      color: '#22d3ee' },
+    { key: 'primordial', label: '🔱 บรรพกาล',  color: '#ef4444' },
   ];
   const RARITY_LABEL = Object.fromEntries(RARITY.map((r) => [r.key, r.label]));
 
@@ -88,20 +94,41 @@
     return bestD <= 90 ? best : null;
   }
 
-  // เหยื่อ/เบ็ด 8 ขั้น (แกะจาก BAIT_TIERS / ROD_TIERS) — ราคาเหยื่อคือต่อชิ้น ขายเป็นแพ็ค 100
+  // 🪱 เหยื่อ 16 ขั้น — 🔴 v6.312 อ่านสดจากหน้าร้านจริง (29 ก.ค. 69) ทั้งชื่อ/ราคา/ขนาดแพ็ค/เลเวลปลด
+  //   เกมขยายเนื้อหาครั้งใหญ่: เดิม 8 ขั้น → 16 · และ **ราคาเปลี่ยนยกแผง** (ตารางเก่าผิดทุกขั้น)
+  //     ขั้น 1 เดิมคิด 5/ชิ้น จริง 25 · ขั้น 8 เดิมคิด 450/ชิ้น จริง 205 → บอทประเมินต้นทุนขั้นสูง "แพงเกินจริง 2 เท่า"
+  //     = Advisor เลี่ยงขั้นสูงทั้งที่คุ้มกว่า (ยิ่งขั้นสูง ราคาต่อชิ้นยิ่งขยับน้อย แต่โอกาสแรร์/ปลาใหญ่พุ่ง)
+  //   ⚠️ `pack` ต่างกันต่อขั้น (25/25/50 แล้วค่อย 100) — เดิม hardcode 100 ทั้งหมด → คิดเงิน/ซื้อเพี้ยนที่ขั้น 1-3
   const BAIT_TIERS = [
-    { tier: 1, name: 'ไส้เดือน',            unit: 5,   lv: 1 },
-    { tier: 2, name: 'มัดไส้เดือนอ้วน',      unit: 12,  lv: 5 },
-    { tier: 3, name: 'จิ้งหรีดเขียว',        unit: 25,  lv: 10 },
-    { tier: 4, name: 'กุ้งฝอยสด',           unit: 45,  lv: 16 },
-    { tier: 5, name: 'เหยื่อปลอมปลาเงิน',    unit: 80,  lv: 24 },
-    { tier: 6, name: 'หนอนทองคำ',           unit: 140, lv: 32 },
-    { tier: 7, name: 'สปินเนอร์ขนนก',        unit: 250, lv: 44 },
-    { tier: 8, name: 'เหยื่อปลารุ้งมายา',    unit: 450, lv: 56 },
+    { tier: 1,  name: 'ไส้เดือน',            unit: 25,  lv: 1,   pack: 25 },
+    { tier: 2,  name: 'มัดไส้เดือนอ้วน',      unit: 27,  lv: 5,   pack: 25 },
+    { tier: 3,  name: 'จิ้งหรีดเขียว',        unit: 44,  lv: 10,  pack: 50 },
+    { tier: 4,  name: 'กุ้งฝอยสด',           unit: 69,  lv: 16,  pack: 100 },
+    { tier: 5,  name: 'เหยื่อปลอมปลาเงิน',    unit: 88,  lv: 24,  pack: 100 },
+    { tier: 6,  name: 'หนอนทองคำ',           unit: 127, lv: 32,  pack: 100 },
+    { tier: 7,  name: 'สปินเนอร์ขนนก',        unit: 164, lv: 44,  pack: 100 },
+    { tier: 8,  name: 'เหยื่อปลารุ้งมายา',    unit: 205, lv: 56,  pack: 100 },
+    { tier: 9,  name: 'เหยื่อหมึกเรืองแสง',   unit: 220, lv: 62,  pack: 100 },
+    { tier: 10, name: 'เหยื่อไข่มุกน้ำลึก',   unit: 236, lv: 74,  pack: 100 },
+    { tier: 11, name: 'เหยื่อสาหร่ายจันทรา',  unit: 251, lv: 86,  pack: 100 },
+    { tier: 12, name: 'เหยื่อผลึกน้ำวน',      unit: 267, lv: 98,  pack: 100 },
+    { tier: 13, name: 'เหยื่อเปลวใต้สมุทร',   unit: 282, lv: 110, pack: 100 },
+    { tier: 14, name: 'เหยื่อวิญญาณปลา',     unit: 295, lv: 128, pack: 100 },
+    { tier: 15, name: 'เหยื่อฝุ่นดาวตก',      unit: 308, lv: 150, pack: 100 },
+    { tier: 16, name: 'เหยื่อปฐมกัลป์',       unit: 320, lv: 175, pack: 100 },
   ];
+  const MAX_BAIT_TIER = BAIT_TIERS.length;
+  // ชื่อย่อที่การ์ดในกระเป๋าใช้ (aria-label เช่น "มัดอ้วน ×124") — ต่างจากชื่อเต็มในร้าน → ต้องรู้ทั้งคู่ ไม่งั้นสลับเหยื่อในกระเป๋าไม่เจอ
+  const BAIT_SHORT = ['', 'ไส้เดือน', 'มัดอ้วน', 'จิ้งหรีด', 'กุ้งฝอย', 'ปลาเงิน', 'หนอนทอง', 'สปินเนอร์', 'ปลารุ้ง',
+    'หมึกเรือง', 'ไข่มุก', 'สาหร่าย', 'ผลึก', 'เปลว', 'วิญญาณ', 'ฝุ่นดาว', 'ปฐมกัลป์'];
   const ROD_NAMES = ['', 'เบ็ดกิ่งไม้', 'เบ็ดไผ่ด้ามแดง', 'เบ็ดไฟเบอร์', 'เบ็ดคาร์บอนดำ',
-    'เบ็ดเงินฝังพลอย', 'เบ็ดทองคำหรู', 'เบ็ดคริสตัลน้ำแข็ง', 'เบ็ดมังกรตำนาน'];
+    'เบ็ดเงินฝังพลอย', 'เบ็ดทองคำหรู', 'เบ็ดคริสตัลน้ำแข็ง', 'เบ็ดมังกรตำนาน', '',
+    'เบ็ดกราไฟต์', 'เบ็ดเคฟลาร์', 'เบ็ดคาร์บอนถัก', 'เบ็ดแมกนีเซียมอัลลอย', 'เบ็ดไทเทเนียมเกรดบิน',
+    'เบ็ดคาร์บอนนาโน', 'เบ็ดกราฟีน', 'เบ็ดเซรามิกไฮเทค', 'เบ็ดไฟเบอร์ออปติก', 'เบ็ดไทเทเนียมรุ้ง',
+    'เบ็ดคาร์บอนโฮโลแกรม', 'เบ็ดนีออนไซเบอร์', 'เบ็ดพัลซาร์', 'เบ็ดพลาสมาคอร์', 'เบ็ดโครมอินฟินิตี้'];
   const PACK_SIZE = 100, BAIT_CAP = 1000;
+  // ขนาดแพ็คของขั้นนั้น (ขั้นล่างขายแพ็คเล็ก) — ใช้แทน PACK_SIZE ทุกจุดที่คิดเงิน/นับชิ้นของ "ขั้นหนึ่ง ๆ"
+  const baitPack = (t) => BAIT_TIERS[t - 1]?.pack ?? PACK_SIZE;
 
   const DEFAULTS = {
     // 🎣 โหมดตกปลา (กลไกใหม่ = มินิเกมจับจังหวะหลายเฟส):
@@ -185,14 +212,14 @@
     sellJunk: true,              // ขายกลุ่มขยะ 🗑️ ทั้งหมดด้วยทุกครั้งที่ขาย (ขยะไม่มีล็อก ขายเกลี้ยง)
     // ===== 📊 ระบบสถิติใหม่ (per-cast records): ทุกครั้งที่ตก บันทึก เหยื่อ/ราคาได้/กำไร/แมพ/ยา =====
     statKeep: 200,               // เก็บสถิติกี่รายการล่าสุด "ต่อชนิดเหยื่อ" (ring buffer — เกินแล้วตัวเก่าหลุด)
-    excludeRarities: ['mythic', 'legendary'], // ไม่นับระดับนี้ในสถิติเลือกเหยื่อ — mythic+legendary = ตัวแพงฟลุ๊ค ราคาสูงมากแต่มาจากดวง (แทบไม่ขึ้นกับขั้นเหยื่อ) ทำให้เลือกเหยื่อเพี้ยน · ตัดออก = ตัดสินนิ่งขึ้น (ยังตกได้เท่าเดิม)
+    excludeRarities: ['mythic', 'legendary', 'divine', 'primordial'], // ไม่นับระดับนี้ในสถิติเลือกเหยื่อ — mythic+legendary = ตัวแพงฟลุ๊ค ราคาสูงมากแต่มาจากดวง (แทบไม่ขึ้นกับขั้นเหยื่อ) ทำให้เลือกเหยื่อเพี้ยน · ตัดออก = ตัดสินนิ่งขึ้น (ยังตกได้เท่าเดิม)
     excludeSpecies: '',          // ไม่นับปลาชนิดนี้ (คั่นด้วยจุลภาค) · ว่าง = ไม่ยกเว้นเพิ่ม
     adaptFilterMap: true,        // 🗺️ กรองสถิติเฉพาะ "แมพปัจจุบัน" ตอนตัดสินใจ (แต่ละแมพปลา/ราคาต่างกัน)
     adaptFilterBuff: false,      // 🧪 กรองสถิติเฉพาะรายการที่ "สถานะยาตรงกับตอนนี้" (เข้มขึ้น ข้อมูลน้อยลง)
     speciesMode: 'all',          // all = ขายทุกชนิด | only = เฉพาะที่ระบุ | except = ทุกชนิดยกเว้นที่ระบุ
     speciesList: '',             // ชื่อปลาคั่นด้วยจุลภาค
     keepShiny: true,             // ล็อกชนิดที่มีตัว ✨ อยู่ในกระเป๋า
-    lockRarities: ['rare', 'epic', 'legendary', 'mythic'],   // ระดับที่ห้ามขาย
+    lockRarities: ['rare', 'epic', 'legendary', 'mythic', 'divine', 'primordial'],   // ระดับที่ห้ามขาย
 
     autoBuy: false,              // ซื้อเหยื่ออัตโนมัติเมื่อใกล้หมด
     sellBeforeBuy: true,         // ขายปลาก่อน "ซื้อเหยื่อใหม่"
@@ -279,7 +306,7 @@
     tgOn: false,                 // เปิดแจ้งเตือน Telegram
     tgToken: '',                 // token จาก @BotFather
     tgChat: '',                  // chat_id ปลายทาง
-    tgRarities: ['legendary', 'mythic'],   // แจ้งเตือนเมื่อได้ปลาระดับเหล่านี้
+    tgRarities: ['legendary', 'mythic', 'divine', 'primordial'],   // แจ้งเตือนเมื่อได้ปลาระดับเหล่านี้
     tgShiny: true,               // แจ้งเมื่อได้ปลา ✨
     tgNew: true,                 // แจ้งเมื่อได้ปลาตัวใหม่ (NEW!)
     tgRecord: true,              // แจ้งเมื่อทำลายสถิติน้ำหนักตัวเอง
@@ -340,7 +367,7 @@
   let enabled = false;
   let busy = false;       // กำลังเปิดกระเป๋า/ขายอยู่ — หยุดตกชั่วคราว
   let orchestrating = false;   // กำลังทำลำดับหลายขั้น (ขาย→สรุป→ซื้อ) — กัน tick แทรกกลาง
-  let baitCeil = 8;            // ขั้นเหยื่อสูงสุดที่ใช้ได้จริง (เรียนรู้จากที่เจอ locked)
+  let baitCeil = MAX_BAIT_TIER;   // ขั้นเหยื่อสูงสุดที่ใช้ได้จริง (เรียนรู้จากที่เจอ locked) · v6.312: เพดานตั้งต้น 8 → 16 ตามเกมใหม่
   let lastKnownBaitTier = 0;   // ขั้นเหยื่อที่ "รู้แน่ๆ" ล่าสุด (จาก currentBait สำเร็จ หรือ "ใส่อยู่ ✓" ในร้าน) — fallback สถิติที่แม่นกว่า cfg.baitTier
   let testRunning = false;     // 🧪 โหมดทดสอบเหยื่อกำลังทำงาน (บอทควบคุมเหยื่อ/ยา/นับ 100 ครั้ง/รอบ)
   let test = null;             // { data:{tier:{plain,buff}}, tier, phase, N }
@@ -435,6 +462,17 @@
         if (!('bagHeavyMigrated' in old)) {
           if ((c.sellAtPct || 0) >= 80) c.sellAtPct = 75;
           c.bagHeavyMigrated = 1;
+        }
+        // ✨ v6.312: เกมเพิ่มระดับ "เทพ (divine)" และ "บรรพกาล (primordial)" เหนือ mythic
+        //   ค่าที่ผู้ใช้ตั้งไว้ทั้งหมดถูกบันทึกก่อนระดับใหม่จะมีอยู่จริง → ถ้าไม่เติมให้
+        //   (ก) ห้ามขาย: ปลาแพงสุดของเกมจะถูก "ขายทั้งหมด" ทิ้งเงียบ ๆ  (ข) สถิติเหยื่อจะโดนตัวฟลุ๊คลาก
+        //   เติมเฉพาะ "ระดับใหม่" เข้าไปในลิสต์เดิม (ไม่แตะระดับที่ผู้ใช้เคยเอาออกเอง) · ครั้งเดียวด้วยธง
+        if (!('rarityV312' in old)) {
+          const addNew = (arr, base) => (Array.isArray(arr) ? [...new Set([...arr, ...base.filter((k) => arr.includes('mythic'))])] : arr);
+          c.lockRarities = addNew(c.lockRarities, ['divine', 'primordial']);
+          c.excludeRarities = addNew(c.excludeRarities, ['divine', 'primordial']);
+          c.tgRarities = addNew(c.tgRarities, ['divine', 'primordial']);
+          c.rarityV312 = 1;
         }
         // ย้ายค่าเก่า adaptUse → statWin (หน้าต่างสถิติ)
         if ('adaptUse' in old && !('statWin' in old)) c.statWin = old.adaptUse;
@@ -906,13 +944,13 @@
   const targetBait = () => {
     if (mythicActive()) {
       const m = parseInt(cfg.mythicBait, 10) || 0;
-      return Math.min(m > 0 ? clamp(m, 1, 8) : mythicAutoTier(), baitCeil || 8);
+      return Math.min(m > 0 ? clamp(m, 1, MAX_BAIT_TIER) : mythicAutoTier(), baitCeil || MAX_BAIT_TIER);
     }
     // 🔬 v6.207: กำลังสำรวจขั้นเหยื่อ — ใช้ขั้นที่สำรวจก่อน (ไม่แตะตอนทดสอบ กฎเหล็ก #4)
-    if (exploreTier && !testRunning) return Math.min(exploreTier, baitCeil || 8);
+    if (exploreTier && !testRunning) return Math.min(exploreTier, baitCeil || MAX_BAIT_TIER);
     // 🪱 v6.193: โหมดไล่สต๊อก — ใช้ขั้นที่กำลังไล่ก่อน (override Advisor/cfg · ไม่แตะตอนทดสอบ กฎเหล็ก #4)
-    if (isOn('useBaitStock') && drainTier && !testRunning) return Math.min(drainTier, baitCeil || 8);
-    return Math.min(cfg.baitTier || 1, baitCeil || 8);
+    if (isOn('useBaitStock') && drainTier && !testRunning) return Math.min(drainTier, baitCeil || MAX_BAIT_TIER);
+    return Math.min(cfg.baitTier || 1, baitCeil || MAX_BAIT_TIER);
   };
   // ต้องบังคับให้เหยื่อที่ใส่ = เป้าหมายไหม (forceBait เปิด · Advisor โหมดลงมือเอง · โหมดล่าปลาเทพ · ไล่สต๊อก — ต้องคุมขั้นเหยื่อเอง)
   const enforceBait = () => isOn('forceBait') || (isOn('advisor') && isOn('advisorAuto')) || mythicActive() || (isOn('useBaitStock') && !!drainTier) || !!exploreTier;
@@ -1033,7 +1071,7 @@
     '/sell - ขายเดี๋ยวนี้',
     '/buy - ซื้อเหยื่อเดี๋ยวนี้',
     '/quest - เก็บเควสรายวัน',
-    '/bait N - ตั้งเหยื่อขั้น N (1-8)',
+    `/bait N - ตั้งเหยื่อขั้น N (1-${MAX_BAIT_TIER})`,
     '/profit - สรุปกำไรสะสม (ต่อชิ้น)',
     '/baitstats [hour|money|%] - สถิติเหยื่อ (default = กำไร/ชม.)',
     '/statuse N - ตัดสินใจจากกี่รายการล่าสุด (30-500)',
@@ -1117,7 +1155,7 @@
       case 'sell': reply('💰 สั่งขาย...'); void runWhenIdle('ขาย', () => runSell(true)); break;
       case 'buy': reply('🪱 สั่งซื้อเหยื่อ...'); void runWhenIdle('ซื้อเหยื่อ', () => sellThenBuy(true)); break;
       case 'quest': reply('🎁 เก็บเควส...'); void runWhenIdle('รับเควส', runQuests); break;
-      case 'bait': { if (testRunning) { reply('🧪 กำลังทดสอบเหยื่ออยู่ — ระบบทดสอบคุมเหยื่อเองทั้งหมด (หยุดก่อน: /teststop)'); break; } const n = parseInt(args[0], 10); if (n >= 1 && n <= 8) { cfg.baitTier = n; saveCfg(); syncPanel(); reply(`🪱 ตั้งเหยื่อขั้น ${n} (${BAIT_TIERS[n - 1].name})${isOn('advisor') && isOn('advisorAuto') ? '\n⚠️ Advisor โหมดลงมือเองเปิดอยู่ — อาจสลับกลับตามสถิติ (ปิด: /set advisorAuto off)' : ''}`); } else reply('ใช้: /bait 1-8'); break; }
+      case 'bait': { if (testRunning) { reply('🧪 กำลังทดสอบเหยื่ออยู่ — ระบบทดสอบคุมเหยื่อเองทั้งหมด (หยุดก่อน: /teststop)'); break; } const n = parseInt(args[0], 10); if (n >= 1 && n <= MAX_BAIT_TIER) { cfg.baitTier = n; saveCfg(); syncPanel(); reply(`🪱 ตั้งเหยื่อขั้น ${n} (${BAIT_TIERS[n - 1].name})${isOn('advisor') && isOn('advisorAuto') ? '\n⚠️ Advisor โหมดลงมือเองเปิดอยู่ — อาจสลับกลับตามสถิติ (ปิด: /set advisorAuto off)' : ''}`); } else reply(`ใช้: /bait 1-${MAX_BAIT_TIER}`); break; }
       case 'profit': reply(profitLines()); break;
       case 'baitstats': case 'bs': {
         const a = (args[0] || '').toLowerCase();
@@ -1517,9 +1555,12 @@
   // 🎣 ระบบ "ตกปลาอัตโนมัติ" ของเกม (ปุ่มเดียวสลับ ตกปลาอัตโนมัติ ↔ หยุดตกอัตโนมัติ · aria-label ทั้งคู่)
   //   เกมย้ายกลไกตก (จังหวะฮุบ/มินิเกมดึง) ไปวาดบน canvas ที่บอทอ่านไม่ได้ตั้งแต่เวอร์ชันล่าสุด
   //   → โหมด gameauto ให้เกมเป็นคนตกเอง บอทแค่คุมสวิตช์ + ทำระบบรอบข้าง (ขาย/ซื้อ/เควส/พลังงาน)
-  const gameAutoRunning = () => !!qBtn('หยุดตกอัตโนมัติ');
+  // 🔴 v6.312: เกมเปลี่ยน aria-label ของปุ่มหยุดเป็น "หยุดตกปลาอัตโนมัติ" (hud.auto.stopAria) — ของเดิมเหลือเป็นข้อความในปุ่ม
+  //   เช็คทั้งสองแบบ: อ่านผิด = โหมด gameauto คิดว่า "ออโต้ไม่ได้รัน" แล้วสั่งเริ่มซ้ำวนไม่จบ
+  const autoStopBtn = () => qBtn('หยุดตกปลาอัตโนมัติ') || qBtn('หยุดตกอัตโนมัติ') || btnByText('หยุดตกปลาอัตโนมัติ') || btnByText('หยุดตกอัตโนมัติ');
+  const gameAutoRunning = () => !!autoStopBtn();
   const startGameAuto = () => { const b = qBtn('ตกปลาอัตโนมัติ'); if (b && !b.disabled) { fireClick(b); return true; } return false; };
-  const stopGameAuto = () => { const b = qBtn('หยุดตกอัตโนมัติ'); if (b) { fireClick(b); return true; } return false; };
+  const stopGameAuto = () => { const b = autoStopBtn(); if (b) { fireClick(b); return true; } return false; };
 
   // ===== 📊 อ่านผลตกจาก state ในเกม (โหมด gameauto) — v6.83 =====
   // กลไกใหม่ตกบน Phaser canvas → ไม่มี popup ผลใน DOM ให้ readCatch อ่าน (สถิติหยุดทำงานในโหมด auto)
@@ -1882,7 +1923,7 @@
   //   💰 ตุน 100 ชิ้น/ขั้น: ①500 ②1,200 ③2,500 ④4,500 ⑤8,000 ⑥14,000 ⑦25,000 ⑧45,000
   //      ค่าเริ่มต้นถึงขั้น 6 = ~30,700 🪙 ครั้งเดียว · ขั้น 7-8 แพงเกินคุ้มกับรางวัลบอสตอนนี้ (150-1,250)
   function bossWeakTiersWanted() {
-    const upto = clamp(cfg.bossBaitStockMax || 6, 1, 8);
+    const upto = clamp(cfg.bossBaitStockMax || 6, 1, MAX_BAIT_TIER);
     return Array.from({ length: upto }, (_, i) => i + 1);
   }
   // ตรวจจากข้อมูลของเราเองว่า "สุ่มจริงไหม" — บอสตัวเดียวกันเคยโชว์จุดอ่อนต่างกันหรือยัง
@@ -3701,7 +3742,7 @@
     if (!buy || buy.disabled || /เหรียญไม่พอ/.test(buy.textContent)) return false;
     fireClick(buy);
     const done = await waitFor(() => { const t = document.body.innerText; if (t.includes('✅ ซื้อสำเร็จ!')) return 'ok'; if (t.includes('❌')) return 'fail'; return null; }, 8000);
-    if (done === 'ok') { profit.life.baitCost += baitUnit(r.tier) * PACK_SIZE; saveProfit(); return true; }
+    if (done === 'ok') { profit.life.baitCost += baitUnit(r.tier) * baitPack(r.tier); saveProfit(); return true; }
     return false;
   }
   // 👹 เตรียมเหยื่อ "ก่อนเข้าถ้ำบอส" (ในถ้ำซื้อไม่ได้) — v6.243 เสริม safety net หลังผู้ใช้เจอ "เหยื่อหมด ตีบอสไม่ได้"
@@ -4293,11 +4334,14 @@
   //   ⚠️ เกมมี "คำที่สอง" สำหรับระดับเดียวกันด้วย (ป้ายประกาศ): แรร์ / อีพิค / เลเจนดารี / มิธิค — ตัวเดิมไม่รู้จักเลย
   //   ⚠️ และตัวเดิม **ไม่มี common** → แถวปลาทั่วไปอ่านระดับไม่ออก
   //   🐛 กับดักซับสตริง: 'ไม่ธรรมดา' มีคำว่า 'ธรรมดา' อยู่ข้างใน → ต้องจับ "คำที่ยาวที่สุดก่อน" ไม่งั้น uncommon กลายเป็น common
+  //   🆕 v6.312: เกมเพิ่ม จิ๋ว (tiny) · เทพ (divine) · บรรพกาล (primordial)
+  //   ⚠️ 'เทพ' ⊂ 'เทพนิยาย' → การเรียง "ยาวสุดก่อน" คือสิ่งเดียวที่กัน divine กลืน mythic (อย่าลบ .sort())
   const RAR_WORDS = [
     ['ไม่ธรรมดา', 'uncommon'], ['เลเจนดารี', 'legendary'], ['เทพนิยาย', 'mythic'],
     ['ทั่วไป', 'common'], ['ธรรมดา', 'common'], ['หายาก', 'rare'], ['แรร์', 'rare'],
     ['สุดยอด', 'epic'], ['อีพิค', 'epic'], ['ตำนาน', 'legendary'], ['มิธิค', 'mythic'],
-  ].sort((a, b) => b[0].length - a[0].length);   // ยาวสุดก่อนเสมอ (กัน 'ธรรมดา' ชน 'ไม่ธรรมดา')
+    ['บรรพกาล', 'primordial'], ['เทพ', 'divine'], ['จิ๋ว', 'tiny'],
+  ].sort((a, b) => b[0].length - a[0].length);   // ยาวสุดก่อนเสมอ (กัน 'ธรรมดา' ชน 'ไม่ธรรมดา' · 'เทพ' ชน 'เทพนิยาย')
   // อ่านระดับจากข้อความ (แถวปลาใน NPC ฯลฯ) — คืน null ถ้าไม่เจอคำที่รู้จัก
   const rarityFromText = (t) => { for (const [w, k] of RAR_WORDS) if (t.includes(w)) return k; return null; };
   // เก็บแถวที่อ่านระดับไม่ออก → เตือนครั้งเดียวตอนจบธุระ (ถ้าเกมเปลี่ยนคำ เราจะรู้ทันที ไม่ใช่เงียบแล้วเลือกผิด)
@@ -4660,7 +4704,7 @@
   };
   let lastMythicChk = 0, lastMythicMoveAt = 0, lastMapLearnAt = 0;
   function mythicActive() { return isOn('mythicHunt') && !testRunning; }
-  const MYTHIC_RAR = new Set(['legendary', 'mythic']);
+  const MYTHIC_RAR = new Set(['legendary', 'mythic', 'divine', 'primordial']);   // v6.312: 2 ระดับใหม่เหนือ mythic = เป้าหมายของโหมดล่าปลาเทพด้วย
   // จำนวนปลาเทพ (legendary+mythic) ที่ได้ตั้งแต่เริ่มล่ารอบนี้ — ใช้ใน heartbeat/สถานะ
   // ⚡ v6.245: cache 5 วิ — v6.241 เอาไปใส่ใน badgeText ซึ่งถูกเรียกทุกเฟรม แต่ฟังก์ชันนี้ไล่ recs ~2,000 รายการ/ครั้ง
   let mrcCache = 0, mrcCacheAt = -1e9, mrcCacheSince = -1;
@@ -4784,11 +4828,11 @@
   const mbScore = (s, t) => { const b = mbBasis(s); return b && b.c ? b.mv / b.c - (baitUnit(t) - baitUnit(1)) : null; };
   function mbPick() {
     const st = mbTouchAll(mbLoad());   // 🕰️ v6.226: ลดค่าตามอายุก่อนเทียบ — ขั้นที่ข้อมูลเก่าจะหล่นกลับไปสำรวจใหม่เอง
-    const cands = []; for (let t = 1; t <= (baitCeil || 8); t++) cands.push(t);
+    const cands = []; for (let t = 1; t <= (baitCeil || MAX_BAIT_TIER); t++) cands.push(t);
     // v6.132: ข้ามขั้นที่เพิ่งซื้อไม่ไหว (skipUntil) + ขั้นที่เงินตอนนี้ไม่พอ 1 แพ็ค (กันเดินเข้าร้านเก้อ)
     //   ใช้ pool เดียวกันทุกสาขา (สำรวจ/ตัวเด่น/สุ่ม) — เดิมกรองแค่สาขาสำรวจ ตัวเด่น/สุ่มยังเลือกขั้นที่ skip ได้ = วนซื้อพลาดซ้ำ
     const coins = coinsNow();
-    const canTry = (t) => !(st.tiers[t]?.skipUntil > now()) && (coins == null || coins >= baitUnit(t) * PACK_SIZE);
+    const canTry = (t) => !(st.tiers[t]?.skipUntil > now()) && (coins == null || coins >= baitUnit(t) * baitPack(t));
     const pool = cands.filter(canTry);
     if (!pool.length) { st.cur = 1; st.left = MB_ROUND; mbSave(); return 1; }   // ซื้อไม่ไหวสักขั้น → ขั้น 1 (ถูกสุด/มีของเดิม)
     const under = pool.filter((t) => (st.tiers[t]?.c || 0) < MB_MIN_SAMPLE);
@@ -5480,7 +5524,7 @@
   // รองรับ: bait-tier-07 · bait_tier_7 · baitTier7 · bait-07 · bait/7
   function tierFromStr(s) {
     if (!s) return null;
-    const m = /bait[-_\s/]*tier[-_\s/]*0*(\d+)/i.exec(s) || /bait[-_/]0*([1-8])(?:\D|$)/i.exec(s);
+    const m = /bait[-_\s/]*tier[-_\s/]*0*(\d+)/i.exec(s) || /bait[-_/]0*(\d{1,2})(?:\D|$)/i.exec(s);   // v6.312: เดิมจำกัด [1-8] → ขั้น 9-16 อ่านไม่ออกเลย
     return m ? +m[1] : null;
   }
   // หาปุ่มเลือกเหยื่อ (aria-label หลัก · สำรอง: ปุ่มที่ aria-label/text มีคำว่า "เหยื่อ")
@@ -5490,13 +5534,14 @@
       || null;
   }
   // จับคู่ชื่อเหยื่อในข้อความ → ขั้น (เลือกชื่อ "ยาวสุด" ก่อน เพราะ "มัดไส้เดือนอ้วน"⊃"ไส้เดือน")
+  //   v6.312: รวมชื่อย่อที่การ์ดในกระเป๋าใช้ด้วย ("มัดอ้วน ×124" / "ปลารุ้ง ×44 (ใช้อยู่)")
+  //   — ชื่อเต็มในร้าน ≠ ชื่อบนการ์ด → ถ้าดูแต่ชื่อเต็ม การสลับเหยื่อจุดอ่อนตอนตีบอสจะ "หาไม่เจอ" เงียบ ๆ
   function tierFromName(txt) {
     if (!txt) return null;
     let best = null;
-    for (let i = 0; i < BAIT_TIERS.length; i++) {
-      const nm = BAIT_TIERS[i].name;
-      if (nm && txt.includes(nm) && (!best || nm.length > best.len)) best = { tier: i + 1, len: nm.length };
-    }
+    const test = (nm, tier) => { if (nm && txt.includes(nm) && (!best || nm.length > best.len)) best = { tier, len: nm.length }; };
+    for (let i = 0; i < BAIT_TIERS.length; i++) test(BAIT_TIERS[i].name, i + 1);
+    for (let i = 1; i < BAIT_SHORT.length; i++) test(BAIT_SHORT[i], i);
     return best ? best.tier : null;
   }
   let lastBaitWarn = 0;
@@ -5509,7 +5554,7 @@
     for (const el of b.querySelectorAll('[style],img,[class*="bait"],[data-tier]')) {
       const g = (a) => (el.getAttribute ? el.getAttribute(a) : null);
       tier = tierFromStr(g('style')) || tierFromStr(g('src')) || tierFromStr(g('class'))
-          || (/^[1-8]$/.test(g('data-tier') || '') ? +g('data-tier') : null);
+          || (/^\d{1,2}$/.test(g('data-tier') || '') ? +g('data-tier') : null);
       if (tier) break;
     }
     // 2) สำรอง: ชื่อเหยื่อในปุ่ม (เกมโชว์ชื่อ เช่น "สปินเนอร์ขนนก"=ขั้น7) — ทนต่อการเปลี่ยนชื่อไฟล์
@@ -6103,7 +6148,8 @@
       //   → วนซื้อ 4 แพ็ค/ขั้น (เหยื่อขั้น 8 = 45,000 × 4 = 180,000 ใน 30 วินาที)
       //   กฎใหม่ (เด็ดขาด): **"มีของครบ 1 แพ็คแล้ว ห้ามซื้อ ไม่ว่ากรณีใด"** — force แปลว่า "ข้ามคูลดาวน์/เกณฑ์"
       //   ไม่ใช่ "ข้ามการตรวจว่ามีของอยู่แล้ว" · เป็นเพดานที่ระบบอื่นสั่งข้ามไม่ได้เลย
-      if (row.stock >= PACK_SIZE) {
+      const wantPack = baitPack(want.tier);   // v6.312: แพ็คขั้นล่างเล็กกว่า 100 (25/50) → ใช้ค่าจริงต่อขั้น
+      if (row.stock >= wantPack) {
         say(`⛔ ไม่ซื้อ — มี ${want.name} อยู่แล้ว ${row.stock} ชิ้น (≥1 แพ็ค)`);
         await closeShop(); return;
       }
@@ -6114,7 +6160,7 @@
       if (!row.addBtn) { say('หาปุ่มใส่ตะกร้าไม่เจอ'); await closeShop(); return; }
 
       // ใส่ตะกร้า 1 แพ็ค แล้วกด + เพิ่มจนครบจำนวนที่ตั้งไว้ (ไม่ให้เกินเพดาน 1000)
-      const maxPacks = Math.max(1, Math.floor((BAIT_CAP - row.stock) / PACK_SIZE));
+      const maxPacks = Math.max(1, Math.floor((BAIT_CAP - row.stock) / wantPack));
       const packs = Math.min(cfg.buyPacks, maxPacks);
       fireClick(row.addBtn);
       await sleep(250);
@@ -6124,7 +6170,7 @@
 
       const buy = btnByText('ซื้อเลย!') || btnByText('เหรียญไม่พอ');
       if (!buy || buy.disabled || buy.textContent.includes('เหรียญไม่พอ')) {
-        const cost = (want.unit * PACK_SIZE * packs).toLocaleString();
+        const cost = (want.unit * wantPack * packs).toLocaleString();
         // 🌈 v6.132: โหมดล่าปลาเทพ (เหยื่อ auto) ซื้อขั้นที่กำลังสำรวจไม่ไหว → "ข้ามขั้นนี้" (พัก 1 ชม.) แล้วไปสำรวจขั้นถัดไป
         //   — ไม่ปิด autoBuy ทั้งระบบ (เดิมทำให้ขั้นถูกที่ยังซื้อไหวพลอยซื้อไม่ได้ + วนสลับเหยื่อที่ไม่มีของ = stall)
         if (mythicActive() && !(parseInt(cfg.mythicBait, 10) > 0)) {
@@ -6150,13 +6196,13 @@
       }, 8000);
       if (done === 'ok') buyLogPush();   // 🛑 v6.182: นับเข้าเบรกเกอร์กันซื้อรัว (เฉพาะที่ซื้อสำเร็จจริง)
       say(done === 'ok'
-        ? `✅ ซื้อ ${want.name} ${packs} แพ็ค (${packs * PACK_SIZE} ชิ้น · ${(want.unit * PACK_SIZE * packs).toLocaleString()} 🪙)`
+        ? `✅ ซื้อ ${want.name} ${packs} แพ็ค (${packs * wantPack} ชิ้น · ${(want.unit * wantPack * packs).toLocaleString()} 🪙)`
         : `ซื้อไม่สำเร็จ (${want.name})`);
       // 🛑 v6.182: การซื้อ = เสียเงินจริง → แจ้ง TG "เสมอ" ไม่ขึ้นกับ tgTrade (เดิมปิดอยู่ ผู้ใช้เลยไม่รู้ตอนบอทดูดเงิน 256,000)
       //   แนบยอดสะสมในหน้าต่าง 10 นาที = เห็นทันทีถ้าเริ่มผิดปกติ
       if (done === 'ok' && isOn('tgOn')) {
         const n = buyLog().filter((t) => Date.now() - t < BUY_WINDOW_MS).length;
-        void tgSend(`🪱 ซื้อ ${esc(want.name)} ${packs} แพ็ค (${packs * PACK_SIZE} ชิ้น · <b>${(want.unit * PACK_SIZE * packs).toLocaleString()} 🪙</b>)${n > 1 ? `\n⚠️ ซื้อไปแล้ว ${n} ครั้งใน 10 นาที` : ''}`);
+        void tgSend(`🪱 ซื้อ ${esc(want.name)} ${packs} แพ็ค (${packs * wantPack} ชิ้น · <b>${(want.unit * wantPack * packs).toLocaleString()} 🪙</b>)${n > 1 ? `\n⚠️ ซื้อไปแล้ว ${n} ครั้งใน 10 นาที` : ''}`);
       }
       await sleep(500);
       await closeShop();
@@ -6703,7 +6749,7 @@
         // v6.121: ขาขึ้น (ขั้นแพงกว่า) ต้องมีเงินซื้อจริงอย่างน้อย 1 แพ็ค — ไม่งั้นวน "สลับขึ้น → ซื้อไม่ไหว → พัก autoBuy → เหยื่อหมด"
         if (adv.bestTier > cfg.baitTier) {
           const coins = coinsNow();
-          if (coins !== null && coins < baitUnit(adv.bestTier) * PACK_SIZE) return;
+          if (coins !== null && coins < baitUnit(adv.bestTier) * baitPack(adv.bestTier)) return;
         }
         lastAutoSwitchAt = now();
         const from = cfg.baitTier;
@@ -6796,7 +6842,7 @@
         ขั้น: r.tier,
         ชื่อ: BAIT_TIERS[r.tier - 1]?.name ?? '?',
         คงเหลือ: r.stock,
-        'ราคา/แพ็ค': (BAIT_TIERS[r.tier - 1]?.unit ?? 0) * PACK_SIZE,
+        'ราคา/แพ็ค': (BAIT_TIERS[r.tier - 1]?.unit ?? 0) * baitPack(r.tier),
         สถานะ: r.lockedLv ? `🔒 ต้อง Lv.${r.lockedLv}` : r.full ? 'สต๊อกเต็ม' : '🛒 ซื้อได้',
         ใช้อยู่: r.tier === bait?.tier ? '👈' : '',
       }));
@@ -7324,7 +7370,7 @@
       }
       // 🐛 v6.220: อย่าเช็ค "เปิดหีบวันนี้ x/y" (นั่นคือ HUD ตัวนับรายวัน โชว์ค้างตลอด ไม่ใช่ error!) →
       //   เดิม false-block ทุกใบ (log: "เปิดไม่ได้ 🎁 หีบเงิน" ทั้งที่เปิดได้ → เสียเที่ยวเดินซ้ำ) · ลิมิตวันใช้ chestDailyComplete พอ
-      const blk = /หายไปแล้ว|เปิดไปแล้ว|คนละแมพ/.exec(msg);
+      const blk = /หายไปแล้ว|เปิด(?:หีบใบนี้)?ไปแล้ว|คนละแมพ/.exec(msg);
       if (blk) {   // error จริง (หมดอายุ/เปิดแล้ว/คนละแมพ) — ปิดกล่อง เลิกใบนี้
         closeChestDialog();
         chestEvent(`ℹ️ เปิดไม่ได้: ${blk[0].replace(/\s+/g, ' ').trim().slice(0, 40)}`); result = 'blocked'; break;
@@ -10197,7 +10243,7 @@ ${esc(reason)}
       + '🛡️ กันขาดทุน: วัดกำไรสุทธิจริง (รวมค่าเหยื่อ+ยา+กาแฟ) ทุก X นาที — ติดลบ 1 รอบ = งดยา · ติดลบ 2 รอบติด = พักโหมดกลับฟาร์มปกติ + แจ้งเตือน · '
       + 'ไม่แตะค่าที่ตั้งไว้เลย (override เฉพาะตอนโหมดเปิด — ปิดปุ๊บทุกอย่างกลับเป็นค่าเดิม) · Advisor พักอัตโนมัติระหว่างล่า · หลบให้ทดสอบเหยื่อ/ล่าบอสก่อนเสมอ · สถานะ: /mythic',
       labeled('เปิด', checkbox('mythicHunt', refreshMythicBtn)),
-      labeled('เหยื่อขั้น (0=ออโต้ทดสอบเอง)', numInput('mythicBait', 0, 8, 40)),
+      labeled('เหยื่อขั้น (0=ออโต้ทดสอบเอง)', numInput('mythicBait', 0, MAX_BAIT_TIER, 40)),
       labeled('🍀 ยาโชค', checkbox('mythicLuck')),
       labeled('🐋 ยาหนัก', checkbox('mythicWeight')),
       labeled('เช็คกำไรทุก (นาที)', numInput('mythicCheckMin', 5, 120, 48)),
@@ -10333,7 +10379,7 @@ ${esc(reason)}
 
     panel.appendChild(row(
       '🪱 ซื้อเหยื่ออัตโนมัติเมื่อใกล้หมด',
-      `บอทเลือก "ขั้นเหยื่อ" ให้เองจากกำไร/ชม.จริง (ระบบ 🔄 ด้านล่าง) — ไม่ต้องระบุขั้นเอง · แพ็คละ ${PACK_SIZE} ชิ้น เพดานสต๊อก ${BAIT_CAP} · เหรียญไม่พอ/เลเวลไม่ถึง บอทจะปิดระบบนี้ให้เอง · อยากปักขั้นเองให้ปิด 🔄 แล้วใช้ "🎣 บังคับเหยื่อ" ด้านล่าง (หรือ /bait N)`,
+      `บอทเลือก "ขั้นเหยื่อ" ให้เองจากกำไร/ชม.จริง (ระบบ 🔄 ด้านล่าง) — ไม่ต้องระบุขั้นเอง · แพ็คละ 25-100 ชิ้นตามขั้น เพดานสต๊อก ${BAIT_CAP} · เหรียญไม่พอ/เลเวลไม่ถึง บอทจะปิดระบบนี้ให้เอง · อยากปักขั้นเองให้ปิด 🔄 แล้วใช้ "🎣 บังคับเหยื่อ" ด้านล่าง (หรือ /bait N)`,
       labeled('เปิด', checkbox('autoBuy')),
       labeled('เหลือต่ำกว่า', numInput('buyBelow', 0, 999)),
       labeled('ซื้อ (แพ็ค)', numInput('buyPacks', 1, 9, 44)),
@@ -10461,7 +10507,7 @@ ${esc(reason)}
       '🎣 เบ็ด / เหยื่อ ขั้นที่ใช้ (ตั้งเอง — บอทไม่เลือกให้อัตโนมัติ)',
       'บอทใช้ "ขั้นเหยื่อ" ตามที่ตั้งตรงนี้เท่านั้น (ไม่มีระบบเลือกเหยื่ออัตโนมัติแล้ว) · "บังคับ" = ถ้าเผลอสลับเหยื่อในเกม บอทจะสลับกลับมาขั้นที่ตั้งให้ · เกมไม่มีเมนูเลือกตรงๆ บอทกดสลับวนจนได้ขั้นที่ตั้ง · เบ็ดต้องซื้อมาก่อน · เหยื่อต้องมีของเหลือ · อยากรู้ขั้นไหนคุ้มสุด → ใช้ 🧪 ทดสอบเหยื่อ ด้านบน',
       labeled('บังคับเบ็ดขั้น', checkbox('forceRod')), numInput('rodTier', 1, 8, 44),
-      labeled('บังคับเหยื่อขั้น', checkbox('forceBait')), numInput('baitTier', 1, 8, 44),
+      labeled('บังคับเหยื่อขั้น', checkbox('forceBait')), numInput('baitTier', 1, MAX_BAIT_TIER, 44),
     ));
 
     const gearBtn = document.createElement('button');
