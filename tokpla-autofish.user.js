@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.312
+// @version      6.313
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.312';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.313';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -5418,14 +5418,26 @@
   //   ที่มา: เปิดหีบ/รับรางวัล/error ของเกมหลายอันเป็น dialog ที่ "ไม่ปิดเอง" + ต้องกดปุ่ม (ESC เดี่ยวๆ ไม่พอทุกอัน)
   //   วิธีคิด: แทนที่จะไล่แก้ทีละป๊อบอัพ ให้มี "จุดเดียว" คอยเคลียร์ตอน "ควรตกได้แต่ตกไม่ได้เพราะมี dialog ค้าง"
   //   ⚠️ ไม่แตะหน้าต่าง "รับรางวัล" (รับของ/เปิดจดหมาย) — ปล่อย auto-claim จัดการ กันเผลอปิดทิ้งรางวัล (กฎเดียวกับ gameEscape)
-  const CLAIM_RE = /รับของ|เปิดจดหมาย|รับรางวัล|^รับ$/;
+  const CLAIM_RE = /รับของ|เปิด(?:กล่อง)?จดหมาย|รับรางวัล|^รับ$/;
+  // 🔴 v6.313 — ต้นเหตุจริงที่บอทนิ่ง 2.5 ชม. (29 ก.ค. 69): ป๊อบอัพ "เปิดหีบได้ เหรียญ 250"
+  //   dialog นี้ **ไม่มีปุ่ม ✕ · ไม่มี role=dialog · ESC ไม่ปิด** — มีแค่ "เยี่ยม!" กับ "📬 เปิดกล่องจดหมาย"
+  //   และมันซ่อน HUD สนามตกทั้งแถบ → detectGameReady()=false ตลอด → บอทขึ้น "ปุ่มตกปลากดไม่ได้" วนไม่จบ
+  //   ที่แย่กว่า: closeLikeBtns() เดิมไม่รู้จัก "เยี่ยม!" → hasBlockingDialog()=false → **ยามเฝ้าถอยออกเอง**
+  //   ("ตกไม่ได้ แต่ไม่มี dialog ที่ปิดได้ = ไม่ใช่หน้าที่เรา") → ไม่มีใครเคลียร์ → รีโหลดวนจนบอทยอมแพ้
+  //   พิสูจน์สด: กด "เยี่ยม!" ครั้งเดียว HUD กลับมาครบ + ปุ่มตกปลา **ไม่ disabled** (ตัวละครอยู่ริมบ่ออยู่แล้ว)
+  //   ปลอดภัยเรื่องรางวัล: หีบส่งของเข้ากล่องจดหมายอยู่แล้ว ("กดรับเพื่อรับเข้ากระเป๋า") — ปิดทิ้งไม่ได้เสียของ
+  //   เก็บทั้งไทย/อังกฤษ เพราะเกมทำ i18n แล้ว (สลับภาษาเมื่อไหร่ ชุดนี้ยังทำงาน)
+  const DISMISS_TXT = new Set([
+    'ปิด', 'ตกลง', 'รับทราบ', 'โอเค', 'เยี่ยม!', 'เยี่ยม', 'รับทราบ! ✅', 'เข้าใจแล้ว', 'ทีหลัง', 'เสร็จแล้ว',
+    'Close', 'OK', 'Okay', 'Got it', 'Nice!', 'Nice', 'Got it! ✅', 'Understood', 'Later', 'Done',
+  ]);
   function closeLikeBtns() {
     try {
       return [...document.querySelectorAll('button')].filter((b) => {
         if (isBotUI(b) || !b.offsetParent) return false;
         const t = (b.textContent || '').trim(), a = b.getAttribute('aria-label') || '';
         if (CLAIM_RE.test(t) || CLAIM_RE.test(a)) return false;                 // ปุ่มรับรางวัล — ห้ามแตะ
-        return t === 'ปิด' || t === 'ตกลง' || t === 'รับทราบ' || /^(✕|×|✖|✗|❌)$/.test(t) || /^ปิด/.test(a);
+        return DISMISS_TXT.has(t) || /^(✕|×|✖|✗|❌)$/.test(t) || /^ปิด/.test(a) || /^Close/i.test(a);
       });
     } catch { return []; }
   }
@@ -7295,7 +7307,19 @@
   const chestOpenBtn = () => { try { return [...document.querySelectorAll('button')].find((b) => !isBotUI(b) && b.offsetParent && /เปิดหีบ/.test(b.textContent || '')) || null; } catch { return null; } };
   // 🐛 v6.217: หน้าต่างหีบ (รางวัล/คูลดาวน์/ผิดพลาด) มีปุ่ม "ปิด" แบบเต็มความกว้าง (rounded-2xl) และ **ไม่ปิดเอง**
   //   บั๊ก v6.216: เปิดหีบแล้วหน้าต่างค้างบังจอ → ตกปลาต่อไม่ได้ (isFishing=false ค้าง) · ต้องปิดให้ได้เสมอ
-  const chestCloseBtn = () => { try { return [...document.querySelectorAll('button')].find((b) => !isBotUI(b) && b.offsetParent && (b.textContent || '').trim() === 'ปิด' && /rounded-2xl/.test(b.className || '')) || null; } catch { return null; } };
+  // 🔴 v6.313: หน้าต่างรางวัลหีบรุ่นใหม่ไม่มีปุ่ม "ปิด" แล้ว — มีแค่ "เยี่ยม!" (chest.nice) กับ "📬 เปิดกล่องจดหมาย"
+  //   ตัวเดิมจับ text==='ปิด' อย่างเดียว → หาไม่เจอ = ปิดไม่ได้ = จอค้าง (ต้นเหตุที่บอทนิ่งยาว 29 ก.ค.)
+  //   ห้ามกด "เปิดกล่องจดหมาย" (พาไปหน้าเมล์) — ของอยู่ในเมล์อยู่แล้ว ระบบ auto-claim เก็บให้ทีหลัง
+  const chestCloseBtn = () => {
+    try {
+      return [...document.querySelectorAll('button')].find((b) => {
+        if (isBotUI(b) || !b.offsetParent) return false;
+        const t = (b.textContent || '').trim();
+        if (t === 'ปิด') return /rounded-2xl/.test(b.className || '');   // ของเดิม (เผื่อ dialog รุ่นเก่ายังอยู่)
+        return DISMISS_TXT.has(t);                                       // "เยี่ยม!" / "Nice!" — ไม่ผูกกับ class (กันเกมเปลี่ยนคลาสอีก)
+      }) || null;
+    } catch { return null; }
+  };
   function closeChestDialog() { const b = chestCloseBtn(); if (b) { fireClick(b); return true; } return false; }
   // อ่านข้อความ "ของเกม" เท่านั้น (คูลดาวน์/หมดอายุ/ลิมิต) — 🐛 v6.221: ตัด UI บอทออก
   //   เดิมอ่านทั้ง body.innerText → log panel ของบอทมีคำ "หายไปแล้ว/คูลดาวน์/เปิดหีบ" (จาก event เก่า) → match ตัวเอง = จำแนกผิด
@@ -11192,8 +11216,10 @@ ${esc(reason)}
     if (enabled && !busy && !orchestrating && !detectGameReady()) {
       if (!notReadySince) notReadySince = now();
       else if (now() - notReadySince > 15000 && now() - notReadySince < 17000) {
-        gameEscape();   // ⎋ v6.165: ลอง "ปิดหน้าต่างทั้งหมด" ก่อน — ส่วนใหญ่ "ไม่พร้อม" คือมี modal บังสนามตก (ถูกกว่ารีโหลด 60 วิ)
-        logInfo('⎋ เกมไม่พร้อม 15 วิ — กด Esc ปิดหน้าต่างที่บังก่อนตัดสินใจรีโหลด');
+        // v6.313: กด "ปุ่มปิด/ปิดทิ้ง" ก่อน แล้วค่อย Esc — ป๊อบอัพรุ่นใหม่ (หีบ/ประกาศ) ไม่ตอบ Esc เลย
+        //   เดิมยิงแต่ Esc = ไม่มีผล → รอครบ 60 วิ แล้วรีโหลด ซึ่งไม่ได้แก้อะไร (ป๊อบอัพเด้งใหม่ได้เรื่อย ๆ)
+        clearBlockingUI();
+        logInfo('⎋ เกมไม่พร้อม 15 วิ — กดปุ่มปิดป๊อบอัพ + Esc ก่อนตัดสินใจรีโหลด');
       } else if (now() - notReadySince > 60000) { notReadySince = 0; doReload('เกมไม่พร้อม/โหลดค้าง'); }
       return;
     }
