@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.314
+// @version      6.315
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.314';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.315';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -145,6 +145,11 @@
   let MAP_POOLS = {};                    // mapId → [ชื่อปลาที่ออกในแมพนั้น]
   let SERVER_BOSS_TIMES = null;          // ['10:30','13:30',…] จาก raidSpawnMinutes
   let GAME_FLAGS = {};
+  // 🎯 v6.315: "เพดานระดับปลาตามขั้นเหยื่อ" — ค่า index ชี้เข้าอาร์เรย์ RARITY_TH (9 ระดับใหม่)
+  //   ค่าจริงจากเซิร์ฟเวอร์ (baitRarityCeiling): ขั้น1-2=หายาก · 3=สุดยอด · 4-5=ตำนาน · 6=เทพนิยาย · 7=เทพ · 8+=บรรพกาล
+  //   ตารางเก่าในบอท [2,2,3,4,4,5,5,5] อ้าง 6 ระดับเก่า = ผิดทั้งจำนวนขั้นและ index → applyGameConfig ทับด้วยของจริง
+  let BAIT_RARITY_CEILING = [3, 3, 4, 5, 5, 6, 7, 8, 8, 8, 8, 8, 8, 8, 8, 8];
+  const RARITY_TH = ['จิ๋ว', 'ทั่วไป', 'ไม่ธรรมดา', 'หายาก', 'สุดยอด', 'ตำนาน', 'เทพนิยาย', 'เทพ', 'บรรพกาล'];
   try { const raw = W.localStorage.getItem(GCFG_KEY); if (raw) { const o = JSON.parse(raw); gameCfg = o.cfg; gameCfgAt = o.at || 0; } } catch {}
 
   const mmToHHMM = (m) => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
@@ -176,6 +181,12 @@
         SERVER_BOSS_TIMES = times;
       }
       if (c.flags && typeof c.flags === 'object') GAME_FLAGS = c.flags;
+      // 🎯 เพดานระดับปลาตามขั้นเหยื่อ (baitRarityCeiling) — ของจริงจากเซิร์ฟเวอร์ (index เข้าอาร์เรย์ 9 ระดับ)
+      const rc = (c.tuning || {}).baitRarityCeiling;
+      if (Array.isArray(rc) && rc.length && rc.every((x) => Number.isFinite(x))) {
+        if (rc.join(',') !== BAIT_RARITY_CEILING.join(',')) changed.push('เพดานระดับปลาต่อขั้นเหยื่อ');
+        BAIT_RARITY_CEILING = rc.slice();
+      }
     } catch (e) { try { logErr('อ่านคอนฟิกเกมล้มเหลว', e); } catch {} return false; }
     if (changed.length && opts && opts.log) {
       try { logInfo(`🌐 อัปเดตค่าจากเซิร์ฟเวอร์เกม (configVersion ${c.configVersion ?? '?'}): ${changed.slice(0, 8).join(' · ')}${changed.length > 8 ? ` · (+${changed.length - 8})` : ''}`); } catch {}
@@ -369,10 +380,13 @@
     // 🔬 v6.207: "สำรวจขั้นเหยื่อเป็นระยะ" — Advisor ใช้ข้อมูล statWin ล่าสุด "เฉพาะขั้นที่ตกอยู่"
     //   ขั้นอื่นจึงค้างข้อมูลเก่าถาวร → เกมปรับ % / ราคาปลาเมื่อไร บอทไม่มีทางรู้ (exploit อย่างเดียว ไม่ explore)
     //   เปิดแล้ว = เป็นระยะจะสลับไปเก็บตัวอย่างขั้นที่ "ข้อมูลเก่าสุด" สั้นๆ แล้วกลับมาขั้นที่ Advisor เลือก
-    advExplore: false,           // opt-in (การสำรวจมีต้นทุน — ตกด้วยขั้นที่อาจแย่กว่าชั่วคราว)
+    advExplore: true,            // 🎯 v6.315: เปิดโดยดีฟอลต์ (ผู้ใช้เลือก "สำรวจสูงบ้าง") — ไปลุ้นปลาแพงขั้น 6-8 เป็นระยะ
     advExploreHours: 6,          // สำรวจทุกกี่ชั่วโมง
     advExploreCasts: 30,         // สำรวจครั้งละกี่ครั้ง (ยิ่งมากยิ่งแม่น แต่ยิ่งแพง)
-    advExploreMaxCost: 3000,     // งบต่อรอบสำรวจ (🪙) — ประเมินจาก (กำไรขั้นที่ดีสุด − ขั้นที่จะลอง) × จำนวนครั้ง · เกินงบ = ข้ามขั้นนั้น
+    advExploreMaxCost: 3000,     // งบต่อรอบสำรวจ (🪙) สำหรับขั้น "ต่ำกว่าพื้น" · ขั้น ≥ พื้น ไม่ติดงบ (ไปลุ้นแจ็คพอต)
+    // 🎯 v6.315: "พื้นขั้นเหยื่อ" — Advisor ห้ามเลือกต่ำกว่านี้ (เกมใหม่: ขั้นเหยื่อ = เพดานระดับปลา)
+    //   ขั้น 5 = ตกได้ถึงตำนาน + กำไรตัดฟลุ๊คยังชนะขั้นต่ำ · สำรวจ (advExplore) จะแตะขั้น 6-8 เป็นระยะเพื่อลุ้น เทพนิยาย/เทพ/บรรพกาล
+    advBaitFloor: 5,
 
     // 🎁 v6.216: เก็บหีบสมบัติที่โผล่ในแมพเป็นระยะ (opt-in — ต้องเดินออกจากจุดตกปลา · บอส/เมือง/ล่าปลาเทพ สำคัญกว่า)
     grabChest: false,            // เปิด = เจอหีบในแมพปัจจุบัน → เดินไปเปิด (กด E) แล้วกลับมาตกต่อ · มีลิมิตต่อวันของเกมเอง (chestDailyComplete)
@@ -541,6 +555,13 @@
         if (!('bagHeavyMigrated' in old)) {
           if ((c.sellAtPct || 0) >= 80) c.sellAtPct = 75;
           c.bagHeavyMigrated = 1;
+        }
+        // 🎯 v6.315: ผู้ใช้สั่ง "ดันขั้นเหยื่อขั้น 5 เป็นพื้น + เปิดสำรวจขั้นสูงบ้าง" (เกมใหม่: ขั้นเหยื่อ = เพดานระดับปลา)
+        //   บังคับครั้งเดียว: เปิด advExplore (เดิม opt-in ปิดอยู่) + ตั้งพื้นถ้ายังไม่เคยตั้ง — หลังจากนี้เคารพค่าที่ผู้ใช้ปรับเอง
+        if (!('baitFloorV315' in old)) {
+          if (!(old.advBaitFloor > 0)) c.advBaitFloor = 5;
+          c.advExplore = true;
+          c.baitFloorV315 = 1;
         }
         // ✨ v6.312: เกมเพิ่มระดับ "เทพ (divine)" และ "บรรพกาล (primordial)" เหนือ mythic
         //   ค่าที่ผู้ใช้ตั้งไว้ทั้งหมดถูกบันทึกก่อนระดับใหม่จะมีอยู่จริง → ถ้าไม่เติมให้
@@ -6654,8 +6675,7 @@
   //   index = ขั้นเหยื่อ−1 · ค่า = index สูงสุดของ rarityWeights [common,uncommon,rare,epic,legendary,mythic]
   //   ⚠️ นี่คือข้อจำกัด "แข็ง" ที่ตัวเลขกำไรเฉลี่ยมองไม่เห็น: ขั้น 1–2 ต่อให้ตกเป็นล้านครั้งก็ไม่มีวันเจอ epic ขึ้นไป
   //   Advisor เลือกจากกำไรที่วัดได้จริงจึงไม่ได้ "ผิด" — แต่ผู้ใช้ควรรู้ว่ากำลังแลกอะไรไป (ปลาแพง + XP ก้อนใหญ่)
-  const BAIT_RARITY_CEILING = [2, 2, 3, 4, 4, 5, 5, 5];
-  const RARITY_TH = ['ธรรมดา', 'ไม่ค่อยเจอ', 'แรร์', 'เอปิก', 'ตำนาน', 'เทพ'];
+  // BAIT_RARITY_CEILING + RARITY_TH ประกาศไว้บนสุด (v6.315) + applyGameConfig ทับด้วยของจริงจากเซิร์ฟเวอร์
   function baitCeilingNote(tier) {
     const c = BAIT_RARITY_CEILING[(tier | 0) - 1];
     if (c == null) return `ขั้น ${tier}: ไม่รู้เพดานความหายาก (นอกตาราง)`;
@@ -6665,9 +6685,13 @@
       : `เพดานขั้น ${tier} = ${RARITY_TH[c]} (สูงสุดแล้ว — ตกได้ทุกระดับ)`;
   }
   // ===== 🧠 Advisor: สมองเลือกเหยื่อ + จัดสรรยา (โหมดเดียว 2 ระดับ: แนะนำ / ลงมือเอง) =====
-  // หลักคิด (จากข้อมูลจริง 1,300+ casts): ขั้นเหยื่อแทบไม่เปลี่ยนคุณภาพปลา · ปลาแพง (legendary/mythic)
-  // คือฟลุ๊คที่เกิดเท่ากันทุกขั้น → เทียบขั้นด้วย "กำไร/ครั้งแบบตัดฟลุ๊ค" (trimmed) · prior = ขั้นถูกสุดชนะ
-  // บทเรียนระบบเก่า (v6.46-6.63 ที่ถูกลบ): ต้องมี margin + cooldown + ลงเร็วขึ้นช้า ไม่งั้นสลับมั่วตามโชค
+  // หลักคิด (เดิม จากข้อมูล 1,300+ casts): เทียบขั้นด้วย "กำไร/ครั้งแบบตัดฟลุ๊ค" (trimmed) · prior = ขั้นถูกสุดชนะ
+  // ⚠️ v6.315 — สมมติฐานเดิม "ปลาแพง = ฟลุ๊คที่เกิดเท่ากันทุกขั้น" **ไม่จริงแล้ว** หลังเกมแพตช์ใหญ่ (29/7/69):
+  //   ขั้นเหยื่อเป็น "กำแพงแข็ง" ของระดับปลา (baitRarityCeiling) + เป็น "ตัวคูณ" โอกาสปลาระดับสูง (baitTailMult ×1→×6)
+  //   → การตัดฟลุ๊คทำให้ Advisor เลือกขั้นถูก (เช่นขั้น 3 = เพดานแค่สุดยอด) แล้ว "ขังตัวเองออกจาก" ปลาที่แพงจริง
+  //     (legendary 4k / mythic 28k / divine 64k / primordial 150k) ที่ต้องขั้น 4/6/7/8 ขึ้นไปถึงจะตกได้เลย
+  //   แก้: เพิ่ม "พื้นขั้น" (advBaitFloor, ดีฟอลต์ 5) — Advisor ยังเทียบด้วยกำไรตัดฟลุ๊คเหมือนเดิม แต่ห้ามต่ำกว่าพื้น
+  //   บทเรียนระบบเก่า (v6.46-6.63 ที่ถูกลบ): ต้องมี margin + cooldown + ลงเร็วขึ้นช้า ไม่งั้นสลับมั่วตามโชค
   const ADV = {
     MINN: 30,            // ข้อมูลขั้นต่ำ/ขั้น (ในแมพปัจจุบัน) ถึงเชื่อค่า
     UPN: 100,            // จะ "อัพขั้นแพงกว่า" ต้องมีข้อมูลขั้นนั้น ≥ นี้ (ขึ้นช้า)
@@ -6683,7 +6707,7 @@
   function advisorNoSet() {
     if (cfg.advisorNoTiers !== _advNoRaw) {
       _advNoRaw = cfg.advisorNoTiers;
-      _advNoSet = new Set(String(cfg.advisorNoTiers || '').split(',').map((x) => parseInt(x, 10)).filter((n) => n >= 1 && n <= 8));
+      _advNoSet = new Set(String(cfg.advisorNoTiers || '').split(',').map((x) => parseInt(x, 10)).filter((n) => n >= 1 && n <= MAX_BAIT_TIER));
     }
     return _advNoSet;
   }
@@ -6786,6 +6810,16 @@
         urgent = true;
         why += ` · ⚠️ ${ADV.RECENT} ครั้งหลังกำไรตก (${signed(recent.score)}/ครั้ง vs ปกติ ${signed(base.score)})`;
       }
+    }
+    // 🎯 v6.315: บังคับ "พื้นขั้นเหยื่อ" — ไม่ให้ Advisor ขังตัวเองต่ำกว่าขั้นที่ตกปลามีค่าได้ (ผู้ใช้เลือกพื้น=5)
+    //   เกณฑ์ตัดฟลุ๊คมองไม่เห็นมูลค่าปลาแรร์ → ชอบเลือกขั้นถูกที่เพดานต่ำ · พื้นนี้ไล่ขึ้นเฉพาะเมื่อ "ปลดล็อก+ซื้อไหว"
+    const floor = clamp(cfg.advBaitFloor || 1, 1, baitCeil || MAX_BAIT_TIER);
+    if (bestTier < floor && advTierOk(floor)) {
+      const coins = coinsNow();
+      if (coins == null || coins >= baitUnit(floor) * baitPack(floor)) {
+        why += ` · ⬆️ ยกขึ้นพื้นขั้น ${floor} (ต่ำกว่านี้ตก ${RARITY_TH.slice((BAIT_RARITY_CEILING[floor - 2] ?? 4) + 1).join('/') || 'ปลาแพง'} ไม่ได้)`;
+        bestTier = floor;
+      } else why += ` · (อยากยกขึ้นพื้นขั้น ${floor} แต่เงินไม่พอ 1 แพ็ค — คงขั้น ${bestTier} ไปก่อน)`;
     }
     // ---- ยา (จัดสรรตามความคุ้ม + จังหวะ · ลิมิต 5 ขวด/วัน = ทรัพยากรที่ต้องลงชั่วโมงที่ทำเงินดีสุด) ----
     const pot = { weight: false, luck: false, note: [] };
@@ -7322,12 +7356,15 @@
     const baseNet = baitNetEst(baseTier, 0);
     const casts = clamp(cfg.advExploreCasts || 30, 5, 300);
     const budget = Math.max(0, cfg.advExploreMaxCost || 0);
+    // 🎯 v6.315: ขั้น ≥ พื้น = "ขั้นลุ้นแจ็คพอต" (ตกปลาแพงได้) — ยกเว้นเพดานงบ เพราะเกณฑ์ตัดฟลุ๊ค
+    //   มองไม่เห็นมูลค่าปลาแพง เลยประเมินขั้นสูง "แพงเกินงบ" เสมอ = ไม่มีวันสำรวจ (ต้นเหตุที่มันติดแต่ขั้นต่ำ)
+    const floor = clamp(cfg.advBaitFloor || 1, 1, baitCeil || MAX_BAIT_TIER);
     const cands = [];
-    for (let t = 1; t <= (baitCeil || 8); t++) {
+    for (let t = 1; t <= (baitCeil || MAX_BAIT_TIER); t++) {
       if (t === baseTier) continue;
       if (!advTierOk(t)) continue;                       // เคารพ "ห้าม Advisor ใช้ขั้นนี้" ของผู้ใช้
       const cost = Math.max(0, baseNet - baitNetEst(t, baseNet)) * casts;
-      if (budget && cost > budget) continue;                 // แพงเกินงบ → ไม่ลองขั้นนี้
+      if (budget && cost > budget && t < floor) continue;    // ต่ำกว่าพื้น = ต้องคุ้มงบ · ขั้น ≥ พื้น = ลุ้นแจ็คพอต ไม่ติดงบ
       cands.push({ tier: t, at: baitLastSeen(t), cost });
     }
     if (!cands.length) return null;
@@ -10531,6 +10568,14 @@ ${esc(reason)}
       labeled('ทุกกี่ชั่วโมง', numInput('advExploreHours', 1, 72, 48)),
       labeled('ครั้งละ', numInput('advExploreCasts', 5, 300, 48)),
       labeled('งบ/รอบ 🪙', numInput('advExploreMaxCost', 0, 999999, 64)),
+    ));
+
+    panel.appendChild(row(
+      '🎯 พื้นขั้นเหยื่อ (กันขังตัวเองออกจากปลาแพง)',
+      'เกมใหม่: "ขั้นเหยื่อ = เพดานระดับปลาที่ตกได้" · ขั้น 3 ตกได้แค่สุดยอด, ขั้น 4-5 = ตำนาน, ขั้น 6 = เทพนิยาย, ขั้น 7 = เทพ, ขั้น 8 = บรรพกาล · '
+      + 'Advisor เทียบขั้นด้วย "กำไรตัดฟลุ๊ค" ซึ่งมองไม่เห็นมูลค่าปลาแพง → ชอบเลือกขั้นถูกที่เพดานต่ำ = ปิดโอกาสตกปลาราคา 4,000-150,000 · '
+      + 'ตั้ง "พื้น" ไว้ Advisor จะไม่เลือกต่ำกว่านี้ (ยกขึ้นเฉพาะเมื่อปลดล็อก+ซื้อไหว) · แนะนำ 5 (ตกได้ถึงตำนาน) · การสำรวจด้านบนจะแตะขั้น 6-8 เป็นระยะเพื่อลุ้นปลาแพงกว่านั้น',
+      labeled('พื้นขั้น', numInput('advBaitFloor', 1, MAX_BAIT_TIER, 48)),
     ));
     {
       const eb = document.createElement('button');
