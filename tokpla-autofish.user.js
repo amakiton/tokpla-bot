@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.316
+// @version      6.317
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.316';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.317';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -5505,12 +5505,39 @@
     return base;
   }
   const AUTO_SELL_JUNK_LV = 20;
-  let junkAutoSaid = false;
+  let junkAutoSaid = false, junkQuotaSaid = false;
+  // 🗑️ อ่าน "จำนวนขยะที่ค้างในกระเป๋า" จากตัวเลขบนแท็บ ("ขยะ277 ชิ้น") — ต้องเปิดกระเป๋าอยู่ถึงอ่านได้
+  //   คืน null = อ่านไม่ได้ (กระเป๋าไม่ได้เปิด/หาแท็บไม่เจอ)
+  function junkCountInBag() {
+    try {
+      const t = junkTabBtn();
+      if (!t) return null;
+      const m = /(\d[\d,]*)\s*ชิ้น/.exec((t.textContent || '').replace(/\s+/g, ''));
+      return m ? +m[1].replace(/,/g, '') : null;
+    } catch { return null; }
+  }
+  // 🔴 v6.317 — **บั๊กที่กินช่องกระเป๋าอยู่จริง (เจอสด 31/7: ขยะ 277 ชิ้น vs ปลา 17 ชิ้น)**
+  //   v6.268 สรุปว่า "Lv. ≥ 20 = เกมขายขยะให้เองตลอด" แล้ว **ข้ามการขายขยะถาวรโดยไม่เคยตรวจซ้ำ**
+  //   แต่เกมอัปเดตใหม่ทำให้การขายขยะฟรีเป็น **โควตาต่อวัน** (i18n: `bag.freeJunk.quota` "ขายขยะฟรีวันนี้ {used}/{perDay} ชิ้น · รีเซ็ตเที่ยงคืน"
+  //   + `bag.freeJunk.exhausted` "โควต้าฟรีวันนี้หมด — เหลือขยะ {left} ชิ้นในเป๋า") · เกินโควตา = ขยะกองในกระเป๋า
+  //   → บอทไม่ขาย + ไม่รู้ตัว = ช่องกระเป๋าถูกขยะกินจนเกือบเต็ม (ปลาเหลือที่ 17 ช่องจาก 400)
+  //   กฎใหม่: **เชื่อของจริงบนจอก่อนเสมอ** — มีตัวเลขขยะบนแท็บ > 0 = ขาย ไม่ว่าเลเวลเท่าไร
+  //           อ่านไม่ได้ (null) ค่อยใช้เลเวลเป็นตัวช่วยเดา (พฤติกรรมเดิม)
+  //   บทเรียนเดียวกับ [[verify-effect-not-return-value]]: "ระบบอื่นทำให้แล้ว" ต้องตรวจผลจริง ไม่ใช่เชื่อเงื่อนไข
   function junkAutoSold() {
+    const jn = junkCountInBag();
+    if (jn != null && jn > 0) {
+      if (!junkQuotaSaid) {
+        junkQuotaSaid = true;
+        logWarn(`🗑️ เจอขยะค้างในกระเป๋า ${jn} ชิ้น — เกมไม่ได้ขายให้ทั้งหมดแล้ว (โควตาฟรีต่อวันหมด) → บอทจะขายเองต่อจากนี้`);
+      }
+      return false;   // มีขยะจริง = ต้องขายเอง
+    }
+    if (jn === 0) return true;   // แท็บบอกว่าไม่มีขยะ = เกมจัดการให้จริง ไม่ต้องเปิดแท็บ
     let lv = null;
     try { const v = +W.localStorage.getItem('tokpla_level_seen'); if (Number.isFinite(v) && v > 0) lv = v; } catch {}
     if (lv == null || lv < AUTO_SELL_JUNK_LV) return false;
-    if (!junkAutoSaid) { junkAutoSaid = true; logInfo(`🗑️ Lv.${lv} ≥ ${AUTO_SELL_JUNK_LV} — เกมขายขยะให้เองตอนตกแล้ว ข้ามขั้นตอนเปิดแท็บขยะ`); }
+    if (!junkAutoSaid) { junkAutoSaid = true; logInfo(`🗑️ Lv.${lv} ≥ ${AUTO_SELL_JUNK_LV} — อ่านจำนวนขยะไม่ได้ ใช้เกณฑ์เลเวลชั่วคราว (จะตรวจซ้ำทุกครั้งที่เปิดกระเป๋า)`); }
     return true;
   }
   let totalCoinsWarned = false;
