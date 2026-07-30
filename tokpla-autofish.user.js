@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.315
+// @version      6.316
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.315';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.316';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -181,6 +181,12 @@
         SERVER_BOSS_TIMES = times;
       }
       if (c.flags && typeof c.flags === 'object') GAME_FLAGS = c.flags;
+      // ⚔️ v6.316: ค่าตีบอสจากเซิร์ฟเวอร์ (เปลี่ยนได้ทุกแพตช์ — เคยเดาผิดมาแล้ว)
+      const T = c.tuning || {};
+      if (Number.isFinite(T.raidMeleeRange)) BOSS_MELEE_RANGE = T.raidMeleeRange;
+      if (Number.isFinite(T.raidChargeFullMs)) BOSS_CHARGE_MS = T.raidChargeFullMs;
+      if (Number.isFinite(T.raidBossBodyW)) BOSS_BODY_W = T.raidBossBodyW;
+      if (Number.isFinite(T.raidBossBodyH)) BOSS_BODY_H = T.raidBossBodyH;
       // 🎯 เพดานระดับปลาตามขั้นเหยื่อ (baitRarityCeiling) — ของจริงจากเซิร์ฟเวอร์ (index เข้าอาร์เรย์ 9 ระดับ)
       const rc = (c.tuning || {}).baitRarityCeiling;
       if (Array.isArray(rc) && rc.length && rc.every((x) => Number.isFinite(x))) {
@@ -1843,8 +1849,11 @@
   //   ⚠️ ตารางบอส (ชื่อ/โหมด/จุดอ่อน) มาจาก **เซิร์ฟเวอร์** ไม่ได้ฝังในบันเดิล → บอท **ต้องอ่านจาก HUD ตอนสู้**
   //      ห้าม hardcode ว่าบอสตัวไหนใช้โหมดไหน (เกมเพิ่มบอสใหม่ได้ตลอด — บทเรียนเดียวกับถ้ำหมุนเวียน)
   //   HUD ตอนสู้มีครบ: ชื่อบอส · "เฟส N" · "จุดอ่อน: <ชื่อเหยื่อ> <ชื่อเหยื่อ> (x1.5)" · ชิปบอกโหมดตี · HP "n / max"
-  const BOSS_MELEE_RANGE = 60;      // ระยะที่เกมยอมให้ฟาดโดน (tuning.raidMeleeRange)
-  const BOSS_CHARGE_MS = 1800;      // กดค้างเท่านี้ = ชาร์จเต็ม x2 (tuning.raidChargeFullMs)
+  // 🌐 v6.316: ค่าจริงจาก /api/config (applyGameConfig ทับให้) — ค่าเริ่มต้นคือค่าที่อ่านสด 30/7/69
+  //   raidMeleeRange 60 · raidChargeFullMs 1800 · raidBossBodyW/H 360×420 (ตัวบอสใหญ่ = "ระยะประชิด" วัดจากขอบตัว ไม่ใช่จุดกลาง)
+  let BOSS_MELEE_RANGE = 60;        // ระยะที่เกมยอมให้ฟาดโดน (นับจากขอบตัวบอส · tuning.raidMeleeRange)
+  let BOSS_CHARGE_MS = 1800;        // กดค้างเท่านี้ = ชาร์จเต็ม x2 (tuning.raidChargeFullMs)
+  let BOSS_BODY_W = 360, BOSS_BODY_H = 420;   // ขนาดตัวบอส (tuning.raidBossBodyW/H) — ใช้ประเมิน "ถึงระยะประชิด" จากพิกัดกลาง
   // 🎯 v6.265: เกมเปลี่ยนโครง `scene.raidDodge` — เดิม {mode, cx, cy, r} วงเดียว
   //   ตอนนี้เป็น {seq, mode, r, deadline, zones:[{cx,cy,ring}], count} = **วงหลายวง** และ cx/cy ย้ายลงไปอยู่ใน zones
   //   ผลที่เกิดจริง (รอบ 10:30 26/7 โหมด melee): raid.cx/cy = undefined → dx/dy = NaN → เทียบ `gx > 6` เป็น false ทุกทิศ
@@ -3278,6 +3287,7 @@
     if (isOn('tgOn')) void tgSend('👹 <b>ถึงถ้ำบอส</b> — เริ่มตี (เกจ→กดแถบแดง) + กระโดดหลบตอนบอสหมุน');
     let killed = false, hits = 0, gaugePresses = 0, dodges = 0, lastEngage = 0, lastPress = 0;
     let bossSeen = false, goneAt = 0, lastSpinChk = 0, spinNow = false, lastJump = 0, bossDodging = false, aoeDodges = 0, deaths = 0;
+    bossVanished = false;   // 🔴 v6.316: รีเซ็ตทุกไฟต์ · จะตั้ง true เฉพาะตอน "เห็นบอสแล้วหายไปทั้งที่เรายังอยู่ในถ้ำ"
     // ⚙️ v6.162: เกจอัจฉริยะ — วัดความเร็วเข็ม (deg/s, EMA) แล้วกด "ล่วงหน้า" ชดเชย latency ~120ms
     //   เดิมกดเฉพาะเข็มอยู่ในแถบ ±2° เป๊ะ → เข็มเร็ว+latency = กดตอนเข็มเลยแถบไปแล้ว/พลาดหน้าต่างทั้งรอบ
     let gPrevAng = null, gPrevAt = 0, gVel = 0;
@@ -3333,6 +3343,7 @@
     let aoeSelfHits = 0;   // v6.273: นับครั้งที่วง AoE ทับตัวพอดี (ต้องใช้ทิศสำรอง) — ไว้ดูว่าเกิดบ่อยแค่ไหน
     let orbWasDisabled = false, orbDisabledAt = 0;   // 🎥 v6.239: วัดคูลดาวน์ปุ่มตีบอส (กด→ดับ→ติดใหม่)
     let fightT0 = 0, lastContrib = { dmg: null, pct: null };   // 📊 v6.195: จับเวลาไฟต์ (ตั้งตอนเห็นบอสครั้งแรก) + อ่านดาเมจล่าสุด
+    let lastMeleeDiag = 0;   // 🔬 v6.316: throttle log วินิจฉัยโหมดประชิด (ดาเมจต่ำผิดปกติ — ต้องดูสดว่าติดตรงไหน)
     let fightMap = '';   // 🧭 v6.247: ถ้ำที่สู้อยู่จริง (จำตอนเห็นบอส) — ใช้พากลับเข้าถ้ำ "ใบเดิม" หลังตาย
     // 👊 v6.252: โหมดตีของบอสรอบนี้ + ตัวนับไว้พิสูจน์ว่าระบบใหม่ทำงาน (ไฟต์ 19:29 ได้ 0.1% เพราะไม่รู้ว่าต้องเข้าประชิด)
     let bossHitMode = null, meleeApproaches = 0, chargeShots = 0, meleeSaid = false;
@@ -3512,7 +3523,12 @@
       // 🏁 บอสเคยมาแล้วตอนนี้หายไป (ยืนยัน >1.5วิ กันอ่านพลาด) → จบทันที เก็บ reward กลับไปฟาร์ม (ไม่รอครบ maxMin เปล่าๆ)
       if (bossSeen && !present) {
         if (!goneAt) goneAt = now();
-        else if (now() - goneAt > 1500) break;
+        else if (now() - goneAt > 1500) {
+          // 🔴 v6.316: บอสหายทั้งที่เรายัง "อยู่ในถ้ำ" = ถูกฆ่า/หมดเวลา/despawn → กลับเข้าไปซ้ำไม่มีอะไรให้ตี
+          //   (แยกจากเคสตายเด้งออกนอกถ้ำ ที่ผ่าน guard ด้านบน bossSeen && !isBossMap ไปแล้ว)
+          if (isBossMap(bossMapId())) bossVanished = true;
+          break;
+        }
       }
       // 🎯 v6.149: หลบ AoE ด้วยการ "เดิน" — scene.raidDodge {mode:'reach'(เขียว→เข้าวง dist<r) | 'flee'(แดง→หนีออก dist>r), cx,cy,r}
       //   นี่คือปัญหาหลักที่ผู้ใช้บอก: ไม่เข้าวงเขียว/ไม่หนีวงแดง = โดนตี→มึน→ตาย · เดิมบอทแค่กดกระโดด ไม่ขยับตัว
@@ -3681,8 +3697,15 @@
         // 👊 melee: เดินเข้าไปให้ถึงก่อน แล้วค่อยฟาด — ไม่งั้นกดเท่าไรก็ดาเมจ 0 (บทเรียน 19:29)
         if (bossHitMode === 'melee' && rb && rb.x != null && _sc && _sc.player) {
           const d = Math.hypot(rb.x - _sc.player.x, rb.y - _sc.player.y);
-          // เชื่อ "ไกลไป!" ของเกมก่อน (ground truth) · ไม่มีข้อความก็ใช้ระยะจาก tuning เผื่อขอบตัวบอส
-          const needCloser = meta.tooFar || d > BOSS_MELEE_RANGE * 2.2;
+          // 🎯 v6.316: "ถึงระยะฟาด" = ครึ่งตัวบอส (body/2 จาก /api/config) + meleeRange — เดิมเดา 2.2×60=132px โดยไม่รู้ขนาดตัวบอส
+          //   ของจริง body 360×420 → ครึ่งตัว ~180 + 60 = ~240px · เชื่อ "ไกลไป!" ของเกมก่อน (ground truth) เสมอ
+          const reachPx = Math.min(BOSS_BODY_W, BOSS_BODY_H) / 2 + BOSS_MELEE_RANGE;
+          const needCloser = meta.tooFar || d > reachPx;
+          // 🔬 v6.316 วินิจฉัยสด (throttle 3วิ): melee ทำดาเมจ ~22/hit ผิดปกติ (505 hits = 2.3%) — จับให้ได้ว่าติดที่ระยะ/ปุ่ม/กลไก
+          if (now() - lastMeleeDiag > 3000) {
+            lastMeleeDiag = now();
+            bossEvent(`👊 melee: ห่าง ${Math.round(d)}px (ถึง ≤${Math.round(reachPx)}) · ${meta.tooFar ? '⚠️เกมว่าไกลไป' : 'ในระยะ'} · ปุ่มตี ${orb ? (orb.disabled ? 'กดไม่ได้' : 'พร้อม') : 'ไม่มี'} · ดาเมจสะสม ${lastContrib.dmg ?? '?'} (${lastContrib.pct ?? '?'}%)`);
+          }
           if (needCloser) {
             const dirs = [];
             const ddx = rb.x - _sc.player.x, ddy = rb.y - _sc.player.y;
@@ -4117,7 +4140,10 @@
             if (!enabled || (!isOn('bossHunt') && !mythicActive())) break;   // ถูกสั่งหยุด = เคารพ
             if (roundTry >= BOSS_REENTRY_MAX) { say(`👹 กลับเข้าไปตีครบ ${BOSS_REENTRY_MAX} รอบแล้ว — พอแค่นี้`); break; }
             if (now() - huntT0 > BOSS_ROUND_BUDGET_MS) { say('👹 ใช้เวลากับรอบนี้นานพอแล้ว — กลับไปฟาร์ม'); break; }
-            if (isBossMap(bossMapId())) continue;                     // ยังอยู่ในถ้ำ = สู้ต่อได้เลย
+            // 🔴 v6.316 (แก้เที่ยวเปล่า — ต้นเหตุ noshow ซ้ำ 23:20 หลัง timeout 22:35): บอสหายกลางถ้ำ = ถูกฆ่า/หมดเวลา
+            //   กลับเข้าไป/สู้ต่อก็รอเก้อจนหมด bossMaxWaitMin แล้วได้ noshow เปล่า · เห็นบอสหายทั้งที่ยังอยู่ในถ้ำ = พอ
+            if (bossVanished) { say('👹 บอสถูกปราบ/หายไปแล้ว — ไม่กลับเข้าไปซ้ำ (กันเที่ยวเปล่า)'); bossEvent('🚪 บอสหาย/ถูกฆ่าในถ้ำ — เลิกรอบนี้ (กัน noshow เที่ยวเปล่า)'); break; }
+            if (isBossMap(bossMapId())) continue;                     // ยังอยู่ในถ้ำ + บอสยังอยู่ = สู้ต่อได้เลย
             // อยู่นอกถ้ำ (ตาย/เด้งออก) + รอบยังเปิด → เดินกลับเข้าไปใหม่ แทนที่จะกลับบ้านตกปลา
             say(`👹 บอสยังไม่ตายและรอบยังเปิด — กลับเข้าถ้ำไปตีต่อ (รอบที่ ${roundTry + 1}/${BOSS_REENTRY_MAX})`);
             bossEvent(`🔁 กลับเข้าถ้ำรอบที่ ${roundTry + 1} (ตาย/เด้งออกมาแล้วบอสยังอยู่)`);
@@ -4304,6 +4330,10 @@
   //   4 รอบ: จากข้อมูลจริงตายได้สูงสุด 3 ครั้ง/ไฟต์ (รอบ 10:30) → เผื่อไว้ 1
   const BOSS_REENTRY_MAX = 4, BOSS_ROUND_BUDGET_MS = 12 * 60000;
   let bossLastKilled = false;   // ไฟต์ล่าสุดฆ่าบอสได้ไหม (bossFight เป็นคนตั้ง) — ใช้ตัดสินว่าจะกลับเข้าไปอีกไหม
+  // 🔴 v6.316: ไฟต์ล่าสุดจบเพราะ "เห็นบอสแล้วบอสหายไปกลางถ้ำ" (คนอื่นฆ่า/หมดเวลา/despawn) — ไม่ใช่เพราะเราตายแล้วเด้งออก
+  //   ใช้แยก 2 เคสของ timeout: (ก) บอสหายทั้งที่เรายังอยู่ในถ้ำ = กลับเข้าไปก็ noshow เปล่า → เลิก
+  //                            (ข) เราตาย/เด้งออกนอกถ้ำ บอสยังอยู่ = เดินกลับเข้าไปสู้ต่อ (ดีไซน์ v6.275)
+  let bossVanished = false;
   let bossTravelRetries = 0;    // v6.248: นับครั้งที่ "ไปไม่ถึงถ้ำแต่บอสยังอยู่" — จำกัดการลองซ้ำไม่ให้วนทั้งรอบ
   let bossCtrlFails = 0;        // v6.297: นับครั้งที่ "คุมตัวละครไม่ได้ก่อนออกเดินทาง" — ครบ 3 ครั้ง = ข้ามรอบ (disarm) กลับไปตกปลา ไม่วนปิงปอง
   let bossArmed = true;
