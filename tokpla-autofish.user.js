@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.320
+// @version      6.321
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.320';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.321';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -7788,7 +7788,9 @@
   // เก็บความคืบหน้าทดสอบลง localStorage — รอดรีเฟรช/หลุดกลางคัน แล้ว "ทำต่อจากเดิม" ได้
   const TEST_KEY = 'tokpla_bot_test';
   function loadTestProgress() { try { const d = JSON.parse(W.localStorage.getItem(TEST_KEY) || 'null'); if (d && d.done) return d; } catch {} return null; }
-  function saveTestProgress() { if (test) try { W.localStorage.setItem(TEST_KEY, JSON.stringify({ N: test.N, done: test.done, total: test.totalRounds, potionByTier: test.potionByTier, startAt: test.startAt, origBait: test.origBait, ts: Date.now() })); } catch {} }
+  // v6.321: เซฟ `samples` = จำนวนครั้งที่ "เก็บตัวอย่างได้จริง" สะสมทั้งเทสต์
+  //   ใช้ให้ auto-resume แยกออกว่า progress ที่ค้างอยู่ "มีผลอะไรบ้างไหม" หรือเป็นแค่รอบที่ถูกข้ามเพราะค้าง (0/300 ทุกขั้น)
+  function saveTestProgress() { if (test) try { test.samples = (test.samples || 0); W.localStorage.setItem(TEST_KEY, JSON.stringify({ N: test.N, done: test.done, total: test.totalRounds, potionByTier: test.potionByTier, startAt: test.startAt, origBait: test.origBait, samples: test.samples, ts: Date.now() })); } catch {} }
   function clearTestProgress() { try { W.localStorage.removeItem(TEST_KEY); } catch {} }
   // % ความคืบหน้าทดสอบ = (รอบที่เสร็จ + เศษของรอบที่กำลังทำ) / รอบทั้งหมด
   function testPct() {
@@ -7914,6 +7916,7 @@
           await sleep(2500);
         }
         if (!testRunning || !enabled) throw new Error('stop');
+        test.samples = (test.samples || 0) + (test.count || 0);   // v6.321: สะสมตัวอย่างที่เก็บได้จริง (รอบที่ข้าม = +0)
         test.done[kk] = true; saveTestProgress();   // ครบ N หรือข้ามเพราะค้าง — จำไว้ (ไม่วนซ้ำ)
       }
       say(`✅ ทดสอบครบทุกรอบแล้ว (${test.totalRounds} รอบ) — หยุดทดสอบ · กำลังสรุปผล...`);
@@ -7958,9 +7961,15 @@
   let testPausedByBoss = false;
   function stopTest(byBoss) {
     if (!testRunning) return;
-    testRunning = false; saveTestProgress();
+    testRunning = false;
     testPausedByBoss = !!byBoss;
-    say(byBoss ? '🧪 พักทดสอบชั่วคราว (บอสใกล้มา) — จะทำต่อเองหลังล่าบอสเสร็จ' : '🧪 หยุดทดสอบ (กด "ทำต่อจากเดิม" เพื่อไปต่อได้)');
+    // 🔴 v6.321 — **ผู้ใช้สั่งหยุด = ต้องหยุดจริง ห้ามฟื้นเอง** (เจอสด 31/7: กด "⏹ หยุด" แล้วรีโหลด → ทดสอบเริ่มใหม่เอง)
+    //   วงจรบั๊ก: stopTest() เซฟ progress (ts=ตอนนี้) → รีโหลด → auto-resume เห็น "progress สดอายุ < 15 นาที" → รันต่อ
+    //   → เทสต์ยึด cfg.baitTier ไป 3,000 ครั้ง ทั้งที่ผู้ใช้สั่งหยุดไปแล้ว (ฟาร์มด้วยขั้นที่เทสต์ตั้ง ไม่ใช่ที่ Advisor เลือก)
+    //   แยก 2 กรณีให้ชัด: พักเพราะบอส = เก็บ progress ไว้ (resumeTestAfterBoss ทำต่อ) · ผู้ใช้สั่งหยุด = **ลบ progress ทิ้ง**
+    if (byBoss) saveTestProgress();
+    else clearTestProgress();
+    say(byBoss ? '🧪 พักทดสอบชั่วคราว (บอสใกล้มา) — จะทำต่อเองหลังล่าบอสเสร็จ' : '🧪 หยุดทดสอบแล้ว (ล้างความคืบหน้าทิ้ง — กดปุ่มทดสอบใหม่ถ้าต้องการเริ่มอีกครั้ง)');
   }
   // เรียกท้าย runBossHunt/bossFightHere — กลับมาทำเทสต์ต่อถ้าถูกพักเพราะบอส
   function resumeTestAfterBoss() {
@@ -11503,7 +11512,12 @@ ${esc(reason)}
         // 🧪 ถ้ารีเฟรชกลางการทดสอบ (ความคืบหน้าสดอยู่ < 15 นาที) → ทำต่อเองเลย (ไม่งั้นบอทฟาร์มขั้นที่การทดสอบตั้งค้างไว้)
         try {
           const tp = loadTestProgress();
-          if (tp && Date.now() - (tp.ts || 0) < 15 * 60000) { say('🧪 พบการทดสอบค้างอยู่ — ทำต่อจากเดิมอัตโนมัติ'); setTimeout(() => void runBaitTest(true), 3000); }
+          // 🔴 v6.321: กันชั้นสอง — อย่าฟื้นเทสต์ที่ "ยังไม่มีผลอะไรเลย"
+          //   เจอสด 31/7: เทสต์ถูกข้ามทุกขั้นเพราะ "ค้าง 8 นาที ได้ 0/300" (บอทไปล่าบอส/พักพลัง) → done มีแต่ขั้นที่ข้าม
+          //   รีโหลดทีไรก็ฟื้นมายึด cfg.baitTier ใหม่ไม่จบ · ให้ฟื้นเฉพาะเทสต์ที่ "เก็บตัวอย่างได้จริง" (count > 0)
+          const tpAlive = tp && Date.now() - (tp.ts || 0) < 15 * 60000 && (tp.samples || 0) > 0;
+          if (tpAlive) { say('🧪 พบการทดสอบค้างอยู่ — ทำต่อจากเดิมอัตโนมัติ'); setTimeout(() => void runBaitTest(true), 3000); }
+          else if (tp) { clearTestProgress(); logInfo('🧪 พบเทสต์ค้างที่ยังไม่ได้ผลอะไรเลย — ล้างทิ้ง ไม่ฟื้นอัตโนมัติ (กดปุ่มทดสอบเองถ้าต้องการ)'); }
         } catch {}
         // 👹 ถ้ารีโหลดกลางการล่าบอส (ค้างอยู่แมพอื่น) → เดินกลับบ้านให้ (ไม่งั้นฟาร์มค้างในถ้ำ/แมพผิด)
         try {
