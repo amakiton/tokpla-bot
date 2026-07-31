@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.327
+// @version      6.328
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.327';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.328';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2147,6 +2147,9 @@
   const BOSS_GRAPH_KEY = 'tokpla_boss_graph', BOSS_STATE_KEY = 'tokpla_boss_state';
   let bossPhase = 'idle';        // idle | travel | fight | return — persist กันหลุดตอนรีโหลด
   let forceBossHuntNow = false;  // 🚨 v6.309: ปุ่ม "ล่าบอสด่วน" ตั้งธงนี้ → tick วิ่งเข้าถ้ำล่าบอสทันที ข้ามทุกเงื่อนไข
+  // 🚨 v6.328: กด "ล่าบอสด่วน" ตอนบอทกำลัง "เดินกลับบ้าน" (bossPhase='return') → ธงนี้สั่ง bossTravelTo เลิกเดินทันที
+  //   (หลักฐานสด 31/7 16:43: บอสยังไม่ตาย ผู้ใช้กดปุ่มแดง แต่บอทติดลูปเดินกลับบ้าน 3 นาที = ปุ่มเหมือนไม่ทำงาน)
+  let bossAbortTravel = false;
   let bossHome = '';             // แมพบ้านที่จะกลับ (จำตอนเริ่มล่า)
   const heldKeys = new Set();    // ปุ่มทิศที่กดค้างอยู่ (ต้องปล่อยเสมอเมื่อจบ)
 
@@ -2763,8 +2766,12 @@
     if (dom === 0) {
       const lead = clamp(cfg.bossLeadMin, 1, 60);
       const rawGap = bossNextMs ? (bossNextMs - Date.now()) / 60000 : 0;   // ช่องว่างจริงถึงบอส (ไม่ roll)
-      // เชื่อป้าย "บอสมาแล้ว" เฉพาะเมื่อเวลาจริงใกล้ตอนนี้ (บอสเพิ่งขึ้น -6 ถึง +lead+2 นาที) หรือยังไม่มีฐานให้เทียบ
-      if (!bossNextMs || (rawGap >= -6 && rawGap <= lead + 2)) return 0;
+      // เชื่อป้าย "บอสมาแล้ว" เฉพาะเมื่อเวลาจริงใกล้ตอนนี้ หรือยังไม่มีฐานให้เทียบ
+      // 🔴 v6.328 (ผู้ใช้เจอสด 31/7 16:47): กรอบลบเดิม -6 นาทีแคบกว่ารอบบอสจริงที่ "เปิดยาว" (ตาย/เด้งออกแล้ว
+      //   กลับเข้าไปตีต่อได้ · v6.275 ออกแบบ re-entry ไว้บนข้อเท็จจริงนี้แล้ว) → ป้ายจริงตอน rawGap=-17 ถูกปัดตก
+      //   ว่า "เกมเพี้ยน" ทั้งที่บอสยังมีเลือดอยู่จริง = บอทไม่ยอมไปล่า · ขยายกรอบลบเป็น -45 นาที (คลุมรอบเปิดยาว
+      //   แต่ยังกันเคสป้ายค้าง 11 ชม. ของ v6.215) · arm gate (v6.200) ยังคุมอยู่: รอบที่ล่าจบแล้ว disarm = ป้ายปลุกไม่ได้
+      if (!bossNextMs || (rawGap >= -45 && rawGap <= lead + 2)) return 0;
       // ป้ายแย้งเวลาจริง (บอสยังอีกไกล) = ป้ายค้าง/เพี้ยน → ไม่เชื่อ ใช้ตัวทำนายแทน
       if (now() - bossPredictSayAt > 600000) {
         bossPredictSayAt = now();
@@ -2957,6 +2964,8 @@
     // 🐛 v6.221: anyMode = ผู้เรียกที่ไม่ใช่บอส/ปลาเทพ (ธุระเมือง NPC) — เดิม no-op เงียบเมื่อ bossHunt ปิด → ธุระเมืองพัง + วน bag-full
     let lastGateProbe = 0;
     while (enabled && (anyMode || isOn('bossHunt') || mythicActive()) && now() - t0 < maxMs) {
+      // 🚨 v6.328: ถูกสั่งล่าบอสด่วนระหว่างเดินทาง (ขากลับบ้าน) → เลิกเดินทันที ให้ tick ยิงล่าใหม่
+      if (bossAbortTravel) { aw.cancel && aw.cancel(); bossNavFail = 'ถูกสั่งล่าบอสด่วน — ยกเลิกการเดินทางเดิม'; return false; }
       const cur = bossMapId(), p = bossPlayerXY();
       // 🧭 v6.247: เป้าคือ "ถ้ำบอส" → เข้าถ้ำบอส**ถ้ำไหนก็ถือว่าถึง** และไม่ต้องเดินให้ตรงพิกัด
       //   เหตุผล 2 ข้อ: (1) เกมหมุนเวียนถ้ำ ประตูพาเข้าถ้ำที่ active ไม่ใช่ถ้ำที่เราขอ
@@ -2985,6 +2994,8 @@
             //   แล้วพอสลับไป "เดินเอง (WASD)" กลับถึงปากถ้ำใน ~52 วิ = วิธีสำรองใช้ได้ แต่ถูกให้เริ่มช้าไป 90 วิ
             //   ออกจากรอบบอสตรงเวลาเป็นเรื่องคอขวด (บอสอยู่แค่ 3-6 นาที) → ทุกวินาทีมีค่า
             if (rotations >= list.length * 2) {
+              // 🆘 v6.328: สั่งครบทุกจุดแล้วตัวไม่ขยับเลย = เข้าเกณฑ์ "ตัวติดแมพ" — ถ้าเกมเด้งปุ่มกู้มา กดก่อนยอมแพ้
+              if (tryMapRescue('A* สั่งครบทุกจุดแล้วตัวไม่ขยับ')) { rotations = 0; navIdx = 0; await sleep(2500); continue; }
               bossNavFail = `A* สั่งแล้วตัวไม่ขยับ ครบทุกจุด ${list.length} จุด × 2 รอบ (${Math.round((now() - t0) / 1000)} วิ) — ส่งต่อให้วิธีเดินเอง`;
               logInfo(`🧭 ${bossNavFail}`);
               return false;
@@ -3028,7 +3039,10 @@
       if (await bossGameNavTo(targetMap)) return true;
       say('👹 A* เกมไปไม่ถึง — สลับไปเดินเอง');
     }
+    let mapChangeFails = 0, mapChangeFailAt = '';   // 🆘 v6.328: นับ "เปลี่ยนแมพไม่สำเร็จ" ติดกันในแมพเดิม → เข้าเกณฑ์ตัวติด
     for (let hop = 0; hop < 10 && enabled && (isOn('bossHunt') || mythicActive()); hop++) {   // v6.132: ล่าปลาเทพใช้ bossTravelTo ด้วย — เดิม bossHunt ปิด = เดินไม่ออกเงียบๆ
+      // 🚨 v6.328: ผู้ใช้กด "ล่าบอสด่วน" ตอนบอทกำลังเดินกลับบ้าน → ทิ้งขากลับทันที (runBossHunt จะจบ แล้ว tick ยิงล่าใหม่)
+      if (bossAbortTravel) { bossNavFail = 'ถูกสั่งล่าบอสด่วน — ยกเลิกการเดินทางเดิม'; return false; }
       const cur = bossMapId();
       if (!cur) { await sleep(1000); continue; }
       if (bossNavArrived(targetMap)) return true;
@@ -3104,7 +3118,15 @@
           await sleep(1000); continue;
         }
       } else { await waitFor(() => bossMapId() !== cur, 6000, 300); }   // ประตูปกติ — ไม่ใช่ทางเข้าถ้ำบอส ไม่ต้องเรียนรู้อะไร
-      if (bossMapId() === cur) { say(`👹 เปลี่ยนแมพไม่สำเร็จที่ ${cur} — ลองใหม่`); await sleep(800); }
+      if (bossMapId() === cur) {
+        // 🆘 v6.328: เปลี่ยนแมพไม่ได้บ่อยครั้ง = ตัวติด (หลักฐานสด 31/7: ติดที่ river_bank จนเกมเด้งปุ่มกู้เอง)
+        //   ครั้งที่ 1-2 อาจแค่เดินพลาด — แต่ครั้งที่ 3+ ในแมพเดิม ให้มองหาปุ่มกู้ของเกมด้วย (ถ้าเกมเด้งมาแล้วกดเลย)
+        mapChangeFails = (mapChangeFailAt === cur) ? mapChangeFails + 1 : 1; mapChangeFailAt = cur;
+        if (mapChangeFails >= 2 && tryMapRescue(`เปลี่ยนแมพไม่สำเร็จที่ ${cur} ติดกัน ${mapChangeFails} ครั้ง`)) {
+          mapChangeFails = 0; await sleep(2500); continue;   // วาร์ปแล้วตำแหน่งเปลี่ยน — เริ่ม hop ใหม่จากจุดเริ่มแมพ
+        }
+        say(`👹 เปลี่ยนแมพไม่สำเร็จที่ ${cur} — ลองใหม่`); await sleep(800);
+      } else { mapChangeFails = 0; mapChangeFailAt = ''; }
     }
     // 🐛 v6.247 (แก้หลัง audit): หัวลูปใช้ bossNavArrived แล้วแต่ค่าที่คืนตอนลูปจบยังเทียบชื่อตรงๆ
     //   → เข้าถ้ำสำเร็จที่ hop สุดท้าย (หรือโดนปิดโหมดกลางทาง) จะคืน false ทั้งที่ยืนอยู่ในถ้ำแล้ว
@@ -3585,10 +3607,16 @@
       // 🏁 บอสเคยมาแล้วตอนนี้หายไป (ยืนยัน >1.5วิ กันอ่านพลาด) → จบทันที เก็บ reward กลับไปฟาร์ม (ไม่รอครบ maxMin เปล่าๆ)
       if (bossSeen && !present) {
         if (!goneAt) goneAt = now();
-        else if (now() - goneAt > 1500) {
+        else if (now() - goneAt > 3000) {
           // 🔴 v6.316: บอสหายทั้งที่เรายัง "อยู่ในถ้ำ" = ถูกฆ่า/หมดเวลา/despawn → กลับเข้าไปซ้ำไม่มีอะไรให้ตี
           //   (แยกจากเคสตายเด้งออกนอกถ้ำ ที่ผ่าน guard ด้านบน bossSeen && !isBossMap ไปแล้ว)
-          if (isBossMap(bossMapId())) bossVanished = true;
+          // 🔴 v6.328 (ผู้ใช้เจอสด 31/7 16:38 "บอสยังไม่ตาย บอทเดินไปไหน"): present=false แปลว่าแค่ b.hidden
+          //   ก็ได้ (บอสดำน้ำ/เปลี่ยนเฟส/คัตซีน) — ไม่ใช่หลักฐานว่าตาย · ตีตรา "จบรอบ" ทั้งรอบจากอาการชั่วคราว
+          //   = ทิ้งบอสที่ยังมีเลือด → ตอนนี้: (1) ยืดยืนยัน 1.5→3 วิ (2) จะตั้ง bossVanished ได้ต้องมีหลักฐานตายจริง
+          //   คือ dead=true หรือ object บอสหายไปจากฉากทั้งก้อน (st=null) — แค่ hidden = break เฉยๆ
+          //   แล้วปล่อยลูปต่อรอบ (v6.275) พากลับเข้าไฟต์ใหม่ ถ้าบอสยังอยู่ก็ได้ตีต่อ ไม่เสียรอบ
+          const st = raidBossState();
+          if (isBossMap(bossMapId()) && (!st || st.dead)) bossVanished = true;
           break;
         }
       }
@@ -4139,6 +4167,7 @@
     //   ถ้ายังค้างในถ้ำ strandedInBossCave จะพาออกเอง) กัน tokpla_boss_state ค้างข้ามวัน
     if (orchestrating || busy) { if (resumeHome) clearBossState(); return; }
     orchestrating = true;
+    bossAbortTravel = false;   // 🚨 v6.328: ล้างธง "ทิ้งขากลับ" ก่อนออกเดินทางใหม่ — ไม่งั้นทริปใหม่ถูกยกเลิกตั้งแต่ก้าวแรก
     let reachedCave = false;   // 🐛 v6.248: ไปถึงถ้ำจริงไหม — ใช้ตัดสินความยาวคูลดาวน์ตอนจบ (ดู finally)
     let stamped = false;       // 🐛 v6.251: early-return ที่ตั้งคูลดาวน์เองแล้ว = ห้าม finally ไปตั้งทับ
     // 🐛 v6.117: บ้านต้องไม่ใช่ boss_cave — ถ้าเริ่มล่าตอนอยู่ในถ้ำแล้ว ใช้แมพฟาร์มล่าสุด/ที่ตั้ง/village
@@ -4229,6 +4258,7 @@
     } catch (e) { logErr('ล่าบอสล้มเหลว', e); }
     finally {
       bossReleaseAll(); bossPhase = 'idle'; clearBossState(); orchestrating = false; lastCast = now(); pendingCast = 0;
+      bossAbortTravel = false;   // 🚨 v6.328: จบทริปแล้วธง "ทิ้งขากลับ" ต้องดับเสมอ (กันรั่วไปฆ่าทริปหน้า)
       // 🐛 v6.248 (หลักฐานจริง 25/7 16:30): เดินไปถ้ำไม่สำเร็จ → โดนคูลดาวน์ **เต็ม 10 นาที เท่ากับล่าสำเร็จ**
       //   log ฟ้องตรงๆ: 16:30:14 "❌ เดินไปถ้ำไม่สำเร็จ" → 16:30:17 "ถึงเวลาล่าแล้ว (บอสอีก 0 นาที) แต่ยังไม่ไป — คูลดาวน์ เหลืออีก 598 วิ"
       //   บอสอยู่แค่ 1-3 นาที → พลาดครั้งเดียว = **เสียทั้งรอบทันที ไม่มีโอกาสลองใหม่เลย**
@@ -5707,6 +5737,24 @@
     gameEscape();   // ชั้นสุดท้าย (gameEscape มี guard ไม่ปิดหน้าต่างที่มีรางวัลรอรับอยู่แล้ว)
     return did;
   }
+  // 🆘 v6.328: เกมมีระบบกู้ติดแมพ (มากับแพตช์ใหญ่ 29/7) — ตัวละครติดเมื่อไหร่เกมเด้ง dialog ตั้งค่า
+  //   พร้อมแถบแดง "ติดแผนที่ เดินต่อไม่ได้?" + ปุ่ม "🚀 พาฉันออกไป!" (วาร์ปกลับจุดเริ่มต้นแมพ ปลา/ของอยู่ครบ)
+  //   หลักฐานสด 31/7 16:40-16:43: บอทวน "เปลี่ยนแมพไม่สำเร็จที่ river_bank" 3 นาทีเต็ม ขณะที่ปุ่มกู้ลอยอยู่บนจอ
+  //   แต่ popupWatchdog เห็นเป็น "ป๊อบอัพค้าง" → กด ✕ ปิด dialog กู้ทิ้ง = ปิดทางรอดของตัวเอง
+  //   ⚠️ ปุ่มไม่มี aria-label — จำใจผูกกับข้อความ "พาฉันออกไป" (เอกลักษณ์พอ ไม่ชนการ์ดปลา/ปุ่มอื่น)
+  //   ⚠️ dialog นี้เกมเด้งเองตอนตรวจพบตัวติด — บอทเปิดเองไม่ได้ (ไม่มีปุ่มตั้งค่าเกมใน DOM ให้กด) → ทำได้แค่ "อย่าพลาดตอนมันมา"
+  const mapRescueBtn = () => {
+    try {
+      return [...document.querySelectorAll('button')].find((b) => !isBotUI(b) && b.offsetParent && /พาฉันออกไป/.test(b.textContent || '')) || null;
+    } catch { return null; }
+  };
+  function tryMapRescue(why) {
+    const btn = mapRescueBtn(); if (!btn) return false;
+    fireClick(btn);
+    say(`🆘 เกมเสนอปุ่มกู้ติดแมพ → กด "พาฉันออกไป!" (วาร์ปกลับจุดเริ่มแมพ) — ${why}`);
+    if (isOn('tgOn')) void tgSend(`🆘 ตัวละครติดแมพ — ใช้ปุ่มกู้ของเกมวาร์ปออกแล้ว (${why})`);
+    return true;
+  }
   let uiBlockedSince = 0, lastPopupClear = 0, popupClearCount = 0;
   // เรียกจากสาขา idle เท่านั้น (ไม่ busy/orchestrating) — คืน true ถ้าเพิ่งเคลียร์ (ผู้เรียกควร return รอเฟรมหน้า)
   function popupWatchdog() {
@@ -5721,6 +5769,8 @@
     if (!uiBlockedSince) { uiBlockedSince = now(); return false; }
     if (now() - uiBlockedSince < 3000 || now() - lastPopupClear < 3000) return false;
     lastPopupClear = now(); uiBlockedSince = 0; popupClearCount++;
+    // 🆘 v6.328: ก่อนปิดอะไรทิ้ง — ถ้า dialog ที่ค้างคือ "กู้ติดแมพ" ของเกม ให้กดปุ่มกู้ ไม่ใช่กด ✕ ทิ้ง
+    if (tryMapRescue('ยามเฝ้าป๊อบอัพพบตอนตกปลาต่อไม่ได้')) return true;
     clearBlockingUI();
     logInfo(`🛡️ เจอป๊อบอัพค้าง (ตกปลาต่อไม่ได้ ≥3 วิ) → เคลียร์อัตโนมัติ · รวมเคลียร์ ${popupClearCount} ครั้ง`);
     return true;
@@ -10242,9 +10292,19 @@ ${esc(reason)}
       rushBtn.addEventListener('click', () => {
         if (!enabled) toggle();                                        // ยังไม่เปิดบอท = เปิดให้เลย
         cfg.bossHunt = true; sessionOff.delete('bossHunt'); saveCfg();  // ต้องเปิดล่าบอส (bossFightHere/กลับบ้านใช้)
-        if (bossPhase !== 'idle') { say('🚨 บอทกำลังล่าบอสอยู่แล้ว — ไม่ต้องสั่งซ้ำ'); refreshBossBtn(); return; }
+        // 🚨 v6.328 (ผู้ใช้เจอสด 31/7 16:43 "กดแล้วบอทไม่ไปล่า"): บอทติดลูป "เดินกลับบ้าน" อยู่ = orchestrating
+        //   → ธงตั้งไว้เฉยๆ ไม่มีใครยกเลิกขากลับ → กว่าจะได้ล่าก็อีก 3+ นาที (หรือไม่ได้เลยถ้าเดินวน)
+        //   ตอนนี้: กำลังเดินกลับ (return) = สั่งทิ้งขากลับทันทีแล้วหันไปล่า · กำลังไป/กำลังตี = สั่งซ้ำไม่มีประโยชน์จริง
+        if (bossPhase === 'return') {
+          forceBossHuntNow = true; bossAbortTravel = true;
+          say('🚨 ล่าบอสด่วน! — ทิ้งการเดินกลับบ้าน หันไปล่าบอสทันที');
+          if (isOn('tgOn')) void tgSend('🚨 <b>ล่าบอสด่วน</b> — ยกเลิกขากลับบ้าน หันไปล่าทันที');
+          refreshBossBtn(); return;
+        }
+        if (bossPhase !== 'idle') { say(`🚨 บอทกำลังล่าบอสอยู่แล้ว (ช่วง ${bossPhase}) — ไม่ต้องสั่งซ้ำ`); refreshBossBtn(); return; }
         forceBossHuntNow = true;                                        // tick จะยิง runBossHunt ทันทีที่ว่าง
-        say('🚨 ล่าบอสด่วน! — วิ่งเข้าถ้ำล่าบอสทันทีที่ว่าง (ข้ามคูลดาวน์/เวลา/ฟาร์ม) · เปิดแท็บเกมไว้หน้าสุด');
+        say('🚨 ล่าบอสด่วน! — วิ่งเข้าถ้ำล่าบอสทันทีที่ว่าง (ข้ามคูลดาวน์/เวลา/ฟาร์ม) · เปิดแท็บเกมไว้หน้าสุด'
+          + ((busy || orchestrating) ? ' · ⏳ ตอนนี้บอทติดงานอื่นอยู่ จะออกล่าทันทีที่งานนั้นจบ' : ''));
         if (isOn('tgOn')) void tgSend('🚨 <b>ล่าบอสด่วน</b> — บังคับออกล่าทันที');
         refreshBossBtn();
       });
