@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.328
+// @version      6.329
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.328';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.329';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2375,6 +2375,59 @@
     }
     return m;
   }
+  // ⚡ v6.329: A/B วัดโหมด charge — "ชาร์จเต็ม (x2 แต่ ~2 วิ/ครั้ง)" vs "แตะสั้น (ถี่กว่า ~4 เท่า)"
+  //   ผู้ใช้ถาม "กดเกจเร็วกว่านี้ได้ไหม" — ห้ามเดา (กฎ: วัดก่อนล็อก) · ไม่รู้ว่าปล่อยก่อนเต็มเกมให้ดาเมจตามสัดส่วนหรือไม่ให้เลย
+  //   เหตุที่แตะสั้นอาจชนะ: ดาเมจต่อครั้งมีเพดาน (raidHitDamageCap 6000) → x2 ของชาร์จเต็มอาจโดนตัดทิ้ง แต่ความถี่ไม่โดน
+  //   แพตเทิร์นเดียวกับ gab: สลับบล็อก 15 วิ ในไฟต์เดียว · วัดจาก "⚔️ ของเรา" เท่านั้น (HP บอสรวมปนดาเมจคนอื่น)
+  //   ครบ 6 ไฟต์ → หยุดสลับ ใช้แขนที่ dmg/วิ ชนะถาวร (ไม่ต้องมีสวิตช์ — จบเองเหมือน gaugeProbe)
+  const CHAB_KEY = 'tokpla_charge_ab';
+  let chabRing = [], chabBlock = null, chabFightNo = 0;
+  try { const a = JSON.parse(W.localStorage.getItem(CHAB_KEY) || '[]'); if (Array.isArray(a)) chabRing = a.slice(-400); } catch {}
+  // เลขไฟต์เดินต่อจากของเดิมข้ามรีโหลด (บทเรียน v6.235 — ไม่งั้นการสลับหัวท้ายรีเซ็ต = ต้นไฟต์ตกแขนเดิมเสมอ)
+  try { if (chabRing.length) chabFightNo = Math.max(...chabRing.map((b) => b.f || 0)) + 1; } catch {}
+  const chabSave = () => { try { W.localStorage.setItem(CHAB_KEY, JSON.stringify(chabRing.slice(-400))); } catch {} };
+  const chabFightsDone = () => new Set(chabRing.map((b) => b.f)).size;
+  function chabCloseBlock() {
+    if (!chabBlock) return;
+    const b = chabBlock; chabBlock = null;
+    const dt = now() - b.last; if (dt <= GAB_TICK_MAX) b.act += dt; else b.gap += dt;
+    const d1 = readBossContribution().dmg;
+    if (b.d0 == null || d1 == null) return;              // อ่าน "⚔️ ของเรา" ไม่ได้ = ทิ้งบล็อก (ข้อมูลผิดแย่กว่าข้อมูลน้อย)
+    const d = d1 - b.d0;
+    if (d < 0 || d >= 200000) return;
+    if (b.act < 5000) return;                            // ตีจริงสั้นเกิน เทียบไม่แฟร์
+    if (b.gap > b.act * 0.5) return;                     // หายไปนานกว่าครึ่ง (ตาย/หลบ/บอสหาย) = ทิ้ง
+    chabRing.push({ m: b.m, d, ms: Math.round(b.act), p: b.p, f: b.f });
+    chabSave();
+  }
+  function chabStats(m) {
+    const a = chabRing.filter((b) => b.m === m);
+    const d = a.reduce((s, b) => s + b.d, 0), ms = a.reduce((s, b) => s + b.ms, 0), p = a.reduce((s, b) => s + b.p, 0);
+    return { n: a.length, d, ms, p, dps: ms ? d / (ms / 1000) : 0 };
+  }
+  function chargeABWinner() {
+    const f = chabStats('full'), t = chabStats('tap');
+    if (!f.n || !t.n) return 'full';                     // ข้อมูลไม่ครบสองแขน = ใช้แบบเดิม (ปลอดภัยกว่า)
+    return t.dps > f.dps ? 'tap' : 'full';
+  }
+  function chargeABReport() {
+    const f = chabStats('full'), t = chabStats('tap');
+    const line = (nm, s) => `${nm}: ${s.n} ช่วง · ดาเมจ ${Math.round(s.d).toLocaleString()} · ${Math.round(s.ms / 1000)} วิ · ${s.dps.toFixed(1)} dmg/วิ · กด ${s.p}`;
+    return `⚡ A/B ชาร์จ (${chabFightsDone()} ไฟต์)\n${line('ชาร์จเต็ม', f)}\n${line('แตะสั้น', t)}\n→ ตอนนี้นำ: ${chargeABWinner() === 'tap' ? 'แตะสั้น' : 'ชาร์จเต็ม'}`;
+  }
+  function chargeArmNow(fightT0) {
+    if (chabFightsDone() >= 6) return chargeABWinner();  // เก็บครบแล้ว — ใช้ผู้ชนะถาวร ไม่สลับอีก
+    const idx = Math.floor((now() - fightT0) / 15000);
+    if (!chabBlock || chabBlock.idx !== idx) {
+      chabCloseBlock();
+      chabBlock = { idx, m: ['full', 'tap'][(idx + chabFightNo) % 2], t0: now(), last: now(), act: 0, gap: 0, d0: readBossContribution().dmg, p: 0, f: chabFightNo };
+    } else {
+      const dt = now() - chabBlock.last;
+      if (dt <= GAB_TICK_MAX) chabBlock.act += dt; else chabBlock.gap += dt;
+      chabBlock.last = now();
+    }
+    return chabBlock.m;
+  }
   function gaugeABReport() {
     if (!gabRing.length) return '🧪 ยังไม่มีข้อมูล A/B — เปิด "A/B กลยุทธ์เกจ" แล้วรอบอสรอบถัดไป';
     const grp = (m) => {
@@ -3812,8 +3865,10 @@
         // ⚡ charge: กดค้างจนเต็มแล้วปล่อย — ทำเป็นจังหวะของตัวเอง ไม่ผ่านลูปเกจ
         if (bossHitMode === 'charge' && orb && !orb.disabled && now() - lastPress > 300) {
           lastPress = now(); lastBossPressAt = Date.now();
-          orbDown(orb); await sleep(BOSS_CHARGE_MS + 150); orbUp(orb);
-          chargeShots++; gaugePresses++; if (gabBlock) gabBlock.p++;
+          // ⚡ v6.329 (ผู้ใช้: "มันกดได้เร็วกว่านี้") — วัดจริงก่อนล็อก: สลับบล็อก "ชาร์จเต็ม 1.8 วิ" vs "แตะสั้น 250ms"
+          const arm = chargeArmNow(fightT0 || now());
+          orbDown(orb); await sleep(arm === 'tap' ? 250 : BOSS_CHARGE_MS + 150); orbUp(orb);
+          chargeShots++; gaugePresses++; if (gabBlock) gabBlock.p++; if (chabBlock) chabBlock.p++;
           continue;
         }
       }
@@ -3869,6 +3924,20 @@
       else {
         logInfo(`🧪 A/B ไฟต์ที่ ${done}/${want} — ${gabRing.length} ช่วงสะสม (ดูผลที่ปุ่ม "🧪 ผล A/B เกจ")`);
         if (isOn('tgOn')) void tgSend(`🧪 <b>A/B เกจ</b> ไฟต์ ${done}/${want}\n<code>${esc(gaugeABReport())}</code>`);
+      }
+    }
+    // ⚡ v6.329: จบไฟต์โหมด charge → ปิดบล็อก A/B ชาร์จ + รายงานความคืบหน้า (ครบ 6 ไฟต์แล้วจะหยุดสลับเอง)
+    if (bossHitMode === 'charge' && (chabBlock || chabRing.length)) {
+      const doneBefore = chabFightsDone();
+      chabCloseBlock();
+      chabFightNo++;
+      const done = chabFightsDone();
+      if (done && done < 6 && done !== doneBefore) {
+        logInfo(`⚡ ${chargeABReport().replace(/\n/g, ' · ')}`);
+        if (isOn('tgOn')) void tgSend(`⚡ <b>A/B ชาร์จ</b> ไฟต์ ${done}/6\n<code>${esc(chargeABReport())}</code>`);
+      } else if (done >= 6 && doneBefore < 6) {
+        logInfo(`⚡ A/B ชาร์จครบ 6 ไฟต์ — ล็อกใช้ "${chargeABWinner() === 'tap' ? 'แตะสั้น' : 'ชาร์จเต็ม'}" ถาวร`);
+        if (isOn('tgOn')) void tgSend(`⚡ <b>A/B ชาร์จจบแล้ว</b>\n<code>${esc(chargeABReport())}</code>`);
       }
     }
     // (v6.238: บล็อก "จบไฟต์โหมดวัดเกจ" ถูกถอดออกพร้อมสวิตช์ — ผลที่วัดไว้ยังอ่านได้จาก gaugeProbeReport())
@@ -4099,13 +4168,26 @@
     busy = true;
     try {
       if (!await openShop()) { await sleep(600); if (!await openShop()) { say('👹 เปิดร้านเตรียมเหยื่อบอสไม่ได้ — เข้าถ้ำด้วยเหยื่อที่มี'); return; } }
-      await shopTab('🪱 เหยื่อ'); await sleep(300);
-      let rows = shopRows().filter((r) => r.tier);
+      await shopTab('🪱 เหยื่อ');
+      // 🐛 v6.329 (เห็นสด 31/7 17:03): ร้านเปิดแล้วแต่แถวสินค้ายัง render ไม่เสร็จตอนอ่าน (+300ms ไม่พอช่วงเครื่องหนักก่อนออกล่า)
+      //   → shopRows ว่าง → ฟ้อง "หาเหยื่อจุดอ่อนไม่เจอ" ครบทุกขั้น + "🔴 เหยื่อหมดและซื้อไม่ได้" ทั้งที่สต๊อกมีเต็ม (ขั้น 4 มี 154)
+      //   พิสูจน์สดแล้ว: regex/แท็บ/โครง tk-inner ปกติหมด — ผิดที่จังหวะอ่านอย่างเดียว → รอจนแถวมี "ขั้น N" จริง (สูงสุด 5 วิ)
+      let rows = [];
+      for (let w = 0; w < 10 && !rows.length; w++) {
+        await sleep(500);
+        rows = shopRows().filter((r) => r.tier);
+        if (!rows.length && w === 4) await shopTab('🪱 เหยื่อ');   // ครึ่งทางยังว่าง — เผื่อคลิกแท็บครั้งแรกไม่ติด
+      }
+      if (!rows.length) {
+        const raw = (shopRows()[0] || {}).text || '(ไม่มีแถวเลย)';
+        logWarn(`👹 อ่านแถวร้านเหยื่อไม่ออก (รอ 5 วิแล้ว) — ข้ามการตุนรอบนี้ · ตัวอย่างแถวแรก: ${JSON.stringify(String(raw).replace(/\s+/g, ' ').slice(0, 60))}`);
+      }
       // 1️⃣ v6.283: **ซื้อเหยื่อจุดอ่อนที่เรียนรู้มา** — ตอบปมที่ระบบเดิมแก้ไม่ได้
       //   ระบบเดิมพึ่ง `cfg.bossBaitTier` ที่ผู้ใช้ตั้งเอง · ค่าจริงคือ 0 = **ขาซื้อไม่เคยทำงานเลย**
       //   และ HUD บอกจุดอ่อนตอนอยู่ในถ้ำ ซึ่งสายเกินจะออกมาซื้อ → ต้องใช้ "ของที่จำไว้จากรอบก่อน"
       {
-        const want = bossWeakTiersWanted();   // v6.284: ตุน "ทุกขั้น" เพราะจุดอ่อนสุ่มต่อรอบ ทำนายไม่ได้
+        // v6.329: อ่านร้านไม่ออก = ห้ามไล่ฟ้อง "ไม่เจอ" ทีละขั้น (ข้อมูลผิด แย่กว่าไม่มีข้อมูล)
+        const want = rows.length ? bossWeakTiersWanted() : [];   // v6.284: ตุน "ทุกขั้น" เพราะจุดอ่อนสุ่มต่อรอบ ทำนายไม่ได้
         for (const wt of want) {
           const wr2 = rows.find((r) => r.tier === wt);
           if (!wr2) { say(`👹 หาเหยื่อจุดอ่อนขั้น ${wt} ในร้านไม่เจอ`); continue; }
@@ -4116,8 +4198,8 @@
         }
         if (want.length) rows = shopRows().filter((r) => r.tier);      // อ่านสต๊อกใหม่หลังซื้อ
       }
-      // 1) เหยื่อจุดอ่อนที่ผู้ใช้ตั้งเอง (ของเดิม — ยังเคารพถ้าตั้งไว้)
-      if (bt > 0) {
+      // 1) เหยื่อจุดอ่อนที่ผู้ใช้ตั้งเอง (ของเดิม — ยังเคารพถ้าตั้งไว้) · v6.329: ข้ามถ้าอ่านร้านไม่ออก
+      if (rows.length && bt > 0) {
         const wr = rows.find((r) => r.tier === bt);
         if (!wr) say(`👹 หาเหยื่อจุดอ่อนขั้น ${bt} ในร้านไม่เจอ`);
         else if (wr.lockedLv) say(`👹 เหยื่อจุดอ่อนขั้น ${bt} ยังไม่ปลดล็อก (Lv.${wr.lockedLv})`);
@@ -4129,7 +4211,9 @@
       // 2) 🛡️ SAFETY (v6.243): การันตี "มีเหยื่ออย่างน้อย 1 ขั้น" ก่อนเข้าถ้ำ — ไม่งั้นตีบอสไม่ได้เลย
       rows = shopRows().filter((r) => r.tier);                          // อ่านใหม่หลังซื้อ
       const total = rows.reduce((s, r) => s + (r.stock || 0), 0);       // เหยื่อรวมทุกขั้นในกระเป๋า
-      if (!currentBait() && total < 50) {                               // ไม่มีเหยื่อติดเบ็ด + แทบหมดทุกขั้น
+      // 🐛 v6.329: `rows.length &&` — ร้านอ่านไม่ออก (render ช้า) เคยทำให้ total=0 + currentBait() null
+      //   (สายในน้ำ = เมนูถูกซ่อน อ่านเหยื่อติดเบ็ดไม่ได้) → ประกาศ "🔴 เหยื่อหมด" ทั้งที่มีเต็มกระเป๋า
+      if (rows.length && !currentBait() && total < 50) {                // ไม่มีเหยื่อติดเบ็ด + แทบหมดทุกขั้น
         const cheap = rows.filter((r) => !r.lockedLv && r.addBtn && !r.addBtn.disabled).sort((a, b) => a.tier - b.tier)[0];
         if (cheap && await buyBaitRow(cheap)) {
           say(`👹 ⚠️ เหยื่อหมด — ซื้อสำรองขั้น ${cheap.tier} 1 แพ็ค (กันตีบอสไม่ได้)`);
