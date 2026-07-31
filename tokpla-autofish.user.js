@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.321
+// @version      6.322
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.321';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.322';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4215,6 +4215,17 @@
   //   ไม่มีปุ่ม "รับทั้งหมด" → กด "รับของ" ทีละใบ (รับแล้ว = ปุ่ม disabled ข้อความ "รับแล้ว") · ทุกปุ่ม tk-btn-primary ข้าม UI บอท (data-tkbot)
   let mailClaiming = false;
   const mailOpenBtn = () => [...document.querySelectorAll('button')].find((b) => !isBotUI(b) && b.offsetParent && /เปิดจดหมาย/.test(b.textContent || '')) || null;
+  // ✉️ v6.322: จำนวน "จดหมายที่ยังไม่รับ" จากป้ายเลขบนปุ่มจดหมายใน HUD (เกมโชว์ badge ให้อยู่แล้ว)
+  //   ใช้เป็นทริกเกอร์เก็บรางวัล — ถูกกว่าการเปิดแผงมาส่อง และรู้ทันทีที่บอส/หีบส่งของเข้าเมล์
+  //   คืน 0 = ไม่มีของค้าง/อ่านไม่ได้ (เมนูย่อ) → ระบบรอบเวลาปกติยังทำงานเป็นตาข่ายชั้นสอง
+  function mailBadgeCount() {
+    try {
+      const b = qBtn('จดหมาย');
+      if (!b) return 0;
+      const m = /(\d+)/.exec((b.textContent || '').trim());
+      return m ? +m[1] : 0;
+    } catch { return 0; }
+  }
   const mailClaimBtns = () => [...document.querySelectorAll('button.tk-btn-primary')].filter((b) => !isBotUI(b) && !b.disabled && b.offsetParent && b.textContent.trim() === 'รับของ');
   //   🐛 v6.171: เพิ่ม force — ตอนจบไฟต์บอท "อยู่ใน orchestrating" ตลอด (runBossHunt) → watcher ปกติถูกบล็อก
   //     และ v6.165 ยัง Esc ปิด victory dialog ทิ้งตอนเดินกลับบ้าน = รางวัลค้างไม่มีวันได้รับ (เจอจริง 2 ใบ)
@@ -7012,11 +7023,21 @@
       opened = await waitFor(() => /จดหมายจากผู้พัฒนา|กำลังโหลดจดหมาย|ยังไม่มีจดหมายเข้า/.test(document.body.innerText), 4000);
       if (!opened) return;
       await sleep(600);   // รอรายการโหลดจบ
-      const claimBtns = () => [...document.querySelectorAll('button')].filter((x) => x.textContent.trim() === 'รับของ' && !x.disabled);
+      const claimBtns = () => [...document.querySelectorAll('button')].filter((x) => !isBotUI(x) && x.textContent.trim() === 'รับของ' && !x.disabled);
       let claimed = 0;
-      for (let i = 0; i < 10; i++) {
+      const coinBefore = coinsNow();
+      // 🎁 v6.322: เกมเพิ่มปุ่ม **"รับทั้งหมด"** — กดทีเดียวเก็บครบทุกฉบับ (เร็วกว่าไล่กดทีละใบ 8-20 รอบ)
+      //   เจอสด 31/7: จดหมายค้าง 8 ใบ (รางวัลบอส 10:33 + หีบ 00:22/02:22 …) เพราะบอทไม่เคยเปิดกล่องจดหมายเอง
+      const claimAll = [...document.querySelectorAll('button')].find((x) => !isBotUI(x) && x.offsetParent && /^รับทั้งหมด$/.test((x.textContent || '').trim()) && !x.disabled);
+      const beforeN = claimBtns().length;
+      if (claimAll && beforeN) {
+        fireClick(claimAll);
+        await waitFor(() => !/กำลังรับ\.\.\./.test(document.body.innerText), 8000);
+        await sleep(900);
+        claimed = Math.max(0, beforeN - claimBtns().length);
+      }
+      for (let i = 0; i < 20 && claimBtns().length; i++) {   // ไล่เก็บที่เหลือ (เผื่อ "รับทั้งหมด" ไม่มี/ไม่ครบ)
         const btns = claimBtns();
-        if (!btns.length) break;
         const before = btns.length;
         fireClick(btns[0]);
         await waitFor(() => !/กำลังรับ\.\.\./.test(document.body.innerText), 6000);
@@ -7025,8 +7046,13 @@
         else break;                                    // ไม่ลด = เซิร์ฟเวอร์ไม่ให้/ค้าง — เลิก กันวนกดปุ่มเดิมซ้ำ
       }
       if (claimed > 0) {
-        say(`✉️ เก็บจดหมาย ${claimed} ฉบับ 🎁`);
-        if (cfg.tgWarn && isOn('tgOn')) void tgSend(`✉️ <b>เก็บของขวัญจากจดหมาย</b> ${claimed} ฉบับ 🎁`);
+        await sleep(400);
+        const coinAfter = coinsNow();
+        const gain = (coinBefore != null && coinAfter != null) ? coinAfter - coinBefore : null;
+        const detail = gain > 0 ? ` — ได้ ${gain.toLocaleString()} 🪙` : '';
+        say(`✉️ เก็บจดหมาย ${claimed} ฉบับ 🎁${detail}`);
+        // v6.322: แจ้ง TG เสมอเมื่อเก็บได้ (เดิมผูกกับ tgWarn ที่อาจปิด → รางวัลบอสเข้าเงียบ ผู้ใช้ไม่เคยเห็น)
+        if (isOn('tgOn')) void tgSend(`✉️ <b>เก็บของขวัญจากจดหมาย</b> ${claimed} ฉบับ 🎁${detail}`);
       }
     } catch (e) {
       logErr('เก็บจดหมายล้มเหลว', e);
@@ -9176,9 +9202,16 @@ ${esc(reason)}
           }
         }
 
-        // ✉️ เก็บจดหมายของขวัญ (ตามรอบที่ตั้ง)
-        if (isOn('autoMail') && !busy && !pendingCast && !energyResting && now() - lastMailCheck > cfg.mailEvery * 60000) {
+        // ✉️ เก็บจดหมายของขวัญ (ตามรอบที่ตั้ง · หรือทันทีเมื่อป้ายบนปุ่มจดหมายบอกว่ามีของค้าง)
+        // 🔴 v6.322 — **รางวัลบอสค้างในจดหมาย 8 ใบ (เจอสด 31/7)**
+        //   ต้นเหตุ 2 ชั้น: ① `claimBossMail` ทำงานเฉพาะตอนมี victory dialog ("เปิดจดหมาย") บนจอ — พลาด/ถูกปิดเมื่อไร
+        //   รางวัลค้างถาวร ② ตัวเก็บจดหมายรอบปกติตั้งไว้ทุก 240 นาที (4 ชม.) ทั้งที่บอสมี 7 รอบ/วัน
+        //   → ใช้ "ป้ายเลขบนปุ่มจดหมาย" (เกมบอกจำนวนที่ยังไม่รับ) เป็นทริกเกอร์: มีของค้าง = เก็บภายใน 5 นาที
+        const mailPending = mailBadgeCount();
+        const mailDue = (mailPending > 0 && now() - lastMailCheck > 300000) || now() - lastMailCheck > cfg.mailEvery * 60000;
+        if (isOn('autoMail') && !busy && !pendingCast && !energyResting && mailDue) {
           lastMailCheck = now();
+          if (mailPending > 0) logInfo(`✉️ ป้ายจดหมายขึ้น ${mailPending} ฉบับ — ไปเก็บรางวัล (บอส/หีบ/ของขวัญ)`);
           void claimMail();
           return requestAnimationFrame(tick);
         }
