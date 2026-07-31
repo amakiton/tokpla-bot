@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.318
+// @version      6.319
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.318';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.319';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3103,6 +3103,25 @@
       if (now() - lastProbe > 8000) { lastProbe = now(); bossGateProbe(now() - t0); }   // เก็บ mechanic (ข้อความ/countdown) ไว้ดูรอบหน้า
       // 🐛 v6.263: ตรวจว่า "สั่งไปแล้วตัวขยับไหม" — นิ่ง 2 รอบติด = วิธีนี้ใช้ไม่ได้ ให้สลับไปอีกวิธี
       const _p = bossPlayerXY();
+      // 🚶 v6.319 — **แก้อาการ "เดินชนกำแพงเรื่อยๆ" ที่ผู้ใช้เห็นบนจอ (สดรอบ 10:30)**
+      //   หลักฐาน log: 10:27:47–10:29:58 (~2 นาที) "🚪 หน้าประตู: สลับ WASD↔A*" ~20 รอบ ทุก 2-10 วิ
+      //   ต้นตอ: บอทมาถึงปากประตูเร็ว (ก่อนเวลาบอส) → ประตูล็อก → ดัน navigate ทุก 1.2 วิ + สลับวิธีเพราะ "ตัวไม่ขยับ"
+      //     แต่ที่หน้าประตูล็อก **การไม่ขยับ = ปกติ ไม่ใช่ stuck** → สลับ WASD↔A* + ดันประตูรัวๆ = เดินชนกำแพงให้คนเห็น
+      //   แก้: ถึงปากประตูแล้ว (ใกล้ศูนย์กลางโซนประตู < 80px) + ประตูยังล็อก → **ยืนนิ่งรอ** (ปล่อยปุ่ม)
+      //        แค่ "ลองผ่านประตู" เบาๆ ทุก 3.5 วิ (เผื่อเพิ่งเปิด) — ไม่ดันถี่ ไม่สลับวิธี = ไม่ดูเป็นบอท
+      const _gcx = (exitZone && exitZone.x != null) ? exitZone.x + (exitZone.width || 0) / 2 : null;
+      const _gcy = (exitZone && exitZone.y != null) ? exitZone.y + (exitZone.height || 0) / 2 : null;
+      const _atGate = !!(_p && _gcx != null && Math.hypot(_p.x - _gcx, _p.y - _gcy) < 80);
+      if (_atGate) {
+        bossReleaseAll();                                  // ยืนนิ่ง — เลิกกดปุ่มเดินชนประตู
+        stuckN = 0; lastPos = _p ? { x: _p.x, y: _p.y } : null;
+        if (now() - lastNav > 3500) {                      // แตะประตูเบาๆ ทุก 3.5 วิ = ผ่านทันทีถ้าเพิ่งเปิด แต่ไม่รัวจนดูเป็นบอท
+          lastNav = now();
+          void bossWalkTo(_gcx, _gcy, { thresh: 12, maxMs: 650 });
+        }
+        await sleep(500);
+        continue;
+      }
       if (_p && lastPos && Math.abs(_p.x - lastPos.x) < 4 && Math.abs(_p.y - lastPos.y) < 4) {
         if (++stuckN >= 2) { stuckN = 0; useWalk = !useWalk; logInfo(`🚪 หน้าประตู: ${useWalk ? 'สลับไปเดินชนปากประตูเอง (WASD)' : 'สลับกลับไปใช้ A* ข้ามแมพ'}`); }
       } else stuckN = 0;
