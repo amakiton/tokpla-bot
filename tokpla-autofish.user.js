@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.326
+// @version      6.327
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.326';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.327';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4371,6 +4371,8 @@
         const coinAfter = coinsNow();
         if (coinBefore != null && coinAfter != null && coinAfter - coinBefore > got.coins) got.coins = coinAfter - coinBefore;
         const items = [...new Set(got.items)];
+        // ☕ v6.327: ได้กาแฟนักตกปลาเข้ากระเป๋า (จากลุงหยัด/รางวัล) → ปลดล็อกการใช้กาแฟกระเป๋าแม้ร้านคูลดาวน์
+        if (/กาแฟนักตกปลา/.test(got.raw.join(' ')) || items.some((i) => /กาแฟนักตกปลา/.test(i))) bagCoffeeHint = true;
         // v6.324: โชว์ของใหม่ของเกมด้วย (ก้างปลา = สกุลเงินกาชา/ซื้อขายขยะออโต้ · เศษบอส = แลกที่ตู้ · แต้มแฟชัน)
         const detail = [got.coins ? `${got.coins.toLocaleString()} 🪙` : null,
           got.bones ? `${got.bones} 🦴` : null,
@@ -6526,8 +6528,13 @@
   //   persist เป็นเวลาจริง (epoch) แล้วแปลงกลับตอนโหลด — เสียเวลาเปิดร้านฟรี ~10-15 วิ/รีโหลด หายไป
   const loadFailUntil = (key) => { try { const t = +W.localStorage.getItem(key) || 0; return t > Date.now() ? now() + (t - Date.now()) : 0; } catch { return 0; } };
   const saveFailUntil = (key, perfUntil) => { try { W.localStorage.setItem(key, String(Date.now() + Math.max(0, perfUntil - now()))); } catch {} };
-  let coffeeFailUntil = loadFailUntil('tokpla_coffee_failuntil');   // cooldown เมื่อซื้อไม่สำเร็จ (ทุกกรณี — กันวนเปิดร้านรัวๆ ตอนพลังต่ำค้าง)
+  let coffeeFailUntil = loadFailUntil('tokpla_coffee_failuntil');   // cooldown เมื่อ **ซื้อร้าน** ไม่สำเร็จ (เงินไม่พอ/ครบลิมิต 3/วัน)
   let coffeeBagFailUntil = 0;   // v6.133: พักลอง "กาแฟจากกระเป๋า" เมื่อใช้แล้วพลังไม่ขึ้น (กันวนสแปม)
+  // ☕ v6.327: "เชื่อว่ามีกาแฟในกระเป๋า" — ตั้ง true เมื่อได้กาแฟเข้ากระเป๋า (แลกลุงหยัด/รับจดหมาย)
+  //   ใช้ปลดล็อกการ "ลองกาแฟกระเป๋า" แม้ร้านติดคูลดาวน์ 2 ชม. (coffeeFailUntil) — กาแฟฟรีไม่กินลิมิตซื้อ
+  //   เจอสด: กาแฟร้านหมดโควตา → coffeeFailUntil +2ชม. → บล็อกทั้งการใช้กาแฟลุงหยัดในกระเป๋า = นั่งพัก 2 ชม.ทั้งที่มีกาแฟ
+  //   ล้างเป็น false เมื่อเปิดกระเป๋าแล้วไม่เจอกาแฟ (กันเปิดกระเป๋าเปล่าทุก 15 วิ — useConsumable เปิดเมนูแพง)
+  let bagCoffeeHint = false;
   let lastCoffeeTry = 0;
   async function buyCoffee() {
     if (busy) return false;
@@ -6546,7 +6553,9 @@
         //   ขึ้นมาข้างๆ "กาแฟนักตกปลา" (coffee_energy พลัง 1,500 🪙) → บอทดื่มยาเลือดแพงๆ ทิ้งแล้วพลังไม่ขึ้น
         //   เกิดจริง 11:05:31: "ใช้กาแฟแล้วพลังไม่ขึ้น (18.40%→18.46%)" แล้วโดนพักลองกระเป๋า 30 นาที = ตกปลาต่อด้วยพลังต่ำ
         //   (ขา "ซื้อในร้าน" บรรทัดล่างใช้ /กาแฟนักตกปลา/ ถูกอยู่แล้ว — พลาดแค่ขา "ใช้ของในกระเป๋า")
-        if (await useConsumable(/กาแฟนักตกปลา/)) {
+        const usedBag = await useConsumable(/กาแฟนักตกปลา/);
+        if (!usedBag) bagCoffeeHint = false;   // v6.327: เปิดกระเป๋าแล้วไม่เจอกาแฟ → เลิกหวัง กันเปิดเปล่าทุก 15 วิ
+        if (usedBag) {
           await sleep(500);   // รอเกมอัปเดตพลัง
           const e1 = energyPct();
           if (e0 == null || e1 == null || e1 > e0 + 2) {   // พลังขึ้นจริง = กาแฟพลังจริง
@@ -6557,6 +6566,7 @@
           }
           // ใช้แล้วพลังไม่ขึ้น → ไอเทมไม่ใช่กาแฟพลัง/ใช้ไม่ติด → พักลองกระเป๋า 30 นาที แล้วไปซื้อจริง (กันวนสแปม)
           coffeeBagFailUntil = now() + 30 * 60000;
+          bagCoffeeHint = false;   // v6.327: ของในกระเป๋าใช้แล้วไม่ได้พลัง → ไม่ใช่กาแฟที่หวัง
           // 🔍 v6.281: เกิดซ้ำแม้แก้ชื่อเต็มแล้ว (17:06 วันนี้ 13.52%→13.57%) — สงสัยเกมจำกัด "การใช้" 3 แก้ว/วัน
           //   ไม่ใช่แค่การซื้อ · เก็บข้อความที่เกมเด้ง ณ วินาทีนั้นมาดูของจริง แทนการเดาต่อ
           const gmsg = (() => { try {
@@ -6569,6 +6579,8 @@
       }
       // 🎒 v6.194: ไม่มีในกระเป๋า + ปิดการซื้อ = จบ (ใช้แค่ของฟรี ไม่เปิดร้านซื้อ) · พัก 10 นาทีกันเปิดกระเป๋าหาซ้ำถี่
       if (!isOn('buyCoffee')) { coffeeFailUntil = Math.max(coffeeFailUntil, now() + 600000); return false; }
+      // ☕ v6.327: ร้านยังติดคูลดาวน์ (เพิ่งซื้อไม่ได้/ครบลิมิต 3/วัน) — ถูกเรียกมาเพราะ bagCoffeeHint (ลองกระเป๋า) → ไม่ต้องเปิดร้านซื้อซ้ำ
+      if (now() < coffeeFailUntil) return false;
       // ไม่มีในกระเป๋า → ซื้อจากร้าน
       if (!await openShop()) { say('เปิดร้านซื้อกาแฟไม่สำเร็จ'); return false; }
       await shopTab('🧪 ยา');   // consumable (ยา/กาแฟ) ย้ายมาแท็บนี้ (เดิม 👕 ชุด)
@@ -6626,7 +6638,7 @@
       await runQuests();
       if ((energyPct() ?? 100) > cfg.coffeeAtEnergy) return;   // เควสช่วยแล้ว ไม่ต้องกาแฟ
     }
-    if (now() < coffeeFailUntil) return;                       // เพิ่งซื้อไม่ได้ (เงินไม่พอ/ครบลิมิต) — รอ cooldown
+    if (now() < coffeeFailUntil && !bagCoffeeHint) return;     // v6.327: ร้านคูลดาวน์ + ไม่มีกาแฟกระเป๋า = รอ · มีกาแฟลุงหยัด = ใช้เลย
     await buyCoffee();
   }
 
@@ -7084,6 +7096,8 @@
       const claimBtns = () => [...document.querySelectorAll('button')].filter((x) => !isBotUI(x) && x.textContent.trim() === 'รับของ' && !x.disabled);
       let claimed = 0;
       const coinBefore = coinsNow();
+      // ☕ v6.327: จำว่าจดหมายรอบนี้มีกาแฟไหม (อ่านตอนแผงยังเปิดก่อนกดรับ) — รางวัลลุงหยัดส่งกาแฟเข้าเมล์
+      const mailHasCoffee = /กาแฟนักตกปลา/.test(document.body.innerText || '');
       // 🎁 v6.322: เกมเพิ่มปุ่ม **"รับทั้งหมด"** — กดทีเดียวเก็บครบทุกฉบับ (เร็วกว่าไล่กดทีละใบ 8-20 รอบ)
       //   เจอสด 31/7: จดหมายค้าง 8 ใบ (รางวัลบอส 10:33 + หีบ 00:22/02:22 …) เพราะบอทไม่เคยเปิดกล่องจดหมายเอง
       const claimAll = [...document.querySelectorAll('button')].find((x) => !isBotUI(x) && x.offsetParent && /^รับทั้งหมด$/.test((x.textContent || '').trim()) && !x.disabled);
@@ -7104,6 +7118,7 @@
         else break;                                    // ไม่ลด = เซิร์ฟเวอร์ไม่ให้/ค้าง — เลิก กันวนกดปุ่มเดิมซ้ำ
       }
       if (claimed > 0) {
+        if (mailHasCoffee) bagCoffeeHint = true;   // ☕ v6.327: กาแฟลุงหยัดเข้ากระเป๋าแล้ว → ใช้เติมพลังได้แม้ร้านคูลดาวน์
         await sleep(400);
         const coinAfter = coinsNow();
         const gain = (coinBefore != null && coinAfter != null) ? coinAfter - coinBefore : null;
@@ -9233,7 +9248,7 @@ ${esc(reason)}
         // ☕ ซื้อกาแฟเติมพลังก่อนถึงจุดพัก (เพื่อตกต่อเนื่อง 24 ชม.) — เก็บเควสก่อน ไม่พอค่อยซื้อ
         // ทำก่อน energyManage: พอเติมแล้วพลังเด้งเกินจุดพัก → ไม่ต้องนั่งพักเลย
         // 🎒 v6.194: เปิดเมื่อ "ซื้อกาแฟ" หรือ "ใช้ของในกระเป๋า" อย่างใดอย่างหนึ่ง — ให้ใช้กาแฟฟรีได้แม้ปิดการซื้อ
-        if ((isOn('buyCoffee') || isOn('useBagConsumables')) && !busy && !pendingCast && !energyResting && now() > coffeeFailUntil) {
+        if ((isOn('buyCoffee') || isOn('useBagConsumables')) && !busy && !pendingCast && !energyResting && (now() > coffeeFailUntil || bagCoffeeHint)) {   // v6.327: bagCoffeeHint = มีกาแฟลุงหยัดในกระเป๋า → ใช้ได้แม้ร้านติดคูลดาวน์
           const ec = energyPct();
           if (ec !== null && ec <= cfg.coffeeAtEnergy) {
             void sustainEnergy();
@@ -9313,7 +9328,7 @@ ${esc(reason)}
               //   ทั้งที่กาแฟ +50 พลัง จบการพักได้ทันที (ราคา 1,500 🪙 เทียบเวลาที่เสีย ~26,000 🪙 = คุ้มมาก)
               //   ตอนนี้ระหว่างพักก็ลองกาแฟได้ (ใช้ของในกระเป๋าก่อนเสมอ · เคารพคูลดาวน์/ลิมิตวันเหมือนเดิม)
               if ((isOn('buyCoffee') || isOn('useBagConsumables')) && !busy && !pendingCast
-                  && now() > coffeeFailUntil && now() - lastRestCoffeeAt > 60000) {
+                  && (now() > coffeeFailUntil || bagCoffeeHint) && now() - lastRestCoffeeAt > 60000) {   // v6.327: ใช้กาแฟลุงหยัดได้แม้ร้านคูลดาวน์
                 lastRestCoffeeAt = now();
                 void buyCoffee();
               }
