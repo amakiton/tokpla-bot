@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.323
+// @version      6.324
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.323';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.324';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -959,7 +959,10 @@
 
   // ===== 📝 ระบบ Log (ring buffer + persist) — ไว้คัดลอกส่งให้ AI/ผู้พัฒนาเวลามีปัญหา =====
   // เก็บล่าสุด LOG_KEEP บรรทัด · persist ลง localStorage (throttle 4 วิ · error เซฟทันทีกันหายตอน crash/reload)
-  const LOG_KEY = 'tokpla_bot_log', LOG_KEEP = 300;
+  // 📋 v6.324: ขยายความจุ log — เดิม 300 บรรทัด = เก็บได้แค่ **1.2 ชม.** แต่รอบบอสห่างกัน ~3 ชม.
+  //   ผลจริง: ไล่บั๊ก "รางวัลบอสไม่เข้า" แล้ว log ตอนเก็บรางวัลหมุนหายไปก่อน = หาหลักฐานไม่ได้
+  //   1,500 บรรทัด ≈ 6 ชม. (ครอบ 2 รอบบอส) · localStorage ใช้อยู่ 751 KB จากเพดาน ~5-10 MB = เหลือเฟือ
+  const LOG_KEY = 'tokpla_bot_log', LOG_KEEP = 1500;
   let logRing = [];
   let lastLogSave = 0;
   try { const a = JSON.parse(W.localStorage.getItem(LOG_KEY) || '[]'); if (Array.isArray(a)) logRing = a.slice(-LOG_KEEP); } catch {}
@@ -983,7 +986,7 @@
   //   ผลคือ log หลักครอบคลุมแค่ ~56 นาที → เวลามีปัญหา หลักฐาน "เหตุการณ์" หมุนทับหายไปแล้ว วินิจฉัยย้อนหลังไม่ได้
   //   (เจอเองตอนไล่หา pond-stuck/หีบ ต้องพึ่ง event ring แทน) · แยกแล้ว log หลักเก็บเหตุการณ์ได้หลายชั่วโมง–เป็นวัน
   //   ประวัติปลายังครบเหมือนเดิม แค่ไปอยู่คนละที่ (ดูได้จากปุ่มในแผง / /catchlog)
-  const CATCH_LOG_KEY = 'tokpla_catch_log', CATCH_KEEP = 300;
+  const CATCH_LOG_KEY = 'tokpla_catch_log', CATCH_KEEP = 800;   // v6.324: 300 = 2 ชม. → 800 ≈ 5 ชม. (ดูสถิติปลาย้อนหลังได้ครบรอบพัก)
   let catchRing = [], lastCatchLogSave = 0;
   try { const a = JSON.parse(W.localStorage.getItem(CATCH_LOG_KEY) || '[]'); if (Array.isArray(a)) catchRing = a.slice(-CATCH_KEEP); } catch {}
   function logCatch(msg) {
@@ -2397,7 +2400,9 @@
   //   ที่นี่เขียนเฉพาะเหตุการณ์บอส (นานๆ ครั้ง) → เก็บได้เป็นวัน
   // 📋 v6.213: event ring ทั่วไป (บอส + สำรวจเหยื่อ ใช้ร่วมกัน) — แยกจาก log หลัก 300 บรรทัดที่หมุนเร็ว → อยู่ได้เป็นวัน
   const loadEvents = (key) => { try { const a = JSON.parse(W.localStorage.getItem(key) || '[]'); return Array.isArray(a) ? a : []; } catch { return []; } };
-  const pushEvent = (key, m, cap = 80) => { try { const a = loadEvents(key); a.push({ at: Date.now(), m }); while (a.length > cap) a.shift(); W.localStorage.setItem(key, JSON.stringify(a)); } catch {} };
+  // v6.324: cap เริ่มต้น 80 → 400 — melee diag (v6.316) เขียนทุก 3 วิ ทำให้ไฟต์เดียวกินเกือบเต็ม ring
+  //   เดิมเหลือประวัติแค่ 2 ชม. = ย้อนดูไฟต์บอสก่อนหน้าไม่ได้เลย
+  const pushEvent = (key, m, cap = 400) => { try { const a = loadEvents(key); a.push({ at: Date.now(), m }); while (a.length > cap) a.shift(); W.localStorage.setItem(key, JSON.stringify(a)); } catch {} };
   const eventsText = (key, empty) => {
     const a = loadEvents(key);
     if (!a.length) return empty;
@@ -4245,7 +4250,17 @@
     return '';
   }
   function parseReward(txt) {
-    const out = { coins: 0, items: [] };
+    const out = { coins: 0, items: [], bones: 0, shards: 0, fashion: 0 };
+    // 🆕 v6.324: เกมใหม่จ่ายของนอกเหนือเหรียญ/ไอเทม — บันทึกแยกไว้ให้ครบ (เดิมหลุดหมด ไม่มีใครรู้ว่าได้เท่าไร)
+    //   ข้อความจริงจากจดหมายบอส 31/7: "เข้ากระเป๋าให้แล้ว: เศษบอส x2 + เศษเจ้าเปลวใต้พิภพ x2 + แต้มแฟชัน x8" + "🦴 ก้างปลา 1"
+    //   • ก้างปลา = สกุลเงินกาชา + ใช้ซื้อ "ขายขยะออโต้"/ตั๋วพับจอ  • เศษบอส = แลกของที่ตู้เศษบอส  • แต้มแฟชัน = ร้านแฟชัน
+    try {
+      const bn = /ก้างปลา\s*([\d,]+)|([\d,]+)\s*🦴/.exec(txt);
+      if (bn) out.bones = parseInt((bn[1] || bn[2]).replace(/,/g, ''), 10) || 0;
+      for (const m of txt.matchAll(/เศษ[^\sx×]*\s*[x×]\s*([\d,]+)/g)) out.shards += parseInt(m[1].replace(/,/g, ''), 10) || 0;
+      const fa = /แต้มแฟชัน\s*[x×]?\s*([\d,]+)/.exec(txt);
+      if (fa) out.fashion = parseInt(fa[1].replace(/,/g, ''), 10) || 0;
+    } catch {}
     // 🪙 v6.210 (เจอจากข้อมูลจริง): ข้อความรางวัลมี 🪙 หลายตัว — "ของรางวัล2🪙เหรียญ 996 🪙"
     //   parser เดิมจับตัวแรก (2 = จำนวนชนิดรางวัล) แทนเหรียญจริง (996) → บันทึกเหรียญผิด
     //   แก้: เชื่อ "เหรียญ N" ก่อน · ไม่มีก็เอาเลข 🪙 ที่ "มากสุด" (เหรียญรางวัลมักใหญ่กว่าเลข label)
@@ -4301,7 +4316,7 @@
     if (gameState() === 'minigame') return 0;          // อย่าแทรกตอนกำลังดึงปลา (เกจ core — กฎเหล็ก #1)
     mailClaiming = true; busy = true;
     let claimed = 0;
-    const got = { coins: 0, items: [], raw: [], mails: 0 };   // 🎁 v6.206: เก็บว่าได้อะไรบ้าง
+    const got = { coins: 0, items: [], raw: [], mails: 0, bones: 0, shards: 0, fashion: 0 };   // 🎁 v6.206 · v6.324: + ก้างปลา/เศษบอส/แต้มแฟชัน
     const coinBefore = coinsNow();
     try {
       if (ob) { fireClick(ob); await sleep(900); }     // เปิดจดหมายจาก victory dialog
@@ -4309,7 +4324,7 @@
         const b = mailClaimBtns()[0];
         if (!b) break;
         const txt = mailRowText(b);                     // ต้องอ่านก่อนกด — กดแล้วข้อความหาย
-        if (txt) { got.raw.push(txt); const p = parseReward(txt); got.coins += p.coins; got.items.push(...p.items); }
+        if (txt) { got.raw.push(txt); const p = parseReward(txt); got.coins += p.coins; got.items.push(...p.items); got.bones += p.bones || 0; got.shards += p.shards || 0; got.fashion += p.fashion || 0; }
         fireClick(b); claimed++; got.mails++;
         await sleep(400);
       }
@@ -4327,11 +4342,16 @@
         const coinAfter = coinsNow();
         if (coinBefore != null && coinAfter != null && coinAfter - coinBefore > got.coins) got.coins = coinAfter - coinBefore;
         const items = [...new Set(got.items)];
-        const detail = [got.coins ? `${got.coins.toLocaleString()} 🪙` : null, items.length ? items.join(' + ') : null]
+        // v6.324: โชว์ของใหม่ของเกมด้วย (ก้างปลา = สกุลเงินกาชา/ซื้อขายขยะออโต้ · เศษบอส = แลกที่ตู้ · แต้มแฟชัน)
+        const detail = [got.coins ? `${got.coins.toLocaleString()} 🪙` : null,
+          got.bones ? `${got.bones} 🦴` : null,
+          got.shards ? `เศษบอส ${got.shards}` : null,
+          got.fashion ? `แต้มแฟชัน ${got.fashion}` : null,
+          items.length ? items.join(' + ') : null]
           .filter(Boolean).join(' · ') || '(อ่านรายละเอียดไม่ได้)';
         say(`📬 รับรางวัลบอส ${claimed} ใบ — ${detail}`);
         bossEvent(`🎁 รางวัล ${claimed} ใบ: ${detail}`);
-        updateLastBossReward({ coins: got.coins, items, mails: got.mails, raw: got.raw });
+        updateLastBossReward({ coins: got.coins, items, mails: got.mails, raw: got.raw, bones: got.bones, shards: got.shards, fashion: got.fashion });
         if (isOn('tgOn')) void tgSend(`📬 <b>รับรางวัลบอส</b> ${claimed} ใบ\n${esc(detail)}`);
       }
     } catch (e) { logErr('รับรางวัลบอสล้มเหลว', e); }
@@ -4770,7 +4790,9 @@
       const line = `👹 บอส: มา=${rb ? rb.present : '?'} ตาย=${rb ? rb.dead : '?'} เฟส=${rb ? rb.phase : '?'} · ปุ่มตีบอส=${orb ? (orbOn ? 'กดได้!' : 'กดไม่ได้') : 'ไม่มี'} · HP=${hp != null ? Math.round(hp) + '%' : '?'} · แมพ=${bossMapId() || '?'}${extra}`;
       logInfo(line);
       bossFightLog.push(`${new Date().toLocaleTimeString('th-TH')} ${line}`);
-      if (bossFightLog.length > 60) bossFightLog.shift();
+      // v6.324: 60 บรรทัด ≈ 1 นาที (บันทึกทุกวินาที) แต่ไฟต์ยาว 3-5 นาที → เห็นแค่ท้ายไฟต์
+      //   400 = ครอบไฟต์เต็มได้ (ตอนไล่บั๊ก melee ต้องดูตั้งแต่เข้าถ้ำ ไม่ใช่แค่ตอนจบ)
+      if (bossFightLog.length > 400) bossFightLog.shift();
       try { W.localStorage.setItem('tokpla_boss_fightlog', JSON.stringify(bossFightLog)); } catch {}
       // แจ้ง Telegram จังหวะสำคัญ (บอสโผล่/ตาย) — ไว้รู้ว่าควรเข้าไปดู
       if (isOn('tgOn') && rb && rb.present && rb.phase >= 2 && !rb.dead && orbOn) {
