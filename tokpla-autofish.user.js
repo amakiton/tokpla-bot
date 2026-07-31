@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.329
+// @version      6.330
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.329';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.330';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3864,6 +3864,10 @@
         }
         // ⚡ charge: กดค้างจนเต็มแล้วปล่อย — ทำเป็นจังหวะของตัวเอง ไม่ผ่านลูปเกจ
         if (bossHitMode === 'charge' && orb && !orb.disabled && now() - lastPress > 300) {
+          // 🥶 v6.330: อย่าเริ่มชาร์จตอนโดนสตัน/แช่แข็ง — เกม reject การกดช่วงนั้น (บทเรียนเกจ v6.229)
+          //   ชาร์จ 1 ครั้งกิน ~2 วิ → กดตอนสตัน = ทิ้งดาเมจ 1 จังหวะเต็มๆ · หลักฐาน 16:35: 116 กดได้แค่ 3,700 (32/กด
+          //   ทั้งที่ไฟต์อื่นบอสเดียวกันได้ 109-596/กด) — ส่วนหนึ่งคือกดช่วงบอสปล่อย AoE/เราสตัน
+          if (bossDisabledNow()) { stunSkips++; await sleep(150); continue; }
           lastPress = now(); lastBossPressAt = Date.now();
           // ⚡ v6.329 (ผู้ใช้: "มันกดได้เร็วกว่านี้") — วัดจริงก่อนล็อก: สลับบล็อก "ชาร์จเต็ม 1.8 วิ" vs "แตะสั้น 250ms"
           const arm = chargeArmNow(fightT0 || now());
@@ -4162,6 +4166,27 @@
       logWarn('🍲 กินต้มปลาร้อนไม่สำเร็จ — ไม่มีในกระเป๋า หรือกดไม่ติด (เข้าถ้ำด้วยเลือดปกติ)');
     }
   }
+  // 📡 v6.330: ลาดตระเวนช่องแมพ (log-only) — ก้าวแรกของระบบ "ย้ายไปช่องคนน้อยก่อนล่าบอส"
+  //   เหตุผลจากคอนฟิกจริง (v559): แต้มอีเวนต์ = 6 + 40×share เพดาน 25 → ต้อง share ~47% ถึงได้เต็ม
+  //   + HP บอสสเกลตามผู้เล่น (raidPlayersPerHpBar=8 สูงสุด 4 หลอด) + วง AoE เพิ่มตามคน (3/คน เพดาน 6)
+  //   → ช่องคนน้อย = share พุ่ง + บอส HP น้อยลง + หลบง่ายขึ้น = คะแนนอันดับดีขึ้นทุกทาง
+  //   ⚠️ ยังไม่เคยเห็น DOM ของ dialog เลือกช่องจริง (ลองกดสดตอนเกม 502 ไม่สำเร็จ) → ห้ามเขียน selector จากจินตนาการ
+  //   รอบนี้: เปิด dialog → เก็บข้อความ/ปุ่มมาลง log → ปิด · เห็นของจริงแล้วค่อยต่อยอดเป็นการสลับอัตโนมัติ
+  async function bossChannelRecon() {
+    try {
+      const btn = qBtn('เลือกช่องแมพ');
+      if (!btn) { logInfo('📡 ไม่เจอปุ่ม "เลือกช่องแมพ" (aria) — ข้ามลาดตระเวนช่อง'); return; }
+      const beforeLen = (document.body.innerText || '').length;
+      fireClick(btn); await sleep(1200);
+      const txt = document.body.innerText || '';
+      const lines = (txt.match(/(?:Channel|ช่อง)[^\n]{0,70}/g) || []).slice(0, 14);
+      const newBtns = [...document.querySelectorAll('button,[role="button"],[role="option"]')]
+        .filter((b) => !isBotUI(b) && b.offsetParent && /Channel|ช่อง|คน/.test(b.textContent || ''))
+        .map((b) => (b.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40));
+      logInfo(`📡 ช่องแมพ (ลาดตระเวน): ข้อความ=[${lines.join(' · ') || '-'}] · ปุ่ม=[${[...new Set(newBtns)].slice(0, 10).join(' | ') || '-'}] · Δtext=${txt.length - beforeLen}`);
+      gameEscape(); await sleep(300);
+    } catch (e) { logErr('ลาดตระเวนช่องแมพล้มเหลว', e); }
+  }
   async function ensureBossBaitStock() {
     if (isBossMap(bossMapId())) return;
     const bt = cfg.bossBaitTier;
@@ -4292,6 +4317,7 @@
         bossEvent(`🚶 ออกเดินทางไปถ้ำ (บอสอีก ${bossTimerMin() ?? '?'} นาที · ตั้ง lead ${cfg.bossLeadMin} · จาก ${bossHome})`);
         if (isOn('tgOn')) void tgSend(`👹 <b>ออกล่าบอส</b> — จากแมพ ${bossHome} → ถ้ำบ่อโบราณ (จะกลับมาฟาร์มต่อ)`);
         recordBossGraph();
+        await bossChannelRecon();      // 📡 v6.330: เก็บหน้าตา dialog ช่องแมพ (log-only — ฐานข้อมูลก่อนทำระบบย้ายช่อง)
         await ensureBossBaitStock();   // 👹 v6.134: ซื้อเหยื่อจุดอ่อนก่อนเข้าถ้ำ (ในถ้ำซื้อไม่ได้)
         const reached = await bossTravelTo(bossActiveCave());   // v6.247: ถ้ำที่ active รอบนี้ (ไม่ใช่ boss_cave ตายตัว)
         if (!reached) { say('👹 ไปถ้ำบอสไม่สำเร็จ — กลับบ้าน'); bossEvent('❌ เดินไปถ้ำไม่สำเร็จ — กลับบ้าน'); }
@@ -4892,6 +4918,7 @@
   //   เก็บลง log ring → /report เห็นได้ · ไว้ถอดรหัสกลไกสู้บอส (ตีเอง/บอทตี ก็จับได้)
   //   บันทึกไทม์ไลน์บอสตัวล่าสุดแยกไว้ (bossFightLog) เผื่ออยากดูเป็นชุด
   let lastBossObs = 0, bossObsPrev = '', bossFightLog = [], bossObsHot = false, bossGaugeDom = '', lastGraphMap = '';
+  let sosProbeAt = 0, sosProbeDone = false;   // 🆘 v6.330: จับจังหวะ "บอสอยู่แต่ตีไม่ได้นาน" แล้วเก็บรายชื่อปุ่ม (หา SOS)
   function bossObserve() {
     try {
       const cm = bossMapId(); if (cm && !isBossMap(cm)) bossLastMapId = cm;   // v6.117: จำแมพฟาร์มล่าสุด (ไว้เป็นบ้าน)
@@ -4939,6 +4966,20 @@
       //   400 = ครอบไฟต์เต็มได้ (ตอนไล่บั๊ก melee ต้องดูตั้งแต่เข้าถ้ำ ไม่ใช่แค่ตอนจบ)
       if (bossFightLog.length > 400) bossFightLog.shift();
       try { W.localStorage.setItem('tokpla_boss_fightlog', JSON.stringify(bossFightLog)); } catch {}
+      // 🆘 v6.330: บอสอยู่แต่ปุ่มตี "กดไม่ได้" ต่อเนื่อง >10 วิ = อาจ desync — เกมมีปุ่ม SOS (คอนฟิก:
+      //   กดค้าง raidSosHoldMs=1200 · คูลดาวน์ 5 วิ = ดึงตัวกลับ+ซิงก์บอสใหม่) แต่ยังไม่เคยเห็น DOM จริง
+      //   → เก็บรายชื่อปุ่มบนจอมาดูก่อน (ครั้งเดียว/เซสชัน) ห้ามกดมั่ว — เห็นชื่อจริงแล้วค่อยทำระบบกู้ด้วย SOS
+      if (rb && rb.present && orb && !orbOn) {
+        if (!sosProbeAt) sosProbeAt = now();
+        else if (now() - sosProbeAt > 10000 && !sosProbeDone) {
+          sosProbeDone = true;
+          try {
+            const bl = [...document.querySelectorAll('button')].filter((b) => !isBotUI(b) && b.offsetParent)
+              .map((b) => ((b.getAttribute('aria-label') || b.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 22))).filter(Boolean);
+            logInfo(`🆘 ปุ่มตีกดไม่ได้ >10 วิ ทั้งที่บอสอยู่ — ปุ่มบนจอตอนนี้: [${[...new Set(bl)].slice(0, 15).join(' | ')}] (มองหา SOS)`);
+          } catch {}
+        }
+      } else sosProbeAt = 0;
       // แจ้ง Telegram จังหวะสำคัญ (บอสโผล่/ตาย) — ไว้รู้ว่าควรเข้าไปดู
       if (isOn('tgOn') && rb && rb.present && rb.phase >= 2 && !rb.dead && orbOn) {
         if (now() - (bossObserve._tgAt || 0) > 60000) { bossObserve._tgAt = now(); void tgSend(`👹 <b>บอสโผล่แล้ว!</b> (ปุ่มตีบอสกดได้) HP เรา ${hp != null ? Math.round(hp) + '%' : '?'} · แมพ ${esc(bossMapId() || '?')}`); }
