@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.325
+// @version      6.326
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.325';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.326';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -145,6 +145,9 @@
   let MAP_POOLS = {};                    // mapId → [ชื่อปลาที่ออกในแมพนั้น]
   let SERVER_BOSS_TIMES = null;          // ['10:30','13:30',…] จาก raidSpawnMinutes
   let GAME_FLAGS = {};
+  // 🎣 v6.326: ข้อเสนอแลกปลาลุงหยัด จาก /api/config exchanges — [{species, qty, reward, coffee}]
+  //   ใช้ (ก) seed "กันขายปลาที่ลุงต้องการ" ตั้งแต่บูต (ข) รู้ว่าดีลไหนให้กาแฟ (แก้ปัญหาพลังงาน)
+  let YAD_OFFERS = [];
   // 🎯 v6.315: "เพดานระดับปลาตามขั้นเหยื่อ" — ค่า index ชี้เข้าอาร์เรย์ RARITY_TH (9 ระดับใหม่)
   //   ค่าจริงจากเซิร์ฟเวอร์ (baitRarityCeiling): ขั้น1-2=หายาก · 3=สุดยอด · 4-5=ตำนาน · 6=เทพนิยาย · 7=เทพ · 8+=บรรพกาล
   //   ตารางเก่าในบอท [2,2,3,4,4,5,5,5] อ้าง 6 ระดับเก่า = ผิดทั้งจำนวนขั้นและ index → applyGameConfig ทับด้วยของจริง
@@ -192,6 +195,22 @@
       if (Array.isArray(rc) && rc.length && rc.every((x) => Number.isFinite(x))) {
         if (rc.join(',') !== BAIT_RARITY_CEILING.join(',')) changed.push('เพดานระดับปลาต่อขั้นเหยื่อ');
         BAIT_RARITY_CEILING = rc.slice();
+      }
+      // 🎣 v6.326: รายการแลกปลาลุงหยัด (exchanges) — seed ตั้งแต่บูต **กันขายปลาที่ลุงต้องการก่อนเคยเปิดแผง**
+      //   เจอสด 31/7: เช้ามีปลาหยุด 164 ตัว แต่บอทขายทิ้งหมด เพราะรู้ว่าลุงต้องการต่อเมื่อเดินไปเปิดแผง (15:32)
+      //   ค่าจริงจากเซิร์ฟเวอร์ (ยืนยันตรงกับที่อ่านแผงสด): ปลาหยุด×150→☕กาแฟ×2 · ปลาหยุด×100→เหยื่อขั้น5×20
+      //   นี่คือ server config เดียวกับตารางบอส/ราคาเหยื่อ (ไม่ใช่ bundle placeholder ที่ v6.286 เตือน) → seed ได้
+      if (Array.isArray(c.exchanges)) {
+        const yad = c.exchanges.filter((e) => e && e.npc === 'yad' && e.enabled !== false && e.species && +e.qty > 0);
+        YAD_OFFERS = yad.map((e) => ({ species: e.species, qty: +e.qty, reward: e.reward || {}, coffee: ((e.reward || {}).itemId === 'coffee_energy') }));
+        const want = {};
+        for (const o of YAD_OFFERS) want[o.species] = Math.max(want[o.species] || 0, o.qty);
+        try {
+          const cur = JSON.parse(W.localStorage.getItem('tokpla_yad_wants') || '{}') || {};
+          let ch = false;
+          for (const [s, n] of Object.entries(want)) if (!(cur[s] >= n)) { cur[s] = Math.max(cur[s] || 0, n); ch = true; }
+          if (ch) { W.localStorage.setItem('tokpla_yad_wants', JSON.stringify(cur)); changed.push('รายการแลกลุงหยัด (' + Object.keys(want).join(',') + ')'); }
+        } catch {}
       }
     } catch (e) { try { logErr('อ่านคอนฟิกเกมล้มเหลว', e); } catch {} return false; }
     if (changed.length && opts && opts.log) {
