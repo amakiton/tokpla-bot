@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.322
+// @version      6.323
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.322';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.323';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -516,7 +516,11 @@
   let lastProgressAt = 0;      // มีความคืบหน้า (ตกได้/เปลี่ยนสถานะ) ครั้งล่าสุดเมื่อไร
   let loginAlerted = false;    // แจ้งเรื่องเด้งไป login ไปแล้วหรือยัง
   let paused = false;          // พักชั่วคราว (บอทยังเปิด แต่ไม่ตก)
-  let lastQuestCheck = 0;      // เช็คเควสครั้งล่าสุดเมื่อไร
+  // 🔴 v6.176/v6.323: `now()` = performance.now() → **รีเซ็ตเป็น ~0 ทุกครั้งที่รีโหลดหน้า**
+  //   ตัวจับเวลาที่เริ่มที่ 0 จึงทำให้ `now() - lastXxxAt > N` เป็นเท็จทันทีหลังรีโหลด = **บล็อกฟีเจอร์ไปทั้งช่วง N**
+  //   ใช้ NEVER (ติดลบมากๆ) = "ไม่เคยทำมาก่อน" → รีโหลดแล้วทำงานได้ทันที
+  const NEVER = -1e9;
+  let lastQuestCheck = NEVER;  // เช็คเควสครั้งล่าสุดเมื่อไร (v6.323: NEVER = รีโหลดแล้วเช็คเควสได้เลย ไม่ต้องรอครบรอบ)
   let lastFarmRodAt = 0;       // 🎣 v6.301: เช็ค/สลับ "เบ็ดฟาร์ม" ตอนฟาร์มปกติครั้งล่าสุด (เดิมสลับเฉพาะหลังตีบอส = ฟาร์มไม่เคยสลับ)
   let lastTimeSellAt = 0;      // เช็คขายแบบอิงเวลา (โหมด gameauto/off ที่ตัวนับ casts ไม่ขยับ) ครั้งล่าสุด
   let gameAutoSayAt = 0;       // ประกาศ "เปิดตกปลาอัตโนมัติของเกม" ครั้งล่าสุด (throttle กันสแปมตอน restart หลัง maintenance)
@@ -4340,7 +4344,7 @@
   //   → เงื่อนไขกันซ้ำแบบ `now() - lastXxxAt < N` จึงเป็นจริงทันทีหลังรีโหลด = **บล็อกฟีเจอร์ไปทั้งช่วง N**
   //   กรณีบอส: กันล่าซ้ำ 10 นาที → รีโหลดแล้วบอทล่าบอสไม่ได้เลย 10 นาทีแรก (รีโหลดใกล้เวลาบอส = พลาดทั้งรอบ)
   //   แก้: เริ่มที่ค่าติดลบมากๆ = "ไม่เคยทำมาก่อน" จริงๆ (ใช้กับทุกตัวจับเวลาที่เป็น cooldown)
-  const NEVER = -1e9;
+  //   v6.323: ย้าย `const NEVER` ไปประกาศบนสุดของไฟล์ (ตัวจับเวลาหลายตัวประกาศก่อนจุดนี้)
   let lastBossHuntAt = NEVER, lastBossEscapeAt = NEVER, bossEscapeFails = 0, bossLastMapId = '', lastBossHereChk = 0, lastBossDepartChk = 0;
   // 🕐 v6.177: persist cooldown ล่าบอสด้วย "เวลาจริง" (Date.now) — v6.176 แก้ฝั่ง "รีโหลดแล้วโดนบล็อก" แต่เหลือฝั่งกลับกัน:
   //   รีโหลดหลังเพิ่งล่าเสร็จ → cooldown หาย → ถ้าป้าย "ถึงรอบบอส" ยังค้าง (รอบบอสยังเปิด) บอทจะวิ่งไปหาบอสที่ตายแล้วซ้ำ
@@ -6792,7 +6796,9 @@
     COOLDOWN: 30 * 60000, // เว้นระหว่างการสลับอัตโนมัติ ≥ 30 นาที (กัน churn)
     RECENT: 50,          // หน้าต่างสั้นไว้จับ "กำไรช่วงหลังตก"
   };
-  let lastAdvisorAt = 0, lastAutoSwitchAt = 0, lastAdviceKey = '', lastAdviceTgAt = 0, lastAdvice = null;
+  // 🔴 v6.323: NEVER ทั้ง 2 ตัว — เดิมเริ่มที่ 0 ทำให้หลังรีโหลด **Advisor สลับเหยื่อไม่ได้ 30 นาทีแรก** (ADV.COOLDOWN)
+  //   เจอสด 31/7: เทสต์เหยื่อทิ้ง cfg.baitTier ไว้ที่ขั้น 3 → รีโหลด → Advisor สั่ง "ยกขึ้นพื้นขั้น 5" แต่กดใช้ไม่ได้ = ฟาร์มขั้นผิดยาว
+  let lastAdvisorAt = NEVER, lastAutoSwitchAt = NEVER, lastAdviceKey = '', lastAdviceTgAt = NEVER, lastAdvice = null;
   let advisorPotionVerdict = null;   // null = advisor ไม่คุม (ใช้ gate potionMinCph เดิม) · {weight,luck} = อนุมัติแยกราย (โหมด auto)
   // ขั้นเหยื่อที่ "ห้าม Advisor เลือก" (จาก cfg.advisorNoTiers) — memoize parse ใหม่เฉพาะตอนสตริงเปลี่ยน
   let _advNoRaw = null, _advNoSet = new Set();
@@ -7005,7 +7011,8 @@
   }
 
   // ===== ✉️ เก็บจดหมายอัตโนมัติ (ของขวัญจากผู้พัฒนา/รางวัลบอส — ไม่กดรับ = ค้างในกล่องเฉยๆ) =====
-  let lastMailCheck = 0;
+  // 🔴 v6.323: NEVER — เดิม 0 + cfg.mailEvery 240 นาที = **รีโหลดแล้วไม่เก็บจดหมายเลย 4 ชม.** (รางวัลบอส/หีบค้าง)
+  let lastMailCheck = NEVER;
   function pressEsc() {
     const opts = { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true };
     W.dispatchEvent(new KeyboardEvent('keydown', opts));
