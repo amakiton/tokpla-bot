@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.319
+// @version      6.320
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.319';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.320';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2076,13 +2076,18 @@
       }
       if (wm) {
         const seg = wm[1];
-        for (const b of BAIT_TIERS) {
-          // ชื่อในเกมอาจย่อ ("หนอนทอง" vs "หนอนทองคำ") → นับว่าตรงถ้าเป็นสตริงย่อยของกันและกัน
-          const core = b.name.replace(/^มัด|สด$|คำ$/g, '');
-          if (seg.includes(b.name) || (core.length >= 4 && seg.includes(core))) {
-            if (!out.weakTiers.includes(b.tier)) { out.weakTiers.push(b.tier); out.weakNames.push(b.name); }
+        // 🎯 v6.320 — **แก้เหยื่อจุดอ่อน x1.5 หายทุกไฟต์ (พิสูจน์สด 10:30: เกมเขียน "มัดอ้วน ปลารุ้ง" แต่จับไม่เจอ → ดาเมจ 1.5% เทียบ 10.2%)**
+        //   ต้นเหตุ: จับคู่จาก BAIT_TIERS (ชื่อเต็ม "มัดไส้เดือนอ้วน") เท่านั้น แต่เกมประกาศจุดอ่อนด้วย "ชื่อย่อ" ("มัดอ้วน") บนการ์ด/HUD
+        //   → เพิ่ม BAIT_SHORT (ชื่อย่อ 16 ขั้น จาก v6.312) ในการจับคู่ด้วย (เหมือนที่ tierFromName ทำแล้ว)
+        const addWeak = (nm, tier) => {
+          if (!nm) return;
+          const core = nm.replace(/^มัด|สด$|คำ$/g, '');
+          if (seg.includes(nm) || (core.length >= 4 && seg.includes(core))) {
+            if (!out.weakTiers.includes(tier)) { out.weakTiers.push(tier); out.weakNames.push(nm); }
           }
-        }
+        };
+        for (const b of BAIT_TIERS) addWeak(b.name, b.tier);       // ชื่อเต็ม
+        for (let i = 1; i < BAIT_SHORT.length; i++) addWeak(BAIT_SHORT[i], i);   // ชื่อย่อบนการ์ด/HUD
         // ⚠️ "ไส้เดือน" (ขั้น1) เป็นสตริงย่อยของ "มัดไส้เดือนอ้วน" (ขั้น2) → ถ้าจับได้ทั้งคู่แต่ข้อความไม่มีคำว่า "มัด"/"อ้วน" ให้ตัดขั้น2 ทิ้ง
         if (out.weakTiers.includes(1) && out.weakTiers.includes(2) && !/มัด|อ้วน/.test(seg)) {
           const i = out.weakTiers.indexOf(2); out.weakTiers.splice(i, 1); out.weakNames.splice(i, 1);
@@ -2091,7 +2096,7 @@
         //   (เช่นคลิปมี "ปลาซิว" ซึ่งไม่มีในตาราง 8 ขั้นของเรา — ต้องรู้ว่ามันคือขั้นไหนถึงจะใช้ x1.5 ได้)
         if (!out.weakTiers.length && !weakParseWarned) {
           weakParseWarned = true;
-          logWarn(`🎯 อ่านจุดอ่อนบอสไม่ออก — เกมเขียนว่า ${JSON.stringify(seg.replace(/\s+/g, ' ').slice(0, 60))} แต่จับคู่กับเหยื่อ 8 ขั้นไม่ได้ (เสียตัวคูณ x1.5 ไปฟรีๆ)`);
+          logWarn(`🎯 อ่านจุดอ่อนบอสไม่ออก — เกมเขียนว่า ${JSON.stringify(seg.replace(/\s+/g, ' ').slice(0, 60))} แต่จับคู่กับเหยื่อ 16 ขั้น (ทั้งชื่อเต็ม/ย่อ) ไม่ได้ (เสียตัวคูณ x1.5 ไปฟรีๆ)`);
         }
       } else if (/จุดอ่อน/.test(txt) && !weakParseWarned) {
         // มีคำว่า "จุดอ่อน" บนจอ แต่ regex ไม่ติดเลย = รูปแบบข้อความเปลี่ยน (ไม่ใช่ไม่มีจุดอ่อน)
