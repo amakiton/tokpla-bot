@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.330
+// @version      6.331
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.330';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.331';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1879,7 +1879,7 @@
   //   raidMeleeRange 60 · raidChargeFullMs 1800 · raidBossBodyW/H 360×420 (ตัวบอสใหญ่ = "ระยะประชิด" วัดจากขอบตัว ไม่ใช่จุดกลาง)
   let BOSS_MELEE_RANGE = 60;        // ระยะที่เกมยอมให้ฟาดโดน (นับจากขอบตัวบอส · tuning.raidMeleeRange)
   let BOSS_CHARGE_MS = 1800;        // กดค้างเท่านี้ = ชาร์จเต็ม x2 (tuning.raidChargeFullMs)
-  let BOSS_BODY_W = 360, BOSS_BODY_H = 420;   // ขนาดตัวบอส (tuning.raidBossBodyW/H) — ใช้ประเมิน "ถึงระยะประชิด" จากพิกัดกลาง
+  let BOSS_BODY_W = 360, BOSS_BODY_H = 420;   // ขนาดตัวบอส (tuning.raidBossBodyW/H) — v6.331 เลิกใช้คำนวณระยะประชิด (วัดสดแล้วเกมไม่ได้วัดจากขอบตัว) เก็บไว้เผื่ออนาคต
   // 🎯 v6.265: เกมเปลี่ยนโครง `scene.raidDodge` — เดิม {mode, cx, cy, r} วงเดียว
   //   ตอนนี้เป็น {seq, mode, r, deadline, zones:[{cx,cy,ring}], count} = **วงหลายวง** และ cx/cy ย้ายลงไปอยู่ใน zones
   //   ผลที่เกิดจริง (รอบ 10:30 26/7 โหมด melee): raid.cx/cy = undefined → dx/dy = NaN → เทียบ `gx > 6` เป็น false ทุกทิศ
@@ -3842,7 +3842,12 @@
           const d = Math.hypot(rb.x - _sc.player.x, rb.y - _sc.player.y);
           // 🎯 v6.316: "ถึงระยะฟาด" = ครึ่งตัวบอส (body/2 จาก /api/config) + meleeRange — เดิมเดา 2.2×60=132px โดยไม่รู้ขนาดตัวบอส
           //   ของจริง body 360×420 → ครึ่งตัว ~180 + 60 = ~240px · เชื่อ "ไกลไป!" ของเกมก่อน (ground truth) เสมอ
-          const reachPx = Math.min(BOSS_BODY_W, BOSS_BODY_H) / 2 + BOSS_MELEE_RANGE;
+          // 📏 v6.331 (วัดสดไฟต์ 20:00 31/7 เจ้าเปลวใต้พิภพ — kill 5.6% แต่ diag เผยระยะจริง):
+          //   ฟาดเข้า: 9-95px · เกมว่า "ไกลไป": 140-199px ทุกครั้ง → ระยะจริง ~≤100-130px ไม่ใช่ 240
+          //   สูตรครึ่งตัว+60 กว้างเกิน → บอทหยุดเดินแล้วยืนตีลมช่วง 100-240px = ดาเมจ/ฟาดต่ำ (22-44 เทียบสถิติดีสุด 47/hit ที่กอดตัวบอส)
+          //   ใหม่: MELEE_RANGE+40 = ~100px (ยังอิง config — เกมแก้ raidMeleeRange เมื่อไหร่ขยับตาม)
+          //   ⚠️ "ไกลไป!" มี lag (เคยค้างโชว์ตอน 9px) — ใช้เป็นตัวเร่งเข้าใกล้ได้ แต่ห้ามใช้อนุญาตให้หยุดเดิน
+          const reachPx = BOSS_MELEE_RANGE + 40;
           const needCloser = meta.tooFar || d > reachPx;
           // 🔬 v6.316 วินิจฉัยสด (throttle 3วิ): melee ทำดาเมจ ~22/hit ผิดปกติ (505 hits = 2.3%) — จับให้ได้ว่าติดที่ระยะ/ปุ่ม/กลไก
           if (now() - lastMeleeDiag > 3000) {
