@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.354
+// @version      6.355
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.354';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.355';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2156,6 +2156,100 @@
       }
     } catch {}
   }
+  // 🎯 v6.355 — **จุดอ่อน "คงที่ต่อบอส" ไม่ได้สุ่ม (ล้มข้อสรุป v6.284)**
+  //   หลักฐานจากบัญชีนี้เอง (19 ไฟต์ · ตาราง tokpla_boss_weak): ทุกตัวมี `variants` เดียว ไม่เคยเจอชุดต่าง
+  //     ดุกนรก=4 · หมึกยักษ์=1+6 · เปลวใต้พิภพ=2+8 · บึกทอง=3+5+7 · บัวสาป=4+7 (เจอซ้ำหลายรอบทุกตัว)
+  //   ⇒ **ทำนายล่วงหน้าได้** ซึ่งสำคัญมาก เพราะ...
+  //   🔴 ตรวจสดพบว่า **ปุ่ม "เลือกเหยื่อ" หายจาก DOM ระหว่างสู้บอส** (20:03:59 หาไม่เจอ · 20:05:42 กลับมา)
+  //     ⇒ `cycleTo('เลือกเหยื่อ')` ตอนบอสโผล่ **ทำงานไม่ได้ตั้งแต่แรก** — บอทจึงไม่เคยสลับเหยื่อเองสำเร็จเลย
+  //     (event log ยืนยัน: 6/6 ครั้งขึ้น "ติดอยู่แล้ว ไม่ต้องสลับ" = ตรงเพราะ**ผู้ใช้คลิกไว้เอง** ไม่ใช่บอททำ)
+  //   ⇒ ทางแก้เดียวที่ใช้ได้จริง: **ติดเหยื่อจุดอ่อนตั้งแต่ยังยืนรอในถ้ำ (ก่อนบอสโผล่ ปุ่มยังอยู่)**
+  //   ผลต่างที่วัดได้จริงบนบอสตัวเดียวกัน: ตรงจุดอ่อน 4.1-13.7% · ไม่ตรง 1.5-2.3% ≈ **3-5 เท่า**
+  const BOSS_ROTA_KEY = 'tokpla_boss_rota';
+  // จดว่า "รอบเวลาไหน เจอบอสตัวไหน" — ใช้ทำนายรอบถัดไป (raidBossRotation = "rotate" แต่กติกาไม่เปิดเผย → เรียนเอาเอง)
+  function recordBossRota(name) {
+    if (!name) return;
+    try {
+      const b = bossRoundBounds(); if (!b.prev) return;
+      const d = new Date(b.prev), slot = String(d.getHours() * 60 + d.getMinutes());
+      const o = JSON.parse(W.localStorage.getItem(BOSS_ROTA_KEY) || '{}') || {};
+      o[slot] = o[slot] || {};
+      o[slot][name] = (o[slot][name] || 0) + 1;
+      W.localStorage.setItem(BOSS_ROTA_KEY, JSON.stringify(o));
+    } catch {}
+  }
+  // 🌱 v6.355: seed ตาราง rotation จาก "สถิติไฟต์ที่มีอยู่แล้ว" ครั้งเดียว — ไม่ต้องรอสะสมใหม่หลายวัน
+  //   ข้อมูลเดิมมีครบ (bossName + ts ต่อไฟต์) แค่ไม่เคยถูกจัดกลุ่มตามรอบเวลา
+  function seedBossRotaOnce() {
+    try {
+      const o = JSON.parse(W.localStorage.getItem(BOSS_ROTA_KEY) || '{}') || {};
+      if (o._seeded) return;
+      const list = bossSchedList();
+      if (Array.isArray(list) && list.length) {
+        for (const r of (loadBossStats() || [])) {
+          if (!r || !r.bossName || !r.ts) continue;
+          const d = new Date(r.ts), m = d.getHours() * 60 + d.getMinutes();
+          let best = null;
+          for (const s of list) if (s <= m && (best == null || s > best)) best = s;
+          if (best == null) continue;
+          if (m - best > SERVER_RAID_WINDOW_MIN) continue;   // ไกลจากรอบเกินหน้าต่าง = จับคู่ไม่ได้ ข้าม
+          const k = String(best);
+          o[k] = o[k] || {};
+          o[k][r.bossName] = (o[k][r.bossName] || 0) + 1;
+        }
+      }
+      o._seeded = 1;
+      W.localStorage.setItem(BOSS_ROTA_KEY, JSON.stringify(o));
+      const slots = Object.keys(o).filter((k) => k !== '_seeded').length;
+      if (slots) logInfo(`🌱 สร้างตาราง "รอบไหนบอสตัวไหน" จากสถิติเดิมแล้ว (${slots} รอบเวลา) — ใช้ทำนายเพื่อติดเหยื่อจุดอ่อนล่วงหน้า`);
+    } catch {}
+  }
+  // บอสที่ "น่าจะมา" ในรอบที่กำลังจะสู้ — คืน '' ถ้าข้อมูลยังไม่ชี้ชัด (ไม่เดา)
+  //   เกณฑ์: ต้องเคยเจอรอบนั้น ≥ 2 ครั้ง และตัวที่ชนะต้องได้ ≥ 2/3 ของครั้งทั้งหมด
+  function bossRotaPredict() {
+    try {
+      seedBossRotaOnce();
+      const b = bossRoundBounds();
+      // กำลังรออยู่ในถ้ำก่อนบอสเกิด → เป้าคือรอบถัดไป · เกิดไปแล้ว → รอบปัจจุบัน
+      const target = (b.next && b.next - Date.now() < 15 * 60000) ? b.next : b.prev;
+      if (!target) return '';
+      const d = new Date(target), slot = String(d.getHours() * 60 + d.getMinutes());
+      const o = JSON.parse(W.localStorage.getItem(BOSS_ROTA_KEY) || '{}') || {};
+      const tab = o[slot]; if (!tab) return '';
+      const rows = Object.entries(tab).sort((x, y) => y[1] - x[1]);
+      const tot = rows.reduce((s, r) => s + r[1], 0);
+      if (tot < 2 || rows[0][1] / tot < 0.66) return '';
+      return rows[0][0];
+    } catch { return ''; }
+  }
+  // ขั้นเหยื่อที่ควร "ติดไว้ล่วงหน้า" ตอนยืนรอในถ้ำ · 0 = ยังไม่มีข้อมูลพอ (ไม่แตะเหยื่อ)
+  //   ① รู้ตัวบอสจากสถิติ rotation → ใช้จุดอ่อนของตัวนั้นตรง ๆ (แม่นสุด)
+  //   ② ไม่รู้ → ดูว่าถ้ำนี้มีบอสตัวไหนได้บ้าง (raidBossMeta.mapId) แล้วเลือกขั้นที่ครอบคลุมมากสุด
+  //      เท่ากัน = เลือกขั้นถูกสุด (ทุกจุดอ่อนให้ x1.5 เท่ากัน — เหตุผลเดียวกับ v6.306)
+  function bossWeakPreTier(mapId) {
+    try {
+      const weak = loadBossWeak();
+      const pred = bossRotaPredict();
+      if (pred && weak[pred] && (weak[pred].tiers || []).length) {
+        const t = weak[pred].tiers.slice().sort((a, b) => a - b)[0];
+        return { tier: t, why: `ทำนายบอส "${pred}" จากสถิติรอบนี้ → จุดอ่อนขั้น ${weak[pred].tiers.join('+')}` };
+      }
+      if (!mapId || !BOSS_META.size) return null;
+      const seen = new Set(), score = {}, names = [];
+      for (const [nm, rec] of BOSS_META) {
+        if (rec.mapId !== mapId || seen.has(rec.id)) continue;
+        const w = weak[rec.nameTh] || weak[nm];
+        if (!w || !Array.isArray(w.tiers) || !w.tiers.length) continue;
+        seen.add(rec.id); names.push(rec.nameTh || nm);
+        for (const t of w.tiers) score[t] = (score[t] || 0) + 1;
+      }
+      const tiers = Object.keys(score).map(Number).filter((t) => t >= 1 && t <= MAX_BAIT_TIER);
+      if (!tiers.length) return null;
+      tiers.sort((a, b) => (score[b] - score[a]) || (a - b));
+      const t = tiers[0];
+      return { tier: t, why: `ถ้ำ ${mapId} มีบอสที่จำจุดอ่อนได้ ${names.length} ตัว → ขั้น ${t} ครอบคลุม ${score[t]}/${names.length} ตัว` };
+    } catch { return null; }
+  }
   // ขั้นเหยื่อที่ "ควรมีติดตัวก่อนเข้าถ้ำ" — รวมจุดอ่อนของบอสทุกตัวที่เคยเจอ (เพราะไม่รู้ว่ารอบนี้บอสตัวไหนมา)
   //   จำกัดจำนวนขั้นไว้ ไม่ให้ซื้อกระจาย: เอาที่เพิ่งเจอล่าสุดก่อน (บอสหมุนเวียน = ตัวที่เพิ่งมามีโอกาสมาอีก)
   // 📊 v6.283: **เรียนรู้ว่าเหยื่อขั้นไหนตีบอสแรงสุดจริง** — วัดจาก "ดาเมจต่อการกด 1 ครั้ง"
@@ -2785,6 +2879,8 @@
       { h: 't2f', w: 4, g: (r) => r.t2first != null ? (r.t2first / 1000).toFixed(1) : '-' },
       // 📊 v6.346: wait = รอในถ้ำกี่วิกว่าบอสจะโผล่ (ใช้ตรวจว่าเกณฑ์ตัดรอ 90 วิ ตัดบอสที่มาช้าทิ้งหรือเปล่า)
       { h: 'wait', w: 4, g: (r) => r.waitSec != null ? r.waitSec : '-' },
+      // 🎯 v6.355: bait = ขั้นที่ใช้ · ✓/✗ = ตรงจุดอ่อนไหม · src = ใครติดให้ (P=บอทติดล่วงหน้า · c=ติดมาก่อน · S=สลับตอนไฟต์)
+      { h: 'bait', w: 6, right: false, g: (r) => (r.baitUsed ?? '-') + ((r.weakTiers || []).length ? ((r.weakTiers || []).includes(r.baitUsed) ? '✓' : '✗') : '') + (r.baitPre === 1 ? 'P' : r.baitPre === 2 ? 'c' : r.baitPre === 3 ? 'S' : '') },
       { h: 'coin', w: 8, g: (r) => r.reward && r.reward.coins ? r.reward.coins.toLocaleString() : '-' },   // 🎁 v6.206
     ];
     const rows = arr.slice().reverse();   // ใหม่สุดอยู่บน
@@ -2803,7 +2899,7 @@
     const totCoin = arr.reduce((s, r) => s + ((r.reward && r.reward.coins) || 0), 0);
     return `📊 เทียบรายไฟต์ล่าบอส (${arr.length} ครั้ง · ใหม่→เก่า) · ฆ่า ${kills}/${arr.length}`
       + (totCoin ? ` · รางวัลรวม ${totCoin.toLocaleString()} 🪙` : '') + '\n'
-      + `res: k=ฆ่า t=หมดเวลา m=ไม่มา · gg=กดเกจ dg=หลบAoE di=ตาย hp=HPต่ำสุด sec=วินาที t2f=วิกว่าจะตีนัดแรกหลังบอสโผล่ wait=วิที่รอในถ้ำกว่าบอสจะโผล่ coin=เหรียญรางวัล\n\n`
+      + `res: k=ฆ่า t=หมดเวลา m=ไม่มา · gg=กดเกจ dg=หลบAoE di=ตาย hp=HPต่ำสุด sec=วินาที t2f=วิกว่าจะตีนัดแรกหลังบอสโผล่ wait=วิที่รอในถ้ำกว่าบอสจะโผล่ bait=ขั้นเหยื่อ(✓ตรงจุดอ่อน · P=บอทติดล่วงหน้า c=ติดมาก่อน S=สลับตอนไฟต์) coin=เหรียญรางวัล\n\n`
       + header + '\n' + sep + '\n' + body
       + (rw.length ? `\n\n🎁 รางวัลที่ได้รับรายไฟต์\n${rw.join('\n')}` : '\n\n🎁 (ยังไม่มีข้อมูลรางวัล — จะเก็บตั้งแต่ไฟต์ถัดไป)');
   }
@@ -3824,6 +3920,8 @@
     //   ⚠️ ถ้าสุดท้ายบอสไม่มา = ติดเบ็ดบอสกลับบ้าน → ตั้ง `lastFarmRodAt = 0` ตอน bail
     //      ให้ตัวเช็ค idle (v6.301/6.305) สลับคืนเบ็ดฟาร์มทันทีที่ว่าง — ใช้ทางเดิมที่พิสูจน์แล้ว ไม่เพิ่มเส้นทางใหม่
     let gearPrepped = false, gearPrepEarly = false;
+    // 🎯 v6.355: เหยื่อจุดอ่อนมาจากไหน — 0 = ไม่ได้จัด · 1 = บอทติดล่วงหน้าเอง · 2 = ติดอยู่แล้ว (ผู้ใช้/รอบก่อน) · 3 = สลับตอนไฟต์
+    let baitPreState = 0;
     const prepBossGear = async () => {
       if (gearPrepped) return;
       gearPrepped = true;
@@ -3844,6 +3942,29 @@
         try { say('👹 เลือกทุ่นที่ตีบอสแรงสุด'); await equipFloatBy('boss'); }
         catch (e) { logErr('เลือกทุ่นบอสล้มเหลว', e); }
         finally { busy = false; }
+      }
+      // 🎯 v6.355 — **ติดเหยื่อจุดอ่อนล่วงหน้า ตอนบอสยังไม่โผล่** (นี่คือหัวใจของรุ่นนี้)
+      //   ทำที่นี่เพราะเป็นช่วงเดียวที่ **ปุ่ม "เลือกเหยื่อ" ยังอยู่ใน DOM** — พอบอสโผล่ปุ่มจะหาย สลับไม่ได้อีก
+      //   ทำเฉพาะตอน "ยังไม่เห็นบอส" (gearPrepEarly) — ถ้าบอสอยู่แล้วก็ไม่มีอะไรให้ทำ (สลับไม่ได้อยู่ดี)
+      if (gearPrepEarly && cfg.bossBaitTier !== -1) {
+        const pre = bossWeakPreTier(bossMapId());
+        const cur = currentBait()?.tier ?? null;
+        if (!pre) {
+          bossEvent('🎯 ยังไม่มีข้อมูลจุดอ่อนของถ้ำนี้พอจะติดเหยื่อล่วงหน้า — จะใช้เหยื่อที่ติดอยู่ตีไปก่อน');
+        } else if (cur === pre.tier) {
+          baitPreState = 2;   // ตรงอยู่แล้ว (ผู้ใช้ตั้งไว้/ค้างจากรอบก่อน)
+          bossEvent(`🎯 เหยื่อขั้น ${pre.tier} ติดอยู่แล้วตั้งแต่ก่อนบอสโผล่ — ${pre.why}`);
+        } else {
+          busy = true;
+          try {
+            say(`🎯 ติดเหยื่อจุดอ่อนล่วงหน้า ขั้น ${pre.tier} (ก่อนบอสโผล่ — ตอนสู้จะสลับไม่ได้แล้ว)`);
+            const ok = await cycleTo('เลือกเหยื่อ', pre.tier, () => currentBait()?.tier);
+            const got = currentBait()?.tier ?? null;
+            if (got === pre.tier) { baitPreState = 1; bossEvent(`🎯 ติดเหยื่อล่วงหน้าสำเร็จ ขั้น ${pre.tier} — ${pre.why}`); }
+            else { bossEvent(`⚠️ ติดเหยื่อล่วงหน้าไม่สำเร็จ (ขอขั้น ${pre.tier} · ได้ ${got ?? 'อ่านไม่ได้'} · cycleTo=${ok}) — ของอาจหมดในกระเป๋า`); }
+          } catch (e) { logErr('ติดเหยื่อจุดอ่อนล่วงหน้าล้มเหลว', e); }
+          finally { busy = false; }
+        }
       }
     };
     // ⏱️ v6.345: จับเวลา "บอสโผล่ → กดตีครั้งแรก" — ตัวเลขที่ต้องกดให้ต่ำ (เดิมไม่เคยวัด จึงไม่รู้ว่าช้าเพราะอะไร)
@@ -3934,8 +4055,15 @@
       }
       if (pick) wantBait = pick;
     }
+    // 🎯 v6.355: จดว่า "รอบเวลานี้เจอบอสตัวไหน" — สะสมไว้ทำนายรอบถัดไป (ยิ่งสะสม ยิ่งติดเหยื่อล่วงหน้าได้แม่น)
+    if (snapBossName || hudMeta.name) recordBossRota(snapBossName || hudMeta.name);
     // 🔎 v6.308: log กรณี "เหยื่อจุดอ่อนติดอยู่แล้ว" ด้วย (ไม่งั้นรอบที่ไม่ต้องสลับ = เงียบ วินิจฉัยไม่ได้ว่าเริ่มถูกหรือไม่)
-    if (wantBait > 0 && cb0?.tier === wantBait) bossEvent(`✅ เหยื่อจุดอ่อนติดอยู่แล้วตอนเริ่ม — ขั้น ${wantBait} (ไม่ต้องสลับ)`);
+    // 🎯 v6.355: **แยกให้ออกว่า "ใครเป็นคนติด"** — เดิมขึ้น "ติดอยู่แล้ว" เหมือนกันหมดจนดูเหมือนบอททำงานถูก
+    //   ความจริงจาก event log 6/6 ครั้ง: ตรงเพราะ**ผู้ใช้คลิกเองไว้ล่วงหน้า** บอทไม่เคยสลับสำเร็จเลยสักครั้ง
+    if (wantBait > 0 && cb0?.tier === wantBait) {
+      if (!baitPreState) baitPreState = 2;
+      bossEvent(`✅ เหยื่อจุดอ่อนขั้น ${wantBait} พร้อมแล้วตอนเริ่ม — ${baitPreState === 1 ? 'บอทติดล่วงหน้าเองตอนรอในถ้ำ 🎯' : 'ติดมาก่อนแล้ว (ผู้ใช้ตั้งไว้/ค้างจากรอบก่อน)'}`);
+    }
     if (wantBait > 0 && cb0?.tier !== wantBait) {
       prevBaitTier = cb0 ? cb0.tier : null;
       busy = true;
@@ -3945,8 +4073,16 @@
         // 🔎 v6.307 (ผู้ใช้เจอสด: ตอนตีบอสไม่มี "วงส้ม" บนเหยื่อ + เหยื่อไม่ลด = สงสัยเหยื่อจุดอ่อนไม่ติด → ไม่ได้ x1.5):
         //   ยืนยันด้วยค่าจริงว่าเหยื่อที่เลือกอยู่ = ขั้นจุดอ่อนหรือไม่ · log ชัดเพื่อวินิจฉัยรอบสด
         const nbTier = currentBait()?.tier;
-        if (nbTier === wantBait) bossEvent(`✅ เหยื่อจุดอ่อนติดแล้ว — ขั้น ${wantBait} (x1.5 พร้อม · currentBait ยืนยัน)`);
-        else { bossEvent(`⚠️ เหยื่อจุดอ่อนไม่ติด! ต้องขั้น ${wantBait} แต่ currentBait = ${nbTier ?? 'ไม่มี'} (cycleTo คืน ${okSwap}) → ตีบอสอาจไม่ได้ x1.5`); logWarn(`👹 เหยื่อจุดอ่อนไม่ติด — ขั้นเป้า ${wantBait} · ปัจจุบัน ${nbTier ?? 'ไม่มี'} · cycleTo=${okSwap}`); }
+        if (nbTier === wantBait) { baitPreState = 3; bossEvent(`✅ เหยื่อจุดอ่อนติดแล้ว — ขั้น ${wantBait} (x1.5 พร้อม · currentBait ยืนยัน)`); }
+        else {
+          // 🔴 v6.355: วินิจฉัยสาเหตุให้ตรงจุด — **ตรวจสดพบว่าปุ่ม "เลือกเหยื่อ" หายจาก DOM ระหว่างสู้บอส**
+          //   ถ้าปุ่มไม่มี = ไม่ใช่ "ของหมด" แต่คือ "เกมไม่ให้สลับตอนนี้" → ต้องไปแก้ที่การติดล่วงหน้า ไม่ใช่ retry ตรงนี้
+          const btnGone = !qBtn('เลือกเหยื่อ');
+          const why = btnGone ? '**ปุ่มเลือกเหยื่อหายจากจอระหว่างสู้บอส — เกมไม่ให้สลับตอนนี้**' : 'อาจไม่มีเหยื่อขั้นนี้ในกระเป๋า';
+          bossEvent(`⚠️ เหยื่อจุดอ่อนไม่ติด! ต้องขั้น ${wantBait} แต่ได้ ${nbTier ?? 'อ่านไม่ได้'} (cycleTo=${okSwap}) → ${why} · เสีย x1.5 รอบนี้`);
+          logWarn(`👹 เหยื่อจุดอ่อนไม่ติด — ขั้นเป้า ${wantBait} · ปัจจุบัน ${nbTier ?? 'ไม่มี'} · ${why}`);
+          if (btnGone) bossEvent('💡 ทางแก้: ให้บอทติดเหยื่อจุดอ่อน "ล่วงหน้า" ตอนยืนรอในถ้ำ (v6.355) — รอบนี้ยังไม่มีข้อมูลจุดอ่อนของบอสตัวนี้ จึงเดาไม่ได้');
+        }
       } catch (e) { logErr('สลับเหยื่อจุดอ่อนล้มเหลว', e); }
       finally { busy = false; }
     }
@@ -4628,6 +4764,8 @@
       // ⏱️ v6.345: "บอสโผล่ → กดตีครั้งแรก" (ms) + จัดเบ็ด/ทุ่นไว้ก่อนไหม — เทียบไฟต์ก่อน/หลังได้ตรงๆ
       t2first: (firstPressAt && spawnSeenAt) ? Math.round(firstPressAt - spawnSeenAt) : null,
       gearPre: gearPrepEarly ? 1 : 0,   // 1 = จัดเบ็ด/ทุ่นเสร็จก่อนบอสโผล่ (ทางที่ v6.345 ตั้งใจให้เป็น)
+      // 🎯 v6.355: เหยื่อจุดอ่อนมาจากไหน — 1 บอทติดล่วงหน้า · 2 ติดมาก่อนแล้ว · 3 สลับตอนไฟต์ · 0 ไม่ได้จัด
+      baitPre: baitPreState,
       waitSec: spawnWaitMs != null ? Math.round(spawnWaitMs / 1000) : null,   // 📊 v6.346: รอในถ้ำกี่วิกว่าบอสจะโผล่
       // 👊 v6.252: จดโหมดตี + จุดอ่อนที่เกมประกาศ + เหยื่อที่ใช้จริง → ไฟต์หน้าเทียบได้ว่าโหมดไหน/เหยื่อไหนคุ้ม
       // v6.264: ใช้ค่าที่ "จับภาพตอนกำลังสู้" — อ่านตอนนี้ไม่ได้แล้ว (HUD หาย + สลับเหยื่อคืนไปแล้ว)
