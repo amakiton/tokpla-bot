@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.339
+// @version      6.340
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.339';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.340';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4405,43 +4405,25 @@
       logWarn('🍲 กินต้มปลาร้อนไม่สำเร็จ — ไม่มีในกระเป๋า หรือกดไม่ติด (เข้าถ้ำด้วยเลือดปกติ)');
     }
   }
-  // 📡 v6.330: ลาดตระเวนช่องแมพ (log-only) — ก้าวแรกของระบบ "ย้ายไปช่องคนน้อยก่อนล่าบอส"
-  //   เหตุผลจากคอนฟิกจริง (v559): แต้มอีเวนต์ = 6 + 40×share เพดาน 25 → ต้อง share ~47% ถึงได้เต็ม
-  //   + HP บอสสเกลตามผู้เล่น (raidPlayersPerHpBar=8 สูงสุด 4 หลอด) + วง AoE เพิ่มตามคน (3/คน เพดาน 6)
-  //   → ช่องคนน้อย = share พุ่ง + บอส HP น้อยลง + หลบง่ายขึ้น = คะแนนอันดับดีขึ้นทุกทาง
-  //   ⚠️ ยังไม่เคยเห็น DOM ของ dialog เลือกช่องจริง (ลองกดสดตอนเกม 502 ไม่สำเร็จ) → ห้ามเขียน selector จากจินตนาการ
-  //   รอบนี้: เปิด dialog → เก็บข้อความ/ปุ่มมาลง log → ปิด · เห็นของจริงแล้วค่อยต่อยอดเป็นการสลับอัตโนมัติ
-  async function bossChannelRecon() {
+  // ⛔ v6.340 — **ถอด `bossChannelRecon` (v6.330/6.332) ออกทั้งระบบ**
+  //   ผู้ใช้ส่งภาพหน้าจอ: แผง "เลือกช่องแมพ" เปิดค้างบนจอบ่อยมาก — ต้นเหตุคือ recon ตัวนี้เอง
+  //     (เปิดแผงทุกครั้งก่อนออกล่าบอส = ~12 ครั้ง/วัน) และ **`gameEscape()` ปิดแผงนี้ไม่ได้** (ไม่ตอบ ESC — ต้องกดปุ่ม ✕)
+  //   ซ้ำร้าย มันไร้ประโยชน์ไปแล้ว: ผู้ใช้ยืนยันว่า **คะแนน/raid รวมทุกช่องแมพ** ช่องเป็นแค่ instance การมองเห็น
+  //   → แผน "ย้ายไปช่องคนน้อย" เป็นทางตัน ไม่มีอะไรต้องเก็บข้อมูลอีก · ลบทิ้งดีกว่าไล่แก้การปิดแผง
+  //   🧹 แทนที่ด้วยตัวปิดแผงที่ "หลุดมา" (ผู้ใช้เปิดค้าง/เกมเด้ง) — ปิดด้วยปุ่ม ✕ จริง ไม่พึ่ง ESC
+  function closeChannelPanelIfOpen() {
     try {
-      const btn = qBtn('เลือกช่องแมพ');
-      if (!btn) { logInfo('📡 ไม่เจอปุ่ม "เลือกช่องแมพ" (aria) — ข้ามลาดตระเวนช่อง'); return; }
-      const beforeLen = (document.body.innerText || '').length;
-      fireClick(btn); await sleep(1200);
-      const txt = document.body.innerText || '';
-      const lines = (txt.match(/(?:Channel|ช่อง)[^\n]{0,70}/g) || []).slice(0, 14);
-      const newBtns = [...document.querySelectorAll('button,[role="button"],[role="option"]')]
-        .filter((b) => !isBotUI(b) && b.offsetParent && /Channel|ช่อง|คน/.test(b.textContent || ''))
-        .map((b) => (b.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40));
-      // 🎨 v6.332: recon รอบแรก (31/7) เห็นแล้วว่า dialog เขียน "สีบอกความแน่น" — ความแน่นเป็น **สี** ไม่ใช่ตัวเลข
-      //   → เก็บสี (color/background) + class ของแถว "ช่อง N" แต่ละแถวมาด้วย ไม่งั้นสร้างระบบเลือกช่องว่างไม่ได้
-      const chRows = [...document.querySelectorAll('button,[role="button"],div,li,span')]
-        .filter((el) => !isBotUI(el) && el.offsetParent && el.children.length <= 3
-          && /^(Channel|ช่อง)\s*\d+/.test((el.textContent || '').trim()) && (el.textContent || '').trim().length < 25);
-      const colorInfo = chRows.slice(0, 8).map((el) => {
-        let c = '?';
-        try { const cs = getComputedStyle(el); c = `${cs.color}/bg:${cs.backgroundColor}`; } catch {}
-        // จุดสี (ความแน่น) มักเป็น element ลูกเล็กๆ — เก็บ background ของลูกที่มีสีด้วย
-        let dot = '';
-        try {
-          const kid = [...el.querySelectorAll('*')].find((k) => { const b = getComputedStyle(k).backgroundColor; return b && b !== 'rgba(0, 0, 0, 0)'; });
-          if (kid) dot = ' ·จุด:' + getComputedStyle(kid).backgroundColor;
-        } catch {}
-        return `${(el.textContent || '').trim().slice(0, 12)}[${c}${dot}] cls:${String(el.className || '').slice(0, 25)}`;
-      });
-      logInfo(`📡 ช่องแมพ (ลาดตระเวน): ข้อความ=[${lines.join(' · ') || '-'}] · ปุ่ม=[${[...new Set(newBtns)].slice(0, 10).join(' | ') || '-'}] · Δtext=${txt.length - beforeLen}`);
-      if (colorInfo.length) logInfo(`🎨 สีช่อง: ${colorInfo.join(' ‖ ')}`);
-      gameEscape(); await sleep(300);
-    } catch (e) { logErr('ลาดตระเวนช่องแมพล้มเหลว', e); }
+      // ยืนยันว่าแผงเปิดจริงด้วยข้อความเฉพาะของมัน (กันไปกดปุ่ม ✕ ของหน้าต่างอื่น)
+      const open = [...document.querySelectorAll('div,section')].some((e) => !isBotUI(e) && e.offsetParent
+        && e.children.length <= 6 && /เลือกช่องแมพ|ย้ายช่องเพื่อไปเจอเพื่อน/.test(e.textContent || ''));
+      if (!open) return false;
+      const x = [...document.querySelectorAll('button')].find((b) => !isBotUI(b) && b.offsetParent
+        && /^(✕|×|✖|✗)$/.test((b.textContent || '').trim()));
+      if (!x) return false;
+      fireClick(x);
+      logInfo('🧹 เจอแผง "เลือกช่องแมพ" เปิดค้าง — ปิดให้แล้ว (แผงนี้ไม่ตอบ ESC ต้องกดปุ่ม ✕)');
+      return true;
+    } catch { return false; }
   }
   async function ensureBossBaitStock() {
     if (isBossMap(bossMapId())) return;
@@ -4574,7 +4556,7 @@
         bossEvent(`🚶 ออกเดินทางไปถ้ำ (บอสอีก ${bossTimerMin() ?? '?'} นาที · ตั้ง lead ${cfg.bossLeadMin} · จาก ${bossHome})`);
         if (isOn('tgOn')) void tgSend(`👹 <b>ออกล่าบอส</b> — จากแมพ ${bossHome} → ถ้ำบ่อโบราณ (จะกลับมาฟาร์มต่อ)`);
         recordBossGraph();
-        await bossChannelRecon();      // 📡 v6.330: เก็บหน้าตา dialog ช่องแมพ (log-only — ฐานข้อมูลก่อนทำระบบย้ายช่อง)
+        // ⛔ v6.340: ถอด bossChannelRecon ออกแล้ว (เปิดแผงช่องแมพค้างบนจอ + ช่องไม่มีผลกับคะแนน)
         await ensureBossBaitStock();   // 👹 v6.134: ซื้อเหยื่อจุดอ่อนก่อนเข้าถ้ำ (ในถ้ำซื้อไม่ได้)
         const reached = await bossTravelTo(bossActiveCave());   // v6.247: ถ้ำที่ active รอบนี้ (ไม่ใช่ boss_cave ตายตัว)
         if (!reached) { say('👹 ไปถ้ำบอสไม่สำเร็จ — กลับบ้าน'); bossEvent('❌ เดินไปถ้ำไม่สำเร็จ — กลับบ้าน'); }
@@ -6168,6 +6150,7 @@
     } catch (e) { logErr('กู้ติดแมพผ่านแผงตั้งค่าล้มเหลว', e); gameEscape(); return false; }
   }
   let uiBlockedSince = 0, lastPopupClear = 0, popupClearCount = 0;
+  let lastChanChk = NEVER;   // 🧹 v6.340: throttle การตรวจแผงช่องแมพค้าง (สแกน DOM — ไม่ต้องทุกเฟรม)
   // เรียกจากสาขา idle เท่านั้น (ไม่ busy/orchestrating) — คืน true ถ้าเพิ่งเคลียร์ (ผู้เรียกควร return รอเฟรมหน้า)
   function popupWatchdog() {
     // เหตุที่เกมบอกไว้แล้ว (กระเป๋าเต็ม/ไม่มีเหยื่อ/พลังหมด) = ระบบอื่นจัดการอยู่ ไม่ใช่ป๊อบอัพค้าง
@@ -6183,6 +6166,7 @@
     lastPopupClear = now(); uiBlockedSince = 0; popupClearCount++;
     // 🆘 v6.328: ก่อนปิดอะไรทิ้ง — ถ้า dialog ที่ค้างคือ "กู้ติดแมพ" ของเกม ให้กดปุ่มกู้ ไม่ใช่กด ✕ ทิ้ง
     if (tryMapRescue('ยามเฝ้าป๊อบอัพพบตอนตกปลาต่อไม่ได้')) return true;
+    if (closeChannelPanelIfOpen()) return true;   // 🧹 v6.340: แผงช่องแมพไม่ตอบ ESC — ต้องกด ✕ เอง
     clearBlockingUI();
     logInfo(`🛡️ เจอป๊อบอัพค้าง (ตกปลาต่อไม่ได้ ≥3 วิ) → เคลียร์อัตโนมัติ · รวมเคลียร์ ${popupClearCount} ครั้ง`);
     return true;
@@ -9715,6 +9699,9 @@ ${esc(reason)}
         if (isOn('grabChest') && !orchestrating && now() - lastChestRunAt < 60000 && chestCloseBtn()) { closeChestDialog(); return requestAnimationFrame(tick); }
         // 🎁 v6.216: เก็บหีบสมบัติที่โผล่ในแมพเป็นระยะ (opt-in) — ลำดับต่ำสุด (หลังบอส/เมือง) · self-throttle chestCheckMin นาที
         if (chestGrabDue()) { void runChestGrab(); return requestAnimationFrame(tick); }
+        // 🧹 v6.340: แผง "เลือกช่องแมพ" ค้างบนจอ — ปิดเองแม้ยังตกปลาได้ (ผู้ใช้เจอบ่อยจนรำคาญ)
+        //   ยามเฝ้าป๊อบอัพเดิมทำงานเฉพาะตอน "ตกปลาต่อไม่ได้" → แผงนี้ค้างได้ยาวโดยไม่มีใครปิด
+        if (now() - lastChanChk > 5000) { lastChanChk = now(); if (closeChannelPanelIfOpen()) return requestAnimationFrame(tick); }
 
         // 🏠 v6.333: อยู่ผิดแมพจาก "แมพบ้าน" ที่ตั้งไว้ → เดินข้ามแมพไปก่อน (ต้องมาก่อน walkToPond —
         //   ไม่งั้นบอทเดินเข้าบ่อของแมพผิดแล้วตกต่อที่นั่น = อาการที่ผู้ใช้เจอ "บันทึกจุดท่าเรือแต่ตกบ่อเดิม")
