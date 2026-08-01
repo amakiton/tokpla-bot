@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.343
+// @version      6.344
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.343';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.344';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -144,6 +144,7 @@
   let FISH_BY_NAME = new Map();          // ชื่อปลา → {rarity, price, minKg, maxKg}
   let MAP_POOLS = {};                    // mapId → [ชื่อปลาที่ออกในแมพนั้น]
   let SERVER_BOSS_TIMES = null;          // ['10:30','13:30',…] จาก raidSpawnMinutes
+  let SERVER_RAID_WINDOW_MIN = 60;       // 🪟 v6.344: รอบบอสเปิดยาวกี่นาที (raidWindowMinutes) — ป้าย "ถึงรอบบอสแล้ว" ขึ้นทั้งช่วงนี้
   let GAME_FLAGS = {};
   // 🎣 v6.326: ข้อเสนอแลกปลาลุงหยัด จาก /api/config exchanges — [{species, qty, reward, coffee}]
   //   ใช้ (ก) seed "กันขายปลาที่ลุงต้องการ" ตั้งแต่บูต (ข) รู้ว่าดีลไหนให้กาแฟ (แก้ปัญหาพลังงาน)
@@ -182,6 +183,16 @@
         const times = [...new Set(c.raidSpawnMinutes.filter((x) => Number.isFinite(x)))].sort((a, b) => a - b).map(mmToHHMM);
         if (times.join(',') !== (SERVER_BOSS_TIMES || []).join(',')) changed.push(`ตารางบอส → ${times.join(',')}`);
         SERVER_BOSS_TIMES = times;
+      }
+      // 🪟 v6.344: **ความยาว "รอบบอส" ของจริง** = raidWindowMinutes (ค่าจริง 1/8/69 = 60 นาที)
+      //   ทำไมสำคัญกับ "ทริปเสียเปล่า": ป้าย `hud.boss.openNow` ("ถึงรอบบอสแล้ว!") ของเกม **ไม่ใช่ป้ายค้าง/เกมเพี้ยน**
+      //   อย่างที่บอทเข้าใจมาตลอด (v6.173/6.200/6.215/6.328 เขียนคอมเมนต์ว่า "ป้ายค้าง") — มันคือ
+      //   "รอบเปิดอยู่" ซึ่งเกมตั้งใจโชว์ **ยาวเต็ม 60 นาที** ไม่ว่าบอสจะตายไปแล้วหรือยัง
+      //   ⇒ "ป้ายขึ้น" ไม่เคยแปลว่า "มีบอสให้ตี" · ตัวชี้ขาดจริงมีแค่ 2 อย่าง: ตัวบอสในฉาก (ในถ้ำเท่านั้น)
+      //     กับ **ตัวนับหน้าประตูถ้ำ** ("รอบต่อไปเปิดในอีก …") ที่จะโผล่ก็ต่อเมื่อรอบปิดแล้วเท่านั้น
+      if (Number.isFinite(c.raidWindowMinutes) && c.raidWindowMinutes > 0) {
+        if (c.raidWindowMinutes !== SERVER_RAID_WINDOW_MIN) changed.push(`ความยาวรอบบอส ${SERVER_RAID_WINDOW_MIN}→${c.raidWindowMinutes} นาที`);
+        SERVER_RAID_WINDOW_MIN = c.raidWindowMinutes;
       }
       if (c.flags && typeof c.flags === 'object') GAME_FLAGS = c.flags;
       // ⚔️ v6.316: ค่าตีบอสจากเซิร์ฟเวอร์ (เปลี่ยนได้ทุกแพตช์ — เคยเดาผิดมาแล้ว)
@@ -1319,6 +1330,16 @@
               : `รอบแรก ${esc(cfg.bossSchedFirst || '10:30')} ทุก ${clamp(cfg.bossIntervalMin || 180, 10, 720)} นาที`;
             const mins = Math.round((nx - Date.now()) / 60000);
             return `\n🕐 ตารางเวลา: ${src} → รอบถัดไป <b>${hhmmOf(nx)}</b> (อีก ${mins < 60 ? `${mins} นาที` : `${Math.floor(mins / 60)} ชม. ${mins % 60} นาที`})`;
+          })() +
+          // 🔒 v6.344: สถานะรอบปัจจุบัน (เปิด/ปิด) + บัญชีทริปเปล่าที่ตัดทิ้งได้วันนี้
+          (() => {
+            const sp = bossRoundSpawnMs();
+            const done = bossRoundDone();
+            const openLeft = sp ? Math.round((sp + SERVER_RAID_WINDOW_MIN * 60000 - Date.now()) / 60000) : null;
+            const w = bossWasteText();
+            return (sp ? `\n🪟 รอบปัจจุบัน: เกิด ${hhmmOf(sp)} · รอบเปิดยาว ${SERVER_RAID_WINDOW_MIN} นาที (${openLeft > 0 ? `เหลืออีก ${openLeft} นาที` : 'ปิดแล้ว'})` : '')
+              + (done ? `\n🔒 รอบนี้ปิดแล้ว: ${esc(done)} — จะไม่ออกล่าอีกจนถึงรอบถัดไป` : '')
+              + (w ? `\n${esc(w)}` : '');
           })());
         break;
       }
@@ -2574,6 +2595,8 @@
     const lines = [
       `📊 <b>สถิติล่าบอส</b> (${n} ครั้งล่าสุด · เก็บสูงสุด ${cfg.bossStatKeep})`,
       `🏆 ฆ่าสำเร็จ ${kills}/${n} (${Math.round(kills / n * 100)}%) · 💀 ตายรวม ${deaths}`,
+      // ✂️ v6.344: "เที่ยวเปล่า" = ไฟต์ที่ไม่ได้เจอบอสเลย (noshow) — ตัวเลขที่ต้องกดให้ต่ำ
+      `⌛ ไม่เจอบอสเลย ${arr.filter((r) => r.outcome === 'noshow').length}/${n} ครั้ง` + (bossWasteText() ? `\n${bossWasteText()}` : ''),
       `⚔️ ดาเมจเฉลี่ย ${fmt(aDmg)}${aPct != null ? ` (${aPct.toFixed(1)}%)` : ''} · 🎯 กดเกจเฉลี่ย ${fmt(aGauge)}`,
       `❤️ HP ต่ำสุดเฉลี่ย ${aHpMin != null ? Math.round(aHpMin) + '%' : '–'} · 🌀 หลบ AoE เฉลี่ย ${fmt(aAoe, 1)} · ⏱️ ${aDur != null ? Math.round(aDur / 1000) + ' วิ/ไฟต์' : '–'}`,
     ];
@@ -2867,11 +2890,79 @@
       return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}#${best}`;
     } catch { return ''; }
   }
+  // 🕐 v6.344: ขอบเวลาของ "รอบบอส" จากตารางเซิร์ฟเวอร์ — { prev, next } เป็น ms (0 = ไม่รู้)
+  //   prev = เวลาเกิดของรอบที่ผ่านมาแล้ว · next = รอบถัดไป
+  //   ใช้ตอบคำถามเดียวที่สำคัญที่สุดตอนยืนอยู่ในถ้ำ: เรามาถึง **ก่อน** หรือ **หลัง** บอสเกิด
+  //     มาก่อน (next ใกล้) = ยืนรอคุ้ม บอสกำลังจะมา
+  //     มาหลัง (prev ผ่านไปแล้ว + next ยังอีกไกล) แล้วไม่เจอบอส = รอบจบไปแล้ว ยืนต่อก็ได้แต่เสียเวลาฟาร์ม
+  //   ⚠️ อ่านจาก bossSchedList โดยตรง (ไม่ผ่าน bossSchedOn) — นี่คือ "ข้อเท็จจริงของนาฬิกา" ไม่ใช่ตัวเลือกผู้ใช้
+  function bossRoundBounds() {
+    try {
+      const list = bossSchedList();
+      if (!Array.isArray(list) || !list.length) return { prev: 0, next: 0 };
+      const d = new Date(), nowMin = d.getHours() * 60 + d.getMinutes();
+      const mid = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+      let prev = null, next = null;
+      for (const m of list) {
+        if (m <= nowMin && (prev == null || m > prev)) prev = m;
+        if (m > nowMin && (next == null || m < next)) next = m;
+      }
+      return {
+        prev: prev == null ? 0 : mid + prev * 60000,
+        next: next == null ? mid + 86400000 + list[0] * 60000 : mid + next * 60000,
+      };
+    } catch { return { prev: 0, next: 0 }; }
+  }
+  const bossRoundSpawnMs = () => bossRoundBounds().prev;
   function bossTripsThisRound() {
     try { const o = JSON.parse(W.localStorage.getItem(BOSS_TRIP_KEY) || '{}'); return o && o.k === bossRoundKey() ? (o.n || 0) : 0; } catch { return 0; }
   }
   function bumpBossTrip() {
     try { const n = bossTripsThisRound() + 1; W.localStorage.setItem(BOSS_TRIP_KEY, JSON.stringify({ k: bossRoundKey(), n })); return n; } catch { return 0; }
+  }
+  // 🔒 v6.344 — **ล็อก "รอบที่จบแล้ว" (ปิดต้นทางของทริปเสียเปล่า)**
+  //   arm gate (v6.200) ตั้งใจทำหน้าที่นี้อยู่แล้ว แต่มีรูรั่วที่พิสูจน์แล้วใน v6.337:
+  //   `bossHuntDue` re-arm อัตโนมัติเมื่อ "ตัวนับ > lead" ซึ่งตัวทำนายพูดได้เอง → ป้ายรอบเปิดปลุกซ้ำได้อีก
+  //   ล็อกที่ผูกกับ **คีย์รอบ** ไม่มีรูนั้น: จบรอบไหน = รอบนั้นจบจริง จนกว่านาฬิกาจะเดินไปรอบถัดไป
+  //   ⚠️ ล็อกเฉพาะเมื่อ "รู้แน่" เท่านั้น — ฆ่าได้ / เห็นบอสตายกลางถ้ำ / เกมบอกเองว่ารอบปิดแล้ว (ตัวนับหน้าประตู)
+  //     ไม่ล็อกเคส "มารอแล้วบอสยังไม่โผล่" (อาจมาเร็วไป/บอสมาช้า) — เคสนั้นให้เพดานทริป (v6.337) คุมตามเดิม
+  const BOSS_ROUND_DONE_KEY = 'tokpla_boss_round_done';
+  function bossRoundDone() {
+    try {
+      const k = bossRoundKey(); if (!k) return '';
+      const o = JSON.parse(W.localStorage.getItem(BOSS_ROUND_DONE_KEY) || '{}');
+      return (o && o.k === k) ? (o.why || 'จบแล้ว') : '';
+    } catch { return ''; }
+  }
+  function markBossRoundDone(why) {
+    try {
+      const k = bossRoundKey(); if (!k) return;
+      if (bossRoundDone()) return;                       // ล็อกไว้แล้ว — เก็บเหตุผลแรกไว้ (ตัวที่ตัดสินจริง)
+      W.localStorage.setItem(BOSS_ROUND_DONE_KEY, JSON.stringify({ k, why, at: Date.now() }));
+      bossEvent(`🔒 ปิดรอบนี้ (${why}) — จะไม่ออกล่าอีกจนถึงรอบถัดไปตามตาราง`);
+    } catch {}
+  }
+  // 📊 v6.344: บัญชี "เวลาที่ประหยัดได้จากการเลิกทริปเปล่าแต่เนิ่นๆ" ต่อวัน — ใช้ตอบว่าแก้แล้วได้ผลจริงไหม
+  //   (เดิมทริปที่ไม่ถึงขั้นสู้ ไม่ถูกบันทึกที่ไหนเลย = วัดผลไม่ได้)
+  const BOSS_WASTE_KEY = 'tokpla_boss_waste';
+  const bossDayKey = () => { const d = new Date(); return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`; };
+  function bossWasteAdd(kind, savedMs) {
+    try {
+      const d = bossDayKey();
+      let o = JSON.parse(W.localStorage.getItem(BOSS_WASTE_KEY) || '{}');
+      if (!o || o.d !== d) o = { d, cut: 0, savedMs: 0, kinds: {} };
+      o.cut++; o.savedMs += Math.max(0, savedMs || 0);
+      o.kinds[kind] = (o.kinds[kind] || 0) + 1;
+      W.localStorage.setItem(BOSS_WASTE_KEY, JSON.stringify(o));
+    } catch {}
+  }
+  function bossWasteText() {
+    try {
+      const o = JSON.parse(W.localStorage.getItem(BOSS_WASTE_KEY) || '{}');
+      if (!o || o.d !== bossDayKey() || !o.cut) return '';
+      const kinds = Object.entries(o.kinds || {}).map(([k, v]) => `${k}×${v}`).join(' · ');
+      return `✂️ วันนี้ตัดทริปเปล่าทิ้งแต่เนิ่นๆ ${o.cut} ครั้ง (ประหยัดเวลาฟาร์ม ~${Math.round(o.savedMs / 60000)} นาที)${kinds ? ` · ${kinds}` : ''}`;
+    } catch { return ''; }
   }
   let bossPredictSayAt = 0;
   let bossChipDistrustAt = 0;
@@ -3123,7 +3214,13 @@
       if (cur === targetMap && p && Math.abs(p.x - t.x) < 70 && Math.abs(p.y - t.y) < 70) { aw.cancel && aw.cancel(); return true; }
       // 🚪 v6.245: รอบ 13:30 เข้าได้ทาง A* → bossWaitGate (เส้นทางสำรอง) ไม่เคยรัน = /bossgate ว่างเปล่า
       //   ต้องเก็บข้อมูลหน้าประตูจากเส้นทางนี้ด้วย (ตอนเป้าคือถ้ำบอสและยังไปไม่ถึง)
-      if (isBossMap(targetMap) && !isBossMap(cur) && now() - lastGateProbe > 8000) { lastGateProbe = now(); bossGateProbe(now() - t0); }
+      if (isBossMap(targetMap) && !isBossMap(cur) && now() - lastGateProbe > 8000) {
+        lastGateProbe = now(); bossGateProbe(now() - t0);
+        // ✂️ v6.344: A* เข้าถ้ำไม่ได้เพราะ "ประตูปิด" (รอบจบแล้ว) → เลิกตั้งแต่ตรงนี้
+        //   เดิมยิง navigate ต่อจนหมดงบ 90 วิ แล้วค่อยสลับไปเดินเอง → ไปยืนหน้าประตูอีก 12 นาที
+        const far = bossGateTooFar(bossGateWaitBudgetMs());
+        if (far) { bossNavFail = `รอบบอสปิดแล้ว (ประตูเปิดอีก ${Math.round(far / 60)} นาที)`; aw.cancel && aw.cancel(); return false; }
+      }
       // นับว่า "นิ่ง" (ไม่ขยับ) กี่รอบ — ถ้านิ่งนานทั้งที่ยังไม่ถึง = สั่ง navigate ใหม่ (เผื่อ NPC/หลุด)
       if (lastP && p && Math.abs(p.x - lastP.x) < 3 && Math.abs(p.y - lastP.y) < 3) stillFor++; else stillFor = 0;
       lastP = p;
@@ -3186,6 +3283,9 @@
     if (gameWalker()) {
       say(`👹 เดินทาง (A* เกม): → ${targetMap}`);
       if (await bossGameNavTo(targetMap)) return true;
+      // ✂️ v6.344: A* เลิกเพราะ "รอบบอสปิดแล้ว" ไม่ใช่เพราะเดินไม่เป็น → เดินเองก็เข้าไม่ได้เหมือนกัน อย่าเสียเวลาต่อ
+      //   จำกัดเฉพาะ "ขาไปถ้ำ" — ขากลับบ้านต้องได้ลองเดินเองเสมอ (ไม่งั้นบอทค้างอยู่หน้าถ้ำ)
+      if (isBossMap(targetMap) && bossGateFarRecent()) { say(`🚪 ${bossNavFail} — ไม่เดินต่อ กลับไปฟาร์ม`); return false; }
       say('👹 A* เกมไปไม่ถึง — สลับไปเดินเอง');
     }
     let mapChangeFails = 0, mapChangeFailAt = '';   // 🆘 v6.328: นับ "เปลี่ยนแมพไม่สำเร็จ" ติดกันในแมพเดิม → เข้าเกณฑ์ตัวติด
@@ -3260,6 +3360,13 @@
       // 🚪 v6.242: ประตูถ้ำบอสล็อกจนถึงเวลา (mechanic ใหม่ที่ผู้ใช้แจ้ง) — บอสอยู่แค่ 1-3 นาที
       //   → ยืนปากประตูแล้ว "พุ่งเข้าถี่ๆ" รอประตูเปิด แทนรอ 6 วิ/รอบ (ของเดิมเข้าช้าไป ~1 นาที = พลาดบอส)
       if (gateToCave) {
+        // ✂️ v6.344: ประตูบอกว่ารอบหน้าอีกไกล → เลิกทั้งการเดินทาง (ไม่งั้นลูป hop จะวนกลับมายืนหน้าประตูใหม่)
+        if (bossGateTooFar(bossGateWaitBudgetMs())) {
+          bossNavFail = `รอบบอสปิดแล้ว (ประตูเปิดอีก ${Math.round(bossGateFarSec / 60)} นาที)`;
+          say(`🚪 ${bossNavFail} — เลิกทริปนี้ กลับไปฟาร์ม`);
+          bossReleaseAll();
+          return false;
+        }
         if (await bossWaitGate(cur, exit.targetMap, exit)) {   // v6.263: ส่งพิกัดปากประตูไปด้วย (ใช้เดินชนตอน A* พาไม่ได้)
           // 🎯 v6.247 (ตาข่ายกันตกตัวจริง): ทะลุประตูถ้ำบอสเข้ามาแล้ว → **แมพที่ยืนอยู่ตอนนี้คือถ้ำบอส**
           //   เรียนรู้ตรงนี้ ไม่ใช่รอ raidBoss โผล่ (v6.246) — เพราะบอทมาถึงก่อนบอสเกิดตาม bossLeadMin
@@ -3267,6 +3374,7 @@
           learnIfLanded();
           await sleep(1000); continue;
         }
+        if (bossGateFarRecent()) return false;   // ✂️ v6.344: bossWaitGate เลิกเพราะรอบปิด — อย่าวน hop กลับมายืนใหม่
       } else { await waitFor(() => bossMapId() !== cur, 6000, 300); }   // ประตูปกติ — ไม่ใช่ทางเข้าถ้ำบอส ไม่ต้องเรียนรู้อะไร
       if (bossMapId() === cur) {
         // 🆘 v6.328: เปลี่ยนแมพไม่ได้บ่อยครั้ง = ตัวติด (หลักฐานสด 31/7: ติดที่ river_bank จนเกมเด้งปุ่มกู้เอง)
@@ -3325,8 +3433,12 @@
         const t = e.textContent || '';
         if (!locked && GATE_LOCK_RE.test(t)) locked = true;
         if (sec == null) {
-          const m = /รอบต่อไปเปิดในอีก\s*(?:(\d+)\s*นาที)?\s*(?:(\d+)\s*วิ)?/.exec(t);
-          if (m && (m[1] || m[2])) sec = (+(m[1] || 0)) * 60 + (+(m[2] || 0));
+          // 🕐 v6.344: เกมมี **2 รูปแบบ** (i18n จริง `raid.gate.hm` / `raid.gate.ms`) —
+          //   เหลือ ≥ 1 ชม. → "2 ชม 55 นาที" · เหลือ < 1 ชม. → "4 นาที 32 วิ"
+          //   เดิมรองรับแค่แบบที่ 2 → รอบที่ปิดไปแล้ว (เหลือหลายชั่วโมง) จะอ่านได้ "55 นาที" (ตกชั่วโมงทิ้ง)
+          //   = ตัวเลขผิดไป 2 ชม. ซึ่งจะไปวางยาฐานเวลาบอส (setBossNext) ถ้าเอาไปใช้ต่อ
+          const m = /รอบต่อไปเปิดในอีก\s*(?:(\d+)\s*ชม\.?)?\s*(?:(\d+)\s*นาที)?\s*(?:(\d+)\s*วิ)?/.exec(t);
+          if (m && (m[1] || m[2] || m[3])) sec = (+(m[1] || 0)) * 3600 + (+(m[2] || 0)) * 60 + (+(m[3] || 0));
         }
         if (locked && sec != null) break;
       }
@@ -3334,6 +3446,30 @@
     gateStCache = { known: locked || sec != null, locked: locked || (sec != null && sec > 0), sec };
     return gateStCache;
   }
+  // 🚪 v6.344 — **ตัวนับหน้าประตู = คำตอบชี้ขาดว่า "รอบนี้จบแล้ว"** (ตัวเดียวที่เชื่อได้ 100% นอกถ้ำ)
+  //   ตัวนับนี้โผล่ก็ต่อเมื่อประตูปิด = รอบปิด → บอกทั้ง "ไม่มีบอสให้ตี" และ "รอบหน้าเปิดเมื่อไรเป๊ะๆ"
+  //   ของเดิมอ่านค่านี้ได้แล้ว (v6.334) แต่เอาไปใช้แค่ "รออีกกี่วิ" — **ไม่เคยถามว่ารอไหวไหม**
+  //   ผลจริง: ออกเดินทางตอนรอบปิดแล้ว → ยืนหน้าประตูจนครบเพดาน 12 นาที ทั้งที่บนจอเขียนว่า "อีก 2 ชม 55 นาที"
+  //   (+ A* ก่อนหน้าอีก 90 วิ + ลองซ้ำได้อีก 2 รอบ = เสียเวลาฟาร์มได้ถึง ~40 นาที/รอบ)
+  //   คืน วินาทีที่เหลือ ถ้า "ไกลเกินงบที่รอไหว" · 0 = รอไหว/ไม่มีตัวนับ
+  let bossGateFarSec = 0, bossGateFarAt = NEVER, bossGateSyncAt = NEVER;
+  // งบ "เต็มใจยืนรอหน้าประตูนานสุดเท่าไร" = ไปก่อน + รอสูงสุด + 2 นาที (เพดาน 12 นาที) — สูตรเดียวกับ bossWaitGate
+  //   ⚠️ ต้องใช้ **งบเต็ม** ทุกจุดตัดสิน ห้ามใช้ "เวลาที่เหลือของการเรียกครั้งนี้"
+  //   ไม่งั้นเคสปกติจะพัง: ออกก่อนเวลา 5 นาที → ประตูบอกว่า "อีก 300 วิ" → ถ้าเทียบกับงบ A* (90 วิ) จะแปลว่า
+  //   "ไกลเกินรอ" แล้วเลิกทริปทั้งที่บอสกำลังจะเกิดในอีก 5 นาที = ตรงข้ามกับเจตนาของ bossLeadMin
+  const bossGateWaitBudgetMs = () => clamp((clamp(cfg.bossLeadMin, 1, 60) + clamp(cfg.bossMaxWaitMin, 1, 30) + 2), 5, 12) * 60000;
+  function bossGateTooFar(budgetMs) {
+    const gs = bossGateState();
+    if (gs.sec == null || gs.sec <= 0) return 0;
+    // ประตูปิด + เกมประกาศเวลาเปิดรอบหน้า = ฐานเวลาบอสที่แม่นที่สุดที่หาได้ → sync ทันที
+    //   นี่คือยาแก้ "ป้ายรอบเปิดค้างแล้วปลุกบอทออกล่าซ้ำ" ที่ต้นเหตุ: rawGap จะกลายเป็นค่าจริง (บวก) ทันที
+    if (gs.sec >= 60 && now() - bossGateSyncAt > 10000) { bossGateSyncAt = now(); setBossNext(Date.now() + gs.sec * 1000); }
+    if (gs.sec * 1000 <= budgetMs) return 0;
+    bossGateFarSec = gs.sec; bossGateFarAt = now();
+    return gs.sec;
+  }
+  // เพิ่งอ่านได้ว่า "ประตูไกลเกินรอ" ภายใน 60 วิที่ผ่านมาไหม (ใช้ข้ามเส้นทางสำรองที่จะไปยืนรอซ้ำ)
+  const bossGateFarRecent = () => bossGateFarSec > 0 && now() - bossGateFarAt < 60000;
   // 🧍 v6.334: ท่า "ยืนรอแบบคน" — นิ่งเป็นหลัก นานๆ ครั้งขยับเล็กน้อยแบบคนยืนรอ (ไม่ใช่ดันประตู)
   //   คนจริงที่รอประตูเปิด = ยืนเฉยๆ ไม่ได้ชนกำแพงทุก 3 วินาที · ขยับสุ่มห่างๆ ดูเป็นธรรมชาติกว่านิ่งสนิทเป๊ะ
   let gateIdleNextAt = 0;
@@ -3358,9 +3494,23 @@
     let lastWaitSay = NEVER, sawLock = false;   // v6.334: throttle log ยืนรอ · เคยเห็นป้าย "ยังไม่เปิด" หรือยัง
     gateIdleNextAt = 0;                          // เริ่มจังหวะขยับใหม่ทุกครั้งที่มารอ (ไม่ค้างจากรอบก่อน)
     // เพดานรอ: lead + maxWait + เผื่อ 2 นาที (แต่ไม่เกิน 12 นาที) — ครอบเวลาบอสจริงได้ ไม่ยืนเปล่าทั้งวัน
-    const maxMs = clamp((clamp(cfg.bossLeadMin, 1, 60) + clamp(cfg.bossMaxWaitMin, 1, 30) + 2), 5, 12) * 60000;
+    const maxMs = bossGateWaitBudgetMs();   // v6.344: ย้ายสูตรไปไว้ที่เดียว (จุดตัดสิน "รอไหวไหม" ต้องใช้งบเดียวกันหมด)
     while (enabled && (isOn('bossHunt') || mythicActive()) && now() - t0 < maxMs) {
       if (bossMapId() !== cur) return true;                     // ประตูเปิด + เข้าได้แล้ว 🎉
+      // ✂️ v6.344: เกมบอกเองว่ารอบหน้าเปิดอีกกี่วิ — ไกลเกินงบที่ยอมรอ = ยืนต่อไปก็ไม่มีวันได้เข้า เลิกเลย
+      {
+        const far = bossGateTooFar(maxMs);
+        if (far) {
+          const mm = Math.round(far / 60);
+          say(`🚪 รอบบอสปิดไปแล้ว — เกมบอกว่ารอบหน้าเปิดอีก ${mm} นาที · ไม่ยืนรอ กลับไปฟาร์มต่อ`);
+          bossEvent(`✂️ เลิกทริปที่หน้าประตู (เกมบอก "รอบต่อไปเปิดในอีก ${mm} นาที") — กันยืนเก้อ ${Math.round(maxMs / 60000)} นาที`);
+          bossWasteAdd('ประตูปิด', maxMs - (now() - t0));
+          markBossRoundDone(`เกมบอกว่ารอบหน้าเปิดอีก ${mm} นาที`);
+          bossNavFail = `รอบบอสปิดแล้ว (ประตูเปิดอีก ${mm} นาที)`;
+          bossReleaseAll();
+          return false;
+        }
+      }
       if (!said) {
         said = true;
         const _g0 = bossGateState();
@@ -3500,10 +3650,21 @@
     //   (ยังรักษาเคส v6.148 ไว้: lead 20 / maxWait 10 / บอสอีก 20 นาที → 20 ≤ 20+10 = อยู่รอต่อตามเดิม)
     const leadNow = clamp(cfg.bossLeadMin, 1, 60);
     if (tmin != null && tmin > leadNow + 10 && !((raidBossState() || {}).present)) {
-      const msg = `บอสยังอีก ~${tmin} นาที (ตั้งล่วงหน้าไว้ ${leadNow}) — มาผิดรอบ ไม่ยืนรอ กลับไปฟาร์มต่อ`;
-      say(`👹 ${msg}`); bossEvent(`↩️ ${msg}`);
-      bossWrongRound = true;   // v6.203: ไม่ได้สู้เลย → ข้าม linger/เก็บเมล์ (ไม่มีอะไรให้รอ/ให้เก็บ)
-      return false;
+      // 🐛 v6.344: **ห้ามตัดสินใจกลับบ้านในวินาทีแรกที่เพิ่งเข้าถ้ำ** — `raidBoss` ยังไม่อยู่ในฉากทันทีที่แมพเปลี่ยน
+      //   (คอนฟิกเซิร์ฟเวอร์มี `raidMapSettleMs` 5000 + `raidNoBossConfirm` 2 = เกมเองก็รอให้ฉากนิ่งก่อนสรุปว่า "ไม่มีบอส")
+      //   จังหวะที่เจ็บ: เข้าถ้ำหลังเวลาเกิดบอสไปแล้ว → ตารางกลิ้งไปรอบถัดไป (tmin ≈ 175 จากตัวทำนาย)
+      //   → present ยังเป็น false เพราะฉากยังไม่นิ่ง → เดินกลับบ้านทั้งที่บอสยืนอยู่ตรงหน้า = ทริปเสียเปล่าเต็มๆ
+      //   แก้: ให้โอกาสฉากนิ่งก่อน 7 วิ (ยาวกว่า settle ของเกม) แล้วค่อยตัดสิน
+      let settled = false;
+      for (let i = 0; i < 14 && !settled; i++) { if ((raidBossState() || {}).present) settled = true; else await sleep(500); }
+      if (settled) { logInfo('👹 ตัวนับบอกว่ามาผิดรอบ แต่บอสอยู่ในฉากจริง — สู้ต่อ (ไม่กลับบ้าน)'); bossEvent('✅ ฉากนิ่งแล้วเจอบอสจริง — ยกเลิกการตัดสินว่า "มาผิดรอบ"'); }
+      else {
+        const msg = `บอสยังอีก ~${tmin} นาที (ตั้งล่วงหน้าไว้ ${leadNow}) — มาผิดรอบ ไม่ยืนรอ กลับไปฟาร์มต่อ`;
+        say(`👹 ${msg}`); bossEvent(`↩️ ${msg}`);
+        bossWasteAdd('มาผิดรอบ', clamp(cfg.bossMaxWaitMin, 1, 30) * 60000);
+        bossWrongRound = true;   // v6.203: ไม่ได้สู้เลย → ข้าม linger/เก็บเมล์ (ไม่มีอะไรให้รอ/ให้เก็บ)
+        return false;
+      }
     }
     const effMin = Math.min(45, Math.max(maxMin, (tmin != null && tmin >= 0 ? tmin : 0) + 3));
     const until = now() + effMin * 60000;
@@ -3513,10 +3674,32 @@
     //   รอบอสโผล่ก่อน (มี wrong-round guard ข้างบนแล้ว) · เห็นตาย = ออกทันที · หมดเวลา = ไม่ใช้ยา กลับไปฟาร์ม
     {
       let seen = !!(raidBossState() || {}).present;
+      const waitT0 = now();
+      // ⏱️ v6.344 — **เลิกยืนรอเต็มเวลาเมื่อ "รู้แล้วว่ารอบนี้จบ"**
+      //   ต้นทุนจริงของการยืนรอ: ในถ้ำตกปลาไม่ได้ → รอเต็ม bossMaxWaitMin (ดีฟอลต์ 8 นาที) = เสียเวลาฟาร์มเต็มๆ
+      //   เกณฑ์ "มาสาย" (ต้องครบทุกข้อ — ไม่งั้นจะทิ้งบอสที่ยังไม่เกิด):
+      //     ① เลยเวลาเกิดของรอบนี้มาแล้ว ≥ 1 นาที (ถ้าบอสมีจริง ต้องอยู่ในฉากแล้ว)
+      //     ② ยังอยู่ในช่วงรอบเดียวกัน (< raidWindowMinutes) — ไม่ใช่ค้างมาจากรอบเมื่อ 3 ชม.ก่อน
+      //     ③ รอบถัดไปยังอีกไกล (> maxWait + 2 นาที) — กันเคสมารอรอบใหม่ที่กำลังจะเกิด (เช่น 19:58 รอ 20:00)
+      //   แล้วค่อยบวกเงื่อนไขเวลา: อยู่ในถ้ำครบ 90 วิ โดยไม่เห็น object บอสเลย (= 18 เท่าของ raidMapSettleMs 5 วิ)
+      //   หลักฐานรองรับ: ไฟต์ที่ "รอแล้วได้ตี" ทุกครั้งคือรอบที่มาก่อนเวลา — ซึ่งข้อ ①/③ กันไว้แล้ว
+      const _rb0 = bossRoundBounds();
+      const sinceSpawn = _rb0.prev ? Date.now() - _rb0.prev : -1;
+      const untilNext = _rb0.next ? _rb0.next - Date.now() : Infinity;
+      const lateArrival = sinceSpawn > 60000 && sinceSpawn < SERVER_RAID_WINDOW_MIN * 60000
+        && untilNext > (clamp(cfg.bossMaxWaitMin, 1, 30) + 2) * 60000;
       while (!seen && now() < until && enabled && (isOn('bossHunt') || mythicActive())) {
         const rb = raidBossState() || {};
-        if (rb.dead) { say('👹 บอสตายแล้ว — ไม่ใช้ยา/ไม่สลับของ (ประหยัด) กลับไปฟาร์ม'); bossEvent('💀 เจอบอสตายแล้วในถ้ำ — ข้ามการใช้ยา/สลับของ'); bossWrongRound = true; return false; }
+        if (rb.dead) { say('👹 บอสตายแล้ว — ไม่ใช้ยา/ไม่สลับของ (ประหยัด) กลับไปฟาร์ม'); bossEvent('💀 เจอบอสตายแล้วในถ้ำ — ข้ามการใช้ยา/สลับของ'); markBossRoundDone('เจอบอสตายแล้วในถ้ำ'); bossWrongRound = true; return false; }
         if (rb.present) { seen = true; break; }
+        if (lateArrival && now() - waitT0 > 90000) {
+          const left = Math.max(0, until - now());
+          say(`👹 เข้าถ้ำหลังเวลาเกิดบอสแล้ว 90 วิ ยังไม่มีบอสในฉาก — รอบนี้จบไปแล้ว กลับไปฟาร์ม (ไม่ยืนรออีก ${Math.round(left / 60000)} นาที)`);
+          bossEvent(`✂️ เลิกรอในถ้ำแต่เนิ่นๆ (มาสาย + ไม่มีบอสในฉาก 90 วิ) — ประหยัดเวลาฟาร์ม ~${Math.round(left / 60000)} นาที`);
+          bossWasteAdd('รอในถ้ำ', left);
+          markBossRoundDone('เข้าถ้ำแล้วไม่มีบอส (มาหลังเวลาเกิด)');
+          bossWrongRound = true; return false;
+        }
         await sleep(700);
       }
       if (!seen) { say('👹 รอในถ้ำจนหมดเวลา บอสไม่โผล่ — ไม่ใช้ยา กลับไปฟาร์ม (ประหยัดของ)'); bossEvent('⌛ บอสไม่โผล่ในถ้ำ — ข้ามการใช้ยา/สลับของ'); bossWrongRound = true; return false; }
@@ -4578,14 +4761,18 @@
           const huntT0 = now();
           for (let roundTry = 1; roundTry <= BOSS_REENTRY_MAX; roundTry++) {
             bossLastKilled = false;
-            await bossFight(cfg.bossMaxWaitMin);
+            const _killed = await bossFight(cfg.bossMaxWaitMin);
+            // 🔒 v6.344: ฆ่าได้แล้ว = รอบนี้จบสำหรับเรา — ล็อกรอบไว้เลย
+            //   หลักฐานจากสถิติจริง (v6.200): ทุกครั้งที่กลับเข้าไปซ้ำหลังฆ่า ได้ noshow เปล่าทั้งหมด
+            //   (ฆ่า 22:31 → เที่ยวเปล่า 22:43 + 23:07 · ฆ่า 19:31 → เที่ยวเปล่า 19:54) — ไม่เคยมีสักครั้งที่ได้ตัวที่สอง
+            if (_killed) markBossRoundDone('ฆ่าบอสรอบนี้ได้แล้ว');
             if (bossWrongRound || bossLastKilled) break;              // มาผิดรอบ / ฆ่าได้แล้ว = จบสวย
             if (!enabled || (!isOn('bossHunt') && !mythicActive())) break;   // ถูกสั่งหยุด = เคารพ
             if (roundTry >= BOSS_REENTRY_MAX) { say(`👹 กลับเข้าไปตีครบ ${BOSS_REENTRY_MAX} รอบแล้ว — พอแค่นี้`); break; }
             if (now() - huntT0 > BOSS_ROUND_BUDGET_MS) { say('👹 ใช้เวลากับรอบนี้นานพอแล้ว — กลับไปฟาร์ม'); break; }
             // 🔴 v6.316 (แก้เที่ยวเปล่า — ต้นเหตุ noshow ซ้ำ 23:20 หลัง timeout 22:35): บอสหายกลางถ้ำ = ถูกฆ่า/หมดเวลา
             //   กลับเข้าไป/สู้ต่อก็รอเก้อจนหมด bossMaxWaitMin แล้วได้ noshow เปล่า · เห็นบอสหายทั้งที่ยังอยู่ในถ้ำ = พอ
-            if (bossVanished) { say('👹 บอสถูกปราบ/หายไปแล้ว — ไม่กลับเข้าไปซ้ำ (กันเที่ยวเปล่า)'); bossEvent('🚪 บอสหาย/ถูกฆ่าในถ้ำ — เลิกรอบนี้ (กัน noshow เที่ยวเปล่า)'); break; }
+            if (bossVanished) { say('👹 บอสถูกปราบ/หายไปแล้ว — ไม่กลับเข้าไปซ้ำ (กันเที่ยวเปล่า)'); bossEvent('🚪 บอสหาย/ถูกฆ่าในถ้ำ — เลิกรอบนี้ (กัน noshow เที่ยวเปล่า)'); markBossRoundDone('บอสถูกปราบ/หายไปกลางถ้ำ'); break; }
             if (isBossMap(bossMapId())) continue;                     // ยังอยู่ในถ้ำ + บอสยังอยู่ = สู้ต่อได้เลย
             // อยู่นอกถ้ำ (ตาย/เด้งออก) + รอบยังเปิด → เดินกลับเข้าไปใหม่ แทนที่จะกลับบ้านตกปลา
             say(`👹 บอสยังไม่ตายและรอบยังเปิด — กลับเข้าถ้ำไปตีต่อ (รอบที่ ${roundTry + 1}/${BOSS_REENTRY_MAX})`);
@@ -4619,7 +4806,8 @@
       // 🐛 v6.251: ข้ามถ้า early-return ตั้งคูลดาวน์เองไปแล้ว (เช่นคุมตัวละครไม่ได้ → 60 วิ + คง armed)
       if (!stamped) {
         const tm = bossTimerMin();
-        const bossStillLive = (tm != null && tm <= 1) || !!(raidBossState() || {}).present;
+        // 🔒 v6.344: รอบปิดแล้ว (เกมบอกเองที่หน้าประตู/บอสถูกฆ่า) = ห้ามลองใหม่ใน 90 วิ — ไปกี่รอบก็เข้าไม่ได้
+        const bossStillLive = !bossRoundDone() && ((tm != null && tm <= 1) || !!(raidBossState() || {}).present);
         const retry = !resumeHome && !reachedCave && bossStillLive && bossTravelRetries < 2;
         if (retry) { bossTravelRetries++; bossEvent(`🔁 ไปไม่ถึงถ้ำแต่บอสยังอยู่ — ลองใหม่ใน 90 วิ (ครั้งที่ ${bossTravelRetries}/2)`); }
         else bossTravelRetries = 0;
@@ -4831,7 +5019,7 @@
   const strandedInBossCave = () => {
     if (!isBossMap(bossMapId()) || bossPhase !== 'idle' || orchestrating || busy) return false;
     if ((raidBossState() || {}).present) return false;   // มีบอส → ไม่หนี (tick เรียก bossFightHere ตีแทน)
-    if (isOn('bossHunt')) {                                // v6.143: รอบอสที่ใกล้จะมา ห้ามหนี
+    if (isOn('bossHunt') && !bossRoundDone()) {             // v6.143: รอบอสที่ใกล้จะมา ห้ามหนี (v6.344: รอบที่ปิดแล้ว = ไม่ต้องรอ ออกไปฟาร์มได้)
       if (now() - bossTimerCacheAt > 5000) { bossTimerCacheAt = now(); bossTimerCache = bossTimerMin(); }
       if (bossTimerCache != null && bossTimerCache <= clamp(cfg.bossMaxWaitMin, 1, 30) + clamp(cfg.bossLeadMin, 1, 60)) return false;
     }
@@ -4870,7 +5058,7 @@
     try {
       say('👹 เจอบอสในถ้ำ — เข้าตี (เกจ→กดแถบแดง + กระโดดหลบ)');
       if (isOn('tgOn')) void tgSend('👹 <b>เจอบอสในถ้ำ</b> — เข้าตีทันที (ไม่ต้องเดินทาง)');
-      await bossFight(cfg.bossMaxWaitMin);
+      if (await bossFight(cfg.bossMaxWaitMin)) markBossRoundDone('ฆ่าบอสรอบนี้ได้แล้ว (ตีในถ้ำ)');   // 🔒 v6.344
       await bossLinger();   // ⏳ v6.163: อยู่ในถ้ำต่อ 20-30 วิ (สุ่ม) ก่อนเดินกลับ
       await claimBossMail(true);   // 📬 v6.171: รับรางวัลก่อนเดินกลับ (เหตุผลเดียวกับใน runBossHunt)
       // 👹 v6.139: หลังตีจบ เดินกลับแมพบ้าน — ฟาร์มต่อ (เช่น sea_dock ที่สถิติปลาเทพดี) + "เรียนรู้เส้นทาง" ระหว่างเดินผ่าน village
@@ -5239,6 +5427,7 @@
   function bossSoloAutoNow() {
     if (!isOn('bossOnlyAuto') || !isOn('bossHunt')) return false;
     if (bossPhase !== 'idle') return true;                    // กำลังล่าอยู่ = คงโหมดไว้จนจบทริป
+    if (bossRoundDone()) return false;                        // 🔒 v6.344: รอบนี้จบแล้ว = ไม่มีอะไรให้เตรียม กลับไปตกปลา
     if (now() - bossTimerCacheAt > 5000) { bossTimerCacheAt = now(); bossTimerCache = bossTimerMin(); }
     const min = bossTimerCache;
     if (min == null) return false;                            // อ่านเวลาไม่ได้ = ไม่เดา ปล่อยฟาร์มตามปกติ
@@ -5254,11 +5443,16 @@
   function bossSoloMode() {
     if (!isOn('bossOnly')) return false;                      // ปุ่มม่วงปิด = ไม่หยุดตกปลา (bossHunt lifecycle v6.297 จัดการเอง)
     if (bossPhase !== 'idle') return true;                    // กำลังเดินทาง/ล่าอยู่ = หยุดตก จนจบทริป
-    if (now() - bossTimerCacheAt > 5000) { bossTimerCacheAt = now(); bossTimerCache = bossTimerMin(); }
+    // 🔒 v6.344: รอบนี้ปิดแล้ว แต่ป้าย "ถึงรอบบอสแล้ว" ยังขึ้นอยู่ (เกมโชว์ยาวเต็มรอบ 60 นาที)
+    //   ถ้าไม่ตัดตรงนี้ = บอท "หยุดตกปลารอบอส" ไปจนจบชั่วโมง ทั้งที่ไม่มีบอสให้ล่าแล้ว
+    //   (ทริปเสียเปล่าที่แพงที่สุดคือทริปที่ไม่ได้ออกเดินทางด้วยซ้ำ — แค่ยืนรอเฉยๆ)
+    //   ⚠️ ต้องไหลลงไปถึงบล็อกทาสีปุ่มด้วย — return ตรงนี้เลยจะทำให้ปุ่มม่วงค้างเป็น "หยุดฟาร์มแล้ว" ทั้งที่กลับไปตกปลาแล้ว
+    const roundOver = !!bossRoundDone();
+    if (!roundOver && now() - bossTimerCacheAt > 5000) { bossTimerCacheAt = now(); bossTimerCache = bossTimerMin(); }
     const min = bossTimerCache;
-    if (min == null) return false;                            // อ่านเวลาบอสไม่ได้ = ตกปลาไปก่อน (ไม่เดา)
+    if (!roundOver && min == null) return false;              // อ่านเวลาบอสไม่ได้ = ตกปลาไปก่อน (ไม่เดา)
     const soloLead = Math.max(clamp(cfg.bossOnlyLeadMin || 5, 1, 60), clamp(cfg.bossLeadMin, 1, 60));
-    const near = min <= soloLead;                             // ใกล้เวลาบอส (≤ lead) = หยุดตก เตรียมออกเดินทาง
+    const near = !roundOver && min != null && min <= soloLead;   // ใกล้เวลาบอส (≤ lead) = หยุดตก เตรียมออกเดินทาง
     if (near !== bossSoloAutoOn) {                            // สลับสถานะ → ทาสีปุ่ม/แถบใหม่ (ไม่ใช่ checkbox)
       bossSoloAutoOn = near;
       try { if (bossSoloPaint) bossSoloPaint(); } catch {}
@@ -5293,9 +5487,13 @@
     //   v6.199: คูลดาวน์ยาว/สั้นตามสาเหตุครั้งก่อน (ดู stampBossHunt) · อย่างน้อย 45 วิเสมอ
     const coolMs = Math.max(45000, bossHuntCoolMs);
     const coolLeft = coolMs - (now() - lastBossHuntAt);
+    // 🔒 v6.344: รอบนี้ปิดไปแล้วอย่างมีหลักฐาน (ฆ่าได้ / บอสหาย / เกมบอกว่ารอบหน้าอีกไกล) = ห้ามออกล่าซ้ำ
+    //   ต่างจาก arm gate ตรงที่ผูกกับ "คีย์รอบ" → ตัวทำนายพูดแล้ว re-arm ก็ปลุกไม่ได้ (รูรั่วที่ v6.337 เจอ)
+    const roundDone = bossRoundDone();
     const why = orchestrating ? 'กำลังทำงานอื่น (orchestrating)'
       : busy ? 'บอทติดงานอื่นอยู่ (busy — เปิดร้าน/กระเป๋า/สลับเหยื่อ)'
       : bossPhase !== 'idle' ? `ยังอยู่ในเฟส ${bossPhase}`
+      : roundDone ? `รอบนี้ปิดแล้ว (${roundDone}) — รอรอบถัดไปตามตาราง`
       : coolLeft > 0 ? `คูลดาวน์หลังล่าครั้งก่อน เหลืออีก ${Math.ceil(coolLeft / 1000)} วิ`
       : !bossArmed ? 'รอบนี้ล่าไปแล้ว — รอเห็นตัวนับรอบใหม่ก่อน (กันป้าย "ถึงรอบบอสแล้ว" ค้างปลุกเที่ยวเปล่า)'
       : testRunning ? 'กำลังทดสอบเหยื่อ'
@@ -5310,8 +5508,8 @@
       bossEvent(`⏳ ถึงเวลาล่าแล้ว (บอสอีก ${min} นาที ≤ ตั้งไว้ ${cfg.bossLeadMin}) แต่ยังไม่ไป — ${why}`);
     }
     // 🧪 v6.148: เทสต์เหยื่อรันอยู่ + บอสใกล้มา → หยุดเทสต์ไปล่าบอสก่อน (resumeTestAfterBoss ทำต่อให้เอง)
-    if (!orchestrating && !busy && bossPhase === 'idle' && coolLeft <= 0 && bossArmed && testRunning) {
-      if (due) stopTest(true);   // v6.200: ต้อง armed ด้วย — ป้ายค้างห้ามไปหยุดเทสต์เหยื่อฟรีๆ
+    if (!orchestrating && !busy && bossPhase === 'idle' && coolLeft <= 0 && bossArmed && !roundDone && testRunning) {
+      if (due) stopTest(true);   // v6.200: ต้อง armed ด้วย — ป้ายค้างห้ามไปหยุดเทสต์เหยื่อฟรีๆ (v6.344: รอบที่ปิดแล้วก็ห้าม)
       return false;
     }
     if (why) return false;
@@ -8316,7 +8514,8 @@
     lastChestCheckAt = now();
     if (chestDailyDone()) return false;
     // ใกล้เวลาบอส = อย่าเดินไกลไปเก็บหีบ (บอสสำคัญกว่า) — เว้นระยะ lead + 5 นาที
-    if (isOn('bossHunt')) { const bt = bossTimerMin(); if (bt != null && bt <= clamp(cfg.bossLeadMin, 1, 60) + 5) return false; }
+    //   🔒 v6.344: ยกเว้นรอบที่ปิดไปแล้ว — ป้าย "ถึงรอบบอส" ขึ้นยาวเต็มรอบ ถ้าไม่ยกเว้นจะกันเก็บหีบทั้งชั่วโมงฟรีๆ
+    if (isOn('bossHunt') && !bossRoundDone()) { const bt = bossTimerMin(); if (bt != null && bt <= clamp(cfg.bossLeadMin, 1, 60) + 5) return false; }
     return findChests().length > 0;
   }
   // เดินไปเปิดหีบใบเดียว — คืน 'opened' | 'blocked' (หมดอายุ/ลิมิต) | 'cooldown' | 'unreachable' | 'fail'
@@ -9592,6 +9791,8 @@ ${esc(reason)}
       //   busy/orchestrating กันด้วย if ด้านบนแล้ว → ถ้าบอทติดงานอยู่ ธงจะรอจนว่างค่อยยิง (ไม่ทับงานค้าง) · ยิงครั้งเดียวแล้วล้างธง
       if (forceBossHuntNow && bossPhase === 'idle') {
         forceBossHuntNow = false;
+        // 🔒 v6.344: "ข้ามทุกเงื่อนไข" ต้องรวมล็อกรอบด้วย — ผู้ใช้กดเอง = ผู้ใช้เห็นบอสอยู่ (เชื่อคนก่อนเสมอ)
+        try { W.localStorage.removeItem(BOSS_ROUND_DONE_KEY); } catch {}
         say('🚨 ล่าบอสด่วน — วิ่งเข้าถ้ำล่าบอสเดี๋ยวนี้ (ข้ามทุกเงื่อนไข)');
         bossEvent('🚨 ล่าบอสด่วน (ผู้ใช้กดเอง) — บังคับออกล่าทันที ไม่รอคูลดาวน์/เวลา');
         void runBossHunt();
