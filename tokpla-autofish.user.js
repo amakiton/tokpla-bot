@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.365
+// @version      6.366
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.365';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.366';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2272,19 +2272,32 @@
         return { tier: t, why: `ทำนายบอส "${pred}" จากสถิติรอบนี้ → จุดอ่อนขั้น ${weak[pred].tiers.join('+')}` };
       }
       if (!mapId || !BOSS_META.size) return null;
+      // 🎯 v6.366 — **ถ่วงน้ำหนักด้วย "เจอบ่อย × เจอล่าสุด" แทนการนับหัวเฉย ๆ**
+      //   ทำไมของเดิมพัง (พิสูจน์จากไฟต์สด 00:11 วันที่ 2/8/69):
+      //     ถ้ำ boss_cave มีบอส 3 ตัว จุดอ่อนไม่ทับกันเลย — ดุกนรก{4} · หมึกยักษ์{1,6} · เจ้าเปลว{2,8}
+      //     ⇒ ทุกขั้นได้คะแนน 1 เท่ากันหมด → tie-break `(a - b)` เลือก **ขั้นต่ำสุด = 1**
+      //     แต่บอสจริงคือเจ้าเปลวใต้พิภพ (จุดอ่อนขั้น 2) ⇒ **เดาถูกแค่ 1 ใน 3 โดยโครงสร้าง**
+      //     ผู้ใช้ต้องคลิกเหยื่อเอง ไม่งั้นเสียตัวคูณ x1.5 (ซึ่งวัดได้ว่าใหญ่ ~2.4 เท่า)
+      //   ของใหม่: บอสที่ "เจอบ่อยกว่า + เพิ่งเจอล่าสุด" มีโอกาสมาอีกสูงกว่า (บอสหมุนเวียน ไม่ได้สุ่มแบน)
+      //     ตรวจย้อนกับข้อมูลจริง: เจ้าเปลว (เห็น 5 · ล่าสุด 20:03) ชนะ หมึกยักษ์ (3 · 16:33) และดุกนรก (1 · 29/7)
+      //     ⇒ เลือกขั้น 2 = **ถูกต้อง** สำหรับรอบที่เพิ่งเสียไป
       const seen = new Set(), score = {}, names = [];
+      const nowMs = Date.now();
       for (const [nm, rec] of BOSS_META) {
         if (rec.mapId !== mapId || seen.has(rec.id)) continue;
         const w = weak[rec.nameTh] || weak[nm];
         if (!w || !Array.isArray(w.tiers) || !w.tiers.length) continue;
         seen.add(rec.id); names.push(rec.nameTh || nm);
-        for (const t of w.tiers) score[t] = (score[t] || 0) + 1;
+        // น้ำหนัก = จำนวนครั้งที่เคยเห็น ÷ (1 + จำนวนวันตั้งแต่เห็นล่าสุด) — เพิ่งเจอ = น้ำหนักเต็ม
+        const days = w.at > 0 ? Math.max(0, (nowMs - w.at) / 86400000) : 30;
+        const wt = Math.max(1, w.seen || 1) / (1 + days);
+        for (const t of w.tiers) score[t] = (score[t] || 0) + wt;
       }
       const tiers = Object.keys(score).map(Number).filter((t) => t >= 1 && t <= MAX_BAIT_TIER);
       if (!tiers.length) return null;
       tiers.sort((a, b) => (score[b] - score[a]) || (a - b));
       const t = tiers[0];
-      return { tier: t, why: `ถ้ำ ${mapId} มีบอสที่จำจุดอ่อนได้ ${names.length} ตัว → ขั้น ${t} ครอบคลุม ${score[t]}/${names.length} ตัว` };
+      return { tier: t, why: `ถ้ำ ${mapId} มีบอสที่จำจุดอ่อนได้ ${names.length} ตัว → ขั้น ${t} คะแนนสูงสุด ${score[t].toFixed(2)} (ถ่วงด้วยเจอบ่อย+เพิ่งเจอ)` };
     } catch { return null; }
   }
   // ขั้นเหยื่อที่ "ควรมีติดตัวก่อนเข้าถ้ำ" — รวมจุดอ่อนของบอสทุกตัวที่เคยเจอ (เพราะไม่รู้ว่ารอบนี้บอสตัวไหนมา)
@@ -7474,10 +7487,18 @@
   async function cycleTo(label, want, read, maxTries = 9) {
     const b = document.querySelector(`button[aria-label="${label}"]`);
     const hk = CYCLE_HOTKEY[label];
+    // 🔴 v6.366 — **ห้ามหมุนแบบตาบอด** (บั๊กที่เจอตอนวิเคราะห์ไฟต์สด 00:11 วันที่ 2/8/69)
+    //   ตอนสู้บอส ปุ่ม "เลือกเหยื่อ" หายจาก DOM → `currentBait()` คืน null → `read()` คืน undefined
+    //   ⇒ `read() === want` ไม่มีวันจริง ⇒ เดิมกดคีย์ลัด **ครบ 9 ครั้งรวด** แล้วรายงานว่าล้มเหลว
+    //   ผลจริง: เหยื่อถูกหมุนไป 9 ขั้นแบบมั่ว ๆ (อาจไปโผล่ขั้นแพง/ขั้นที่ไม่ใช่จุดอ่อน) โดยไม่มีใครรู้
+    //   กติกาใหม่: **อ่านสถานะไม่ได้ = ไม่แตะ** — หมุนโดยไม่เห็นผลคือทำให้แย่ลง ไม่ใช่ลองดู
+    const readable = () => { try { const v = read(); return v != null; } catch { return false; } };
+    if (!readable()) { logWarn(`🔤 ไม่สลับ "${label}" — อ่านค่าปัจจุบันไม่ได้ (ปุ่มหาย?) การหมุนทั้งที่มองไม่เห็นผลอันตรายกว่าไม่ทำ`); return false; }
     if (!b || b.disabled) {
       if (!hk) return false;
       for (let i = 0; i < maxTries; i++) {
         if (read() === want) return true;
+        if (!readable()) { logWarn(`🔤 หยุดหมุน "${label}" กลางคัน — อ่านค่าไม่ได้แล้ว (กันหมุนมั่วต่อ)`); return false; }
         bossFireKey('keydown', hk[0], hk[1]); bossFireKey('keyup', hk[0], hk[1]);
         await sleep(170);
       }
@@ -7486,6 +7507,7 @@
     }
     for (let i = 0; i < maxTries; i++) {
       if (read() === want) return true;
+      if (!readable()) { logWarn(`🔤 หยุดหมุน "${label}" กลางคัน — อ่านค่าไม่ได้แล้ว (กันหมุนมั่วต่อ)`); return false; }
       fireClick(b);
       await sleep(140);
     }
