@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.335
+// @version      6.336
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.335';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.336';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3606,6 +3606,7 @@
     let lastMeleeDiag = 0;   // 🔬 v6.316: throttle log วินิจฉัยโหมดประชิด (ดาเมจต่ำผิดปกติ — ต้องดูสดว่าติดตรงไหน)
     // 📊 v6.335: บริบทล่าสุดที่ผูกกับ "ดาเมจก้อนถัดไป" — ระยะประชิดตอนนี้ · คอมโบที่เห็นล่าสุด · เวลาที่บันทึกครั้งก่อน
     let lastMeleeDist = null, lastComboSeen = null, lastAttribAt = now();
+    let dodgeHits = 0, walkHits = 0;   // ⚔️ v6.336: นับการตีที่ "แทรกระหว่างหลบ/เดิน" — พิสูจน์ว่าคืน DPS ได้จริงแค่ไหน
     let fightMap = '';   // 🧭 v6.247: ถ้ำที่สู้อยู่จริง (จำตอนเห็นบอส) — ใช้พากลับเข้าถ้ำ "ใบเดิม" หลังตาย
     // 👊 v6.252: โหมดตีของบอสรอบนี้ + ตัวนับไว้พิสูจน์ว่าระบบใหม่ทำงาน (ไฟต์ 19:29 ได้ 0.1% เพราะไม่รู้ว่าต้องเข้าประชิด)
     let bossHitMode = null, meleeApproaches = 0, chargeShots = 0, meleeSaid = false;
@@ -3910,6 +3911,21 @@
             const orbd = bossHitOrb();
             if (orbd && !orbd.disabled && now() - lastPress > 60) { if (gabBlock) gabBlock.p++; lastPress = now(); lastBossPressAt = Date.now(); fireClick(orbd); gaugePresses++; }
           }
+          // ⚔️ v6.336 — **โหมด melee/charge ไม่เคยตีระหว่างหลบเลย** (ช่องโหว่ที่ v6.161 มองข้าม)
+          //   v6.161 ผูก "ตีระหว่างหลบ" ไว้กับ `readGaugeWheel()` ซึ่งมีเฉพาะโหมด cast → melee/charge ตกหล่นทั้งหมด
+          //   ต้นทุนจริงจากสถิติ: หลบ 31-35 ครั้ง/ไฟต์ × ~1-3 วิ = **เสียเวลาตี ~30% ของไฟต์** ทั้งที่ v6.159 พิสูจน์แล้ว
+          //   (7/7 ครั้ง) ว่า orb เปิดตลอดช่วง AoE — เดิน (WASD) กับกดปุ่ม (คลิก) คนละ input channel ทำพร้อมกันได้
+          //   ⚠️ melee: เชื่อป้าย "ไกลไป!" ของเกมเป็นตัวอนุญาต (ground truth) ไม่ใช่ระยะที่เราคำนวณ —
+          //      หลักฐาน 268 ตัวอย่าง: เกมเคยขึ้น "ไกลไป" ตอนห่าง 4px และไม่ขึ้นตอนห่าง 141px = สูตรระยะของเราไม่ตรงกับเกม
+          //   ⚠️ charge: ตอนหลบใช้ "แตะสั้น" เท่านั้น — กดค้าง 1.95 วิ จะขวางการหลบ = เสี่ยงตายซึ่งแพงกว่ามาก
+          else if (!gd && (bossHitMode === 'melee' || bossHitMode === 'charge')) {
+            const orbd = bossHitOrb();
+            const okHit = bossHitMode === 'charge' || !bossHudMeta().tooFar;
+            if (orbd && !orbd.disabled && okHit && !bossDisabledNow() && now() - lastPress > 220) {
+              lastPress = now(); lastBossPressAt = Date.now(); fireClick(orbd); hits++; dodgeHits++;
+              if (gabBlock) gabBlock.p++;
+            }
+          }
           await sleep(80); continue;   // react ไว กว่าจังหวะตี
         }
         if (bossDodging) { bossReleaseAll(); bossDodging = false; }   // ถึงที่ปลอดภัยแล้ว → ปล่อยปุ่ม
@@ -4016,7 +4032,15 @@
             bossExitClamp(dirs, _sc.player.x, _sc.player.y);
             bossMoveDirs(dirs); meleeApproaches++;
             if (!meleeSaid) { meleeSaid = true; logInfo(`👊 โหมดประชิด — เดินเข้าหาบอส (ห่าง ${Math.round(d)}px, ต้อง ≤${BOSS_MELEE_RANGE})`); }
-            await sleep(120); continue;   // เดินก่อน ยังไม่ต้องกด
+            // ⚔️ v6.336: เดินเข้าหาบอส **แต่เกมไม่ได้บอกว่า "ไกลไป"** = ฟาดโดนอยู่แล้ว → ตีไปด้วยระหว่างเดิน
+            //   ทำไมต้องเชื่อป้ายเกมมากกว่าระยะที่เราคำนวณ: จาก 268 ตัวอย่างจริง เกมขึ้น "ไกลไป" ตอนห่าง 4px
+            //   และเงียบตอนห่าง 141px → สูตร `ครึ่งตัว+range` ของเราไม่ตรงกับกติกาเกม (ใช้ตัดสินว่าจะเดินต่อไหมพอ)
+            //   เดิม `continue` ทิ้งการตีทั้งช่วงเดิน = เสียเปล่าอีกก้อนใหญ่ (meleeApproaches หลักร้อยต่อไฟต์)
+            if (!meta.tooFar && orb && !orb.disabled && !bossDisabledNow() && now() - lastPress > 220) {
+              lastPress = now(); lastBossPressAt = Date.now(); fireClick(orb); hits++; walkHits++;
+              if (gabBlock) gabBlock.p++;
+            }
+            await sleep(120); continue;   // เดินต่อ (ตีไปแล้วถ้าอยู่ในระยะ)
           }
           bossReleaseAll();   // ถึงระยะแล้ว = หยุดเดิน (ไม่งั้นเดินทะลุเลยบอสไป)
         }
@@ -4151,7 +4175,8 @@
     const dmgTxt = lastContrib.dmg != null ? ` · ดาเมจ ${lastContrib.dmg.toLocaleString()}${lastContrib.pct != null ? ` (${lastContrib.pct}%)` : ''}` : '';
     const stat = `เริ่มตี ${hits} · กดเกจ ${gaugePresses} · กระโดด ${dodges} · หลบ AoE ${aoeDodges}${aoeStalls ? `(ค้างปากทาง ${aoeStalls})` : ''} · recenter ${recenters} · เข็ม ${Math.round(Math.abs(gVel))}°/s · ตาย ${deaths} · ${hpTxt}${dmgTxt}`;
     logInfo(`👹 จบสู้บอส: ${outcome} · ${stat}${aoeMid}`);
-    bossEvent(`🏁 จบไฟต์: ${outcome}${dmgTxt} · กดเกจ ${gaugePresses} · หลบ ${aoeDodges} · ตาย ${deaths}`);
+    bossEvent(`🏁 จบไฟต์: ${outcome}${dmgTxt} · กดเกจ ${gaugePresses} · หลบ ${aoeDodges} · ตาย ${deaths}`
+      + ((dodgeHits || walkHits) ? ` · ⚔️ ตีแทรก: ระหว่างหลบ ${dodgeHits} · ระหว่างเดิน ${walkHits} (v6.336 คืน DPS ที่เคยทิ้ง)` : ''));
     // 📊 v6.195: เก็บสถิติไฟต์นี้เข้า ring buffer (N ครั้งล่าสุด · ตั้งที่ bossStatKeep)
     recordBossFight({
       ts: Date.now(),
@@ -4166,6 +4191,7 @@
       // 👊 v6.252: จดโหมดตี + จุดอ่อนที่เกมประกาศ + เหยื่อที่ใช้จริง → ไฟต์หน้าเทียบได้ว่าโหมดไหน/เหยื่อไหนคุ้ม
       // v6.264: ใช้ค่าที่ "จับภาพตอนกำลังสู้" — อ่านตอนนี้ไม่ได้แล้ว (HUD หาย + สลับเหยื่อคืนไปแล้ว)
       hitMode: bossHitMode, approaches: meleeApproaches, charges: chargeShots,
+      dodgeHits, walkHits,   // ⚔️ v6.336: การตีที่แทรกระหว่างหลบ/เดิน — เทียบไฟต์ก่อน/หลังว่าคืน DPS จริงแค่ไหน
       bossName: snapBossName, weakTiers: snapWeak, weakNames: snapWeakNames,
       baitUsed: snapBait, bossHpMax: snapHpMax, bossHpMaxEnd: snapHpMaxEnd,
       // 🥁 v6.266: หลักฐานว่าระบบจังหวะมีจริงไหม/ล็อกได้ไหม — ไฟต์หน้าจะได้ตัดสินใจจากข้อมูล ไม่ใช่เดา
