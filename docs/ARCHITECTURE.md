@@ -132,6 +132,7 @@ BUCKET = { n, rev, baitCost, wSum, junk, rar:{[rarity]:n}, tier:{[tier]:n}, gaug
 | `tokpla_thin_scan` | 🔬 v6.351 ขั้นที่เก็บตัวอย่างบาง ๆ ไปแล้ววันนี้ `{d, t:[ขั้น…]}` — คุมโควตา "ขั้นละครั้ง/วัน" |
 | `tokpla_rush_potion` | ⚡ v6.346 ยาล่าเกล็ดเงิน `{day, until, at}` — ยาตัวนี้ไม่มี chip บัฟใน HUD จึงต้องจำเอง (ลิมิต 1/วัน + อายุ 30 นาที) |
 | `tokpla_boss_waste` | 📊 v6.344 บัญชีรายวัน `{d, cut, savedMs, kinds}` — ทริปเปล่าที่ตัดทิ้งได้แต่เนิ่นๆ + เวลาฟาร์มที่ประหยัดได้ (โชว์ใน `/boss`, `/bossstats avg`) |
+| `tokpla_rod_selected` / `tokpla_float_selected` | 🎣 **คีย์ของเกม (บอทอ่านอย่างเดียว ห้ามเขียน)** — เลขขั้นคัน/ทุ่นที่ใส่อยู่ · v6.359 ใช้เป็นแหล่งความจริงแทนป้าย "Lv.N" บนปุ่ม (อ่านได้แม้อยู่ในถ้ำบอส) |
 
 ## UI accordion (v6.65) — ข้อควรรู้ก่อนแก้ buildPanel
 

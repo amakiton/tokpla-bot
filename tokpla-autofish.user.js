@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.358
+// @version      6.359
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.358';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.359';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -148,6 +148,13 @@
   let BOSS_META = new Map();             // 👹 v6.346: ชื่อบอส (ไทย/อังกฤษ) → {id, hitMode, mapId, respawn} จาก raidBossMeta
   let SERVER_CONTESTS = null;            // 🏆 v6.352: รอบแข่งจากเซิร์ฟเวอร์ [{id,start,dur,days,modes}]
   let SERVER_SHARD_SHOP = null;          // 🦴 v6.358: ราคาของในตู้แลกเศษบอส {rod9:80, float9:50, armor_scale:60, ...}
+  // 🎣 v6.359 — ตารางโบนัสอุปกรณ์จริงจาก /api/config (**index = ขั้น-1**: rodBonuses[0] = ขั้น 1)
+  //   ขั้น 1–9 มีแค่ 3 ค่าพื้นฐาน (แรงดึง/น้ำหนักทุ่น/ความเร็ว) และ **ขั้น 9 = ขั้น 8 เป๊ะทุกค่า**
+  //   ขั้น 10 ขึ้นไปถึงปลด "ความสามารถพิเศษ" ทั้งชุด (ประหยัดเหยื่อ/พลังงาน · ลดขยะ · เงาทอง · ติดสองตัว · ตัวยักษ์ · ความจุกระเป๋า)
+  //   ⇒ บอทเคยไม่รู้จักค่าพวกนี้เลย → รายงาน/คำแนะนำอ้างแต่ขั้นพื้นฐาน
+  let GEAR_TUNE = null;                  // {rodBonuses, rodBaitSave, floatBagBoost, ...} แต่ละตัวเป็น array ตามขั้น
+  let GEAR_LEVEL_REQ = null;             // {rod:{10:66,…,24:192}, float:{10:60,…}} — ขั้น 10+ ติดเลเวล ไม่ใช่ติดเงิน
+  let SERVER_SHOP_PRICES = null;         // ราคาร้าน {rod10:360000, …} — ขั้นไหนไม่มีในนี้ = ซื้อด้วยเหรียญไม่ได้
   // กำลังอยู่ในรอบแข่งไหม — คืน {id, leftMin, modes} · null = ไม่ได้แข่ง
   //   `days` ว่าง = ทุกวัน (ตามที่เซิร์ฟเวอร์ใช้: rounds[].days = [] แปลว่าไม่จำกัดวัน)
   function contestNow() {
@@ -225,6 +232,19 @@
       if (c.mapPools && typeof c.mapPools === 'object') MAP_POOLS = c.mapPools;
       // 🦴 v6.358: ราคาของในตู้แลกเศษบอส (`shardShop`) — ใช้บอก "อีกกี่เศษถึงของที่อยากได้" ตามค่าจริง ไม่ฝังตัวเลข
       if (c.shardShop && typeof c.shardShop === 'object') SERVER_SHARD_SHOP = c.shardShop;
+      // 🎣 v6.359: ตารางโบนัสอุปกรณ์ + เพดานเลเวลของแต่ละขั้น + ราคาร้าน
+      //   เก็บ "เท่าที่เซิร์ฟเวอร์ส่งมา" ไม่ฝังค่าเอง — เกมปรับสมดุลเมื่อไหร่ รายงานตามทันทีโดยไม่ต้องแก้โค้ด
+      {
+        const T = c.tuning || {};
+        const g = {};
+        for (const k of ['rodBonuses', 'rodSpeedCut', 'rodEnergySave', 'rodBaitSave', 'rodJunkCut', 'rodShinyBoost', 'rodDoubleCatch',
+          'floatWeights', 'floatBagBoost', 'floatXpBonus', 'floatGiantChance', 'floatGiantLand', 'floatRelCapBreak']) {
+          if (Array.isArray(T[k]) && T[k].length) g[k] = T[k];
+        }
+        if (Object.keys(g).length) { if (!GEAR_TUNE) changed.push(`ตารางโบนัสอุปกรณ์ ${Object.keys(g).length} ชุด`); GEAR_TUNE = g; }
+        if (c.gearLevelReq && typeof c.gearLevelReq === 'object') GEAR_LEVEL_REQ = c.gearLevelReq;
+        if (Object.keys(sp).length) SERVER_SHOP_PRICES = sp;
+      }
       // 🛡️ v6.347: "แมพไหนตกปลาได้" จากเซิร์ฟเวอร์ — ใช้วีโต้การเรียนถ้ำบอสทับแมพทำมาหากิน (ดู raidBossMeta ล่าง)
       if (Array.isArray(c.fishableMaps) && c.fishableMaps.length) SERVER_FISHABLE = new Set(c.fishableMaps.filter((m) => typeof m === 'string'));
       // 🕐 ตารางบอสจากเซิร์ฟเวอร์ (นาทีตั้งแต่เที่ยงคืน) — ของจริง 29/7/69 มี 6 รอบ (บอทฝังไว้แค่ 5 รอบ ตกหล่น 20:00)
@@ -1332,6 +1352,7 @@
     '🧠 /advisor - ดูคำแนะนำเหยื่อ+ยาจากสถิติจริง',
     '🧪 /testbait - ทดสอบเหยื่อใหม่ · /testcont - ทำต่อ · /teststop - หยุด · /testprog - ความคืบหน้า',
     '👹 /boss - สถานะบอส · /bosshunt - ออกล่าเดี๋ยวนี้ · /bosslog - log สู้บอส',
+    '🎣 /gear - คัน/ทุ่นที่ใส่อยู่ให้โบนัสอะไร + ขั้นถัดไปติดเลเวลเท่าไร',
     '🔎 /probe &lt;ชื่อปุ่ม&gt; - เปิดแผงในเกมแล้วอ่านโครงให้ดู (เช่น /probe แลกเศษบอส)',
     '🌈 /mythic - สถานะล่าปลาเทพ · /mythic on|off · /mythic map ชื่อแมพ|auto - ล็อกแมพล่า',
     '🌍 /chat - เปิด/ปิดคุยแชทโลกผ่าน TG (พิมพ์ข้อความมาได้เลย)',
@@ -1396,6 +1417,8 @@
         if (sub === 'ev' || sub === 'log') { reply(`<pre>${esc(bossEventsText())}</pre>`); break; }   // v6.199: ทำไมไป/ไม่ไป
         reply(`<pre>${esc(bossStatsTable())}</pre>`); break;   // <pre> = monospace จัดคอลัมน์ตรงใน Telegram
       }
+      case 'gear': case 'อุปกรณ์':   // 🎣 v6.359: ของที่ใส่อยู่ให้อะไร + ขั้นถัดไปติดอะไร (เลเวล/เหรียญ/เศษ)
+        reply(`<pre>${esc(gearReport())}</pre>`); break;
       case 'on': if (!enabled) toggle(); reply('▶️ เปิดบอทแล้ว'); break;
       case 'off': case 'stop':
         if (!enabled) { reply('บอทปิดอยู่แล้ว'); break; }
@@ -2071,7 +2094,9 @@
     return clampExit;
   }
   // 🥁 v6.266: **ระบบตีบอสเป็นเกมจังหวะ** — ถอดจาก tuning ในบันเดิล (ค่าจริง ไม่ได้เดา):
-  //   raidTapBeatMs 1200 · raidTapPerfectMs 150 (x1.5) · raidTapGoodMs 300 (x1.15) · พลาด x0.6 · ไม่มีบีต x1.0
+  //   raidTapBeatMs 1200 · raidTapPerfectMs 150 · raidTapGoodMs 300
+  //   ⚠️ v6.359 แก้ตัวเลข: ตัวคูณจริงจาก /api/config **น้อยกว่า 1 ทั้งหมด** (เป็นการหักดาเมจ ไม่ใช่โบนัส) —
+  //     เป๊ะ 0.88 · ดี 0.67 · หลุด 0.35 · ไม่มีบีต 0.86 · (อัตราส่วนเป๊ะ:หลุด = 2.51 เท่า เท่าที่เคยจด แต่เลขดิบคนละสเกล)
   //   คอมโบ +5% ต่อครั้งติดกัน เพดาน +30% · เพดานดาเมจต่อครั้ง 6,000
   //   เฟสบีตของเกม: `(Date.now() - state.startedAt) % beatMs` — แต่ state อยู่ใน closure ของโมดูล เรียกตรงไม่ได้
   //   (ลองแล้ว: globalThis.TURBOPACK เปิดแค่ `push` ไม่มี registry ให้เรียก getRaidState)
@@ -2828,6 +2853,51 @@
     } catch {}
     return null;
   }
+  // 🎣 v6.359 — ขั้นอุปกรณ์ที่ "ใส่อยู่จริง" · เกมเก็บไว้ใน localStorage ของเกมเอง (`tokpla_rod_selected` / `tokpla_float_selected`)
+  //   อ่านจากคีย์นี้แทนป้าย "Lv.N" บนปุ่ม เพราะอ่านได้แม้อยู่คนละแมพ/แผงปิดอยู่ (ตอนล่าบอสก็ยังอ่านได้)
+  const gearTierOf = (which) => {
+    try {
+      const v = +W.localStorage.getItem(which === 'float' ? 'tokpla_float_selected' : 'tokpla_rod_selected');
+      return Number.isFinite(v) && v >= 1 && v <= 30 ? v : null;
+    } catch { return null; }
+  };
+  const gearPerk = (key, tier) => {
+    const a = GEAR_TUNE && GEAR_TUNE[key];
+    return Array.isArray(a) && tier >= 1 && Number.isFinite(+a[tier - 1]) ? +a[tier - 1] : 0;   // index = ขั้น-1
+  };
+  const GEAR_PERK_TH = {
+    rodEnergySave: 'ประหยัดพลังงาน', rodBaitSave: 'ไม่เปลืองเหยื่อ', rodJunkCut: 'ลดขยะ',
+    rodShinyBoost: 'โอกาสปลาเงาทอง', rodDoubleCatch: 'ติดปลาสองตัว',
+    floatBagBoost: 'ความจุกระเป๋า', floatXpBonus: 'XP', floatGiantChance: 'เจอตัวยักษ์',
+    floatGiantLand: 'ดึงตัวยักษ์ขึ้นฝั่ง', floatRelCapBreak: 'ทะลุเพดานน้ำหนัก',
+  };
+  // ค่าที่เล็กมาก (เช่น floatGiantChance 0.00175) ปัดทศนิยมเดียวจะกลายเป็น 0.2% ซึ่งอ่านแล้วเข้าใจผิด → ต่ำกว่า 1% ใช้ 2 ตำแหน่ง
+  const gpc = (v) => { const p = v * 100; return (p > 0 && p < 1 ? p.toFixed(2) : String(Math.round(p * 10) / 10)) + '%'; };
+  // สรุปว่า "ของที่ใส่อยู่ให้อะไร + ขั้นถัดไปติดอะไร" — ตอบคำถามเดียวที่สำคัญตอนนี้: จะอัปเกรดต้องทำอะไร
+  function gearReport() {
+    if (!GEAR_TUNE) return '🎣 ยังไม่ได้โหลดตารางอุปกรณ์จากเซิร์ฟเวอร์ (รอ /api/config)';
+    const out = [];
+    for (const [which, th, base, baseTh] of [['rod', 'คันเบ็ด', 'rodBonuses', 'แรงดึง'], ['float', 'ทุ่น', 'floatWeights', 'น้ำหนักที่รับได้']]) {
+      const t = gearTierOf(which);
+      if (!t) { out.push(`${th}: อ่านขั้นที่ใส่อยู่ไม่ได้`); continue; }
+      const perks = Object.keys(GEAR_PERK_TH)
+        .filter((k) => k.startsWith(which) && gearPerk(k, t) > 0)
+        .map((k) => `${GEAR_PERK_TH[k]} +${gpc(gearPerk(k, t))}`);
+      out.push(`${which === 'rod' ? '🎣' : '🎈'} ${th}ขั้น ${t} — ${baseTh} +${gpc(gearPerk(base, t))}`
+        + (perks.length ? `\n   พิเศษ (ปลดที่ขั้น 10): ${perks.join(' · ')}` : '\n   ยังไม่ปลดความสามารถพิเศษ (ต้องขั้น 10 ขึ้นไป)'));
+      // ขั้นถัดไปติดอะไร: เลเวล (gearLevelReq) หรือ เหรียญ (shopPrices) หรือ ซื้อด้วยเหรียญไม่ได้เลย
+      const nx = t + 1;
+      const cap = (GEAR_TUNE[base] || []).length;
+      if (nx > cap) { out.push(`   ⛔ ขั้น ${t} คือขั้นสูงสุดของเกมแล้ว`); continue; }
+      const req = GEAR_LEVEL_REQ && GEAR_LEVEL_REQ[which] ? +GEAR_LEVEL_REQ[which][nx] : null;
+      const price = SERVER_SHOP_PRICES ? +SERVER_SHOP_PRICES[which + nx] : null;
+      const gain = gearPerk(base, nx) - gearPerk(base, t);
+      out.push(`   ⬆️ ขั้น ${nx}: ${baseTh} +${gpc(gearPerk(base, nx))} (เพิ่ม ${gpc(gain)})`
+        + (req ? ` · ต้องเลเวล ${req}` : '')
+        + (price > 0 ? ` · ${price.toLocaleString()} 🪙` : ' · ไม่มีขายด้วยเหรียญ (ตู้แลกเศษบอสเท่านั้น)'));
+    }
+    return out.join('\n');
+  }
   function shardReport() {
     const arr = loadBossStats();
     const out = [];
@@ -2848,16 +2918,30 @@
         + (next ? ` · **อีก ${((next[0] * 100) - last.pct).toFixed(1)}% ถึงขั้น ${(next[0] * 100).toFixed(0)}% = ${next[1]} เศษ/ไฟต์**` : ' · อยู่ขั้นสูงสุดแล้ว'));
     }
     // อีกกี่เศษถึงของที่ต้องการ (ราคาจริงจาก shardShop)
+    // 🎣 v6.359: ตัดของที่ "มีดีกว่าอยู่แล้ว" ออกจากเป้า — rod9/float9 มีค่าเฉพาะคนที่ยังอยู่ขั้น ≤8
+    //   (ตรวจสด 1/8/69: ใส่คันขั้น 11 + ทุ่นขั้น 11 อยู่แล้ว ⇒ เสนอ rod9 คือแนะนำให้ถอยหลัง)
+    //   และขั้น 9 ของเกม **ค่าเท่าขั้น 8 เป๊ะทุกช่อง** — มันเป็นแค่ทางผ่านของคนที่ติดเพดานร้าน ไม่ใช่ของอัปเกรด
     if (SERVER_SHARD_SHOP) {
-      const want = ['rod9', 'float9', 'armor_scale'].filter((k) => SERVER_SHARD_SHOP[k] > 0);
+      const rodT = gearTierOf('rod') || 0, flT = gearTierOf('float') || 0;
+      const owned = { rod9: rodT >= 9, float9: flT >= 9 };
+      const want = ['rod9', 'float9', 'armor_scale'].filter((k) => SERVER_SHARD_SHOP[k] > 0 && !owned[k]);
+      const per = avg || 3;
       if (want.length) {
-        const per = avg || 3;
         out.push('🎯 เป้าอัปเกรด (ราคาจริงจากเซิร์ฟเวอร์): ' + want.map((k) => {
           const need = SERVER_SHARD_SHOP[k];
           const left = Math.max(0, need - total);
           return `${k} ${need} เศษ${left ? ` (ขาดอีก ${left} ≈ ${Math.ceil(left / per)} ไฟต์)` : ' ✅ ครบแล้ว'}`;
         }).join(' · '));
         out.push('   ℹ️ นับเฉพาะเศษที่บอทเห็นในจดหมายหลัง v6.358 — ของที่มีอยู่ก่อนหน้าไม่ได้นับ (ดูจำนวนจริงในตู้แลก)');
+      }
+      const skipped = ['rod9', 'float9'].filter((k) => owned[k]);
+      if (skipped.length) out.push(`   ⏭️ ข้าม ${skipped.join('/')} — ใส่คันขั้น ${rodT || '?'} / ทุ่นขั้น ${flT || '?'} อยู่แล้ว (ดีกว่า)`);
+      // ขั้นถัดไปของคัน/ทุ่นติด "เลเวล" ไม่ใช่ "เศษ" — บอกให้ชัด จะได้ไม่เก็บเศษรอเปล่า ๆ
+      if (GEAR_LEVEL_REQ) {
+        const gates = [['rod', 'คัน', rodT], ['float', 'ทุ่น', flT]]
+          .map(([w, th, t]) => { const r = t && GEAR_LEVEL_REQ[w] ? +GEAR_LEVEL_REQ[w][t + 1] : 0; return r ? `${th}ขั้น ${t + 1} ที่เลเวล ${r}` : ''; })
+          .filter(Boolean);
+        if (gates.length) out.push(`   🔑 ขั้นถัดไปปลดด้วย **เลเวล** ไม่ใช่เศษ: ${gates.join(' · ')}`);
       }
     }
     return out.join('\n');
@@ -12623,7 +12707,9 @@ ${esc(reason)}
     panel.appendChild(row(
       '🎣 เบ็ด / เหยื่อ ขั้นที่ใช้ (ตั้งเอง — บอทไม่เลือกให้อัตโนมัติ)',
       'บอทใช้ "ขั้นเหยื่อ" ตามที่ตั้งตรงนี้เท่านั้น (ไม่มีระบบเลือกเหยื่ออัตโนมัติแล้ว) · "บังคับ" = ถ้าเผลอสลับเหยื่อในเกม บอทจะสลับกลับมาขั้นที่ตั้งให้ · เกมไม่มีเมนูเลือกตรงๆ บอทกดสลับวนจนได้ขั้นที่ตั้ง · เบ็ดต้องซื้อมาก่อน · เหยื่อต้องมีของเหลือ · อยากรู้ขั้นไหนคุ้มสุด → ใช้ 🧪 ทดสอบเหยื่อ ด้านบน',
-      labeled('บังคับเบ็ดขั้น', checkbox('forceRod')), numInput('rodTier', 1, 8, 44),
+      // 🎣 v6.359: เพดานเดิม 8 เป็นของยุคที่เกมมีแค่ 8 ขั้น — ตอนนี้เกมมีถึง 24 (gearLevelReq.rod ถึง 24)
+      //   ค้างไว้ที่ 8 = คนใส่คันขั้น 11 กด "บังคับเบ็ด" เมื่อไหร่ ก็โดนลากลงมาขั้น 8 ทันที
+      labeled('บังคับเบ็ดขั้น', checkbox('forceRod')), numInput('rodTier', 1, 24, 44),
       labeled('บังคับเหยื่อขั้น', checkbox('forceBait')), numInput('baitTier', 1, MAX_BAIT_TIER, 44),
     ));
 
@@ -13460,6 +13546,13 @@ ${esc(reason)}
   //   ผลคือกว่าจะรู้ว่าตารางถูกหรือเปล่าต้องรอถึงรอบบอสจริง = ตรวจล่วงหน้าไม่ได้ ถ้าพังก็เสียไปทั้งรอบ
   //   ทำตรงนี้ปลอดภัย: idempotent (มีธง _seeded) · อ่าน stats ครั้งเดียว · ต้องอยู่หลัง applyGameConfig (ใช้ตารางบอสจากเซิร์ฟเวอร์)
   try { seedBossRotaOnce(); } catch {}
+  // 🎣 v6.359: กัน "บังคับเบ็ด" ลากคันลงขั้นต่ำ — cfg.rodTier ตั้งต้นเป็น 1 และ UI เคยจำกัดแค่ 8
+  //   ใครใส่คันขั้น 11 อยู่แล้วเผลอกดติ๊ก forceRod ก็โดนสลับลงทันที (ขั้นต่ำกว่า = โบนัสหายทั้งชุด)
+  //   ⇒ ตอนบูตให้ยกค่าตั้งต้นขึ้นเท่าของที่ใส่อยู่จริง (ไม่ลด — ถ้าตั้งไว้สูงกว่าถือว่าตั้งใจ)
+  try {
+    const rt = gearTierOf('rod');
+    if (rt && (cfg.rodTier || 0) < rt) { cfg.rodTier = rt; saveCfg(); logInfo(`🎣 ตั้งค่า "เบ็ดขั้นที่ใช้" ตามของที่ใส่อยู่จริง: ขั้น ${rt} (กันบังคับเบ็ดลากลงขั้นต่ำ)`); }
+  } catch {}
 
   autoResumeAfterReload();
 
