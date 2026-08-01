@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.361
+// @version      6.362
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.361';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.362';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1354,6 +1354,7 @@
     '👹 /boss - สถานะบอส · /bosshunt - ออกล่าเดี๋ยวนี้ · /bosslog - log สู้บอส',
     '🎣 /gear - คัน/ทุ่นที่ใส่อยู่ให้โบนัสอะไร + ขั้นถัดไปติดเลเวลเท่าไร',
     '🔍 /gap - เวลาที่หายไประหว่างตีบอส ไปอยู่กับอะไร (หลบ/เดิน/คูลดาวน์/สตัน)',
+    '⏱️ /bosstime - นาฬิกาบอส: ยึดเวลาจากอะไร · ตารางที่วัดเอง · คลาดจากจริงกี่วินาที',
     '🔎 /probe &lt;ชื่อปุ่ม&gt; - เปิดแผงในเกมแล้วอ่านโครงให้ดู (เช่น /probe แลกเศษบอส)',
     '🌈 /mythic - สถานะล่าปลาเทพ · /mythic on|off · /mythic map ชื่อแมพ|auto - ล็อกแมพล่า',
     '🌍 /chat - เปิด/ปิดคุยแชทโลกผ่าน TG (พิมพ์ข้อความมาได้เลย)',
@@ -1422,6 +1423,8 @@
         reply(`<pre>${esc(gearReport())}</pre>`); break;
       case 'gap': case 'ช่องว่าง':   // 🔍 v6.360: เวลาที่หายไประหว่างการตีบอส ไปอยู่กับอะไร
         reply(`<pre>${esc(hitGapReport())}</pre>`); break;
+      case 'bosstime': case 'เวลาบอส':   // ⏱️ v6.362: นาฬิกาบอส — ยึดจากอะไร · ตารางที่วัดเอง · ความแม่นจริง
+        reply(`<pre>${esc(bossTimeReport())}</pre>`); break;
       case 'on': if (!enabled) toggle(); reply('▶️ เปิดบอทแล้ว'); break;
       case 'off': case 'stop':
         if (!enabled) { reply('บอทปิดอยู่แล้ว'); break; }
@@ -3195,8 +3198,76 @@
       return null;
     } catch { return null; }
   }
+  // ⏱️ v6.362 — **อ่านตัวนับถอยหลังระดับ "วินาที" แล้วแปลงเป็นเวลาสัมบูรณ์ (anchor)**
+  //
+  //   ปัญหาเดิม: `bossTimerDom()` คืนค่าเป็น **นาที ปัดลง** ทุกรูปแบบ — "อีก 04:32" → 4 (ทิ้ง 32 วิ)
+  //   และเป็นค่า **สัมพัทธ์** ต้องอ่านใหม่ทุกครั้ง · จังหวะที่ไม่เห็นตัวนับ (แผงย่อ/อยู่คนละแมพ/ป้ายหาย)
+  //   ก็ตกกลับไปเดาจากตาราง ⇒ `waitSec` ที่วัดได้จริงแกว่งจาก 81 วิ ลงเหลือ 10 วิ (เกือบไปสาย)
+  //
+  //   หลักการใหม่: **เห็นตัวนับเมื่อไหร่ แปลงเป็นเวลาสัมบูรณ์ทันที แล้วยึดค่านั้น**
+  //     เห็น "อีก 04:32" → bossAnchor = now + 272,000ms → หลังจากนี้นับจากนาฬิกาตัวเอง ไม่ต้องพึ่งจอ
+  //   เห็นตัวนับอีกครั้งเมื่อไหร่ = แก้ anchor ใหม่ (self-correcting ไม่สะสมความคลาด)
+  //
+  //   ⚠️ ตรวจจากบันเดิลจริงแล้ว (v6.362): เกมเรียก API แค่ `/api/config` ตัวเดียว ไม่มี websocket/realtime
+  //      และทั้งบันเดิลไม่มี `getHours`/`setHours`/`getTimezoneOffset` ⇒ **ไม่มีแหล่งเวลาสัมบูรณ์ให้ query**
+  //      ตัวนับบนจอจึงเป็น "คำตอบของเกม" ที่ใกล้ความจริงที่สุดเท่าที่เข้าถึงได้
+  const BOSS_ANCHOR_KEY = 'tokpla_boss_anchor';
+  const ANCHOR_FRESH_MS = 6 * 3600e3;      // เก่ากว่านี้ = ไม่เชื่อแล้ว (ข้ามรอบไปนานเกิน)
+  let bossAnchor = null;                   // { at: ms เวลาบอสเกิด, readAt: ms ที่อ่านได้, secLeft }
+  try { const a = JSON.parse(W.localStorage.getItem(BOSS_ANCHOR_KEY) || 'null'); if (a && a.at > 0) bossAnchor = a; } catch {}
+  function setBossAnchor(secLeft, why) {
+    if (!(secLeft >= 0) || secLeft > 24 * 3600) return;
+    const at = Date.now() + secLeft * 1000;
+    // ขยับเกิน 90 วิจากของเดิม = เกมเปลี่ยนตาราง/ของเดิมเพี้ยน — ต้องเห็นใน log ไม่ใช่เงียบ ๆ แก้
+    if (bossAnchor && Math.abs(at - bossAnchor.at) > 90000 && bossAnchor.at > Date.now() - 3600e3) {
+      logInfo(`⏱️ เวลาบอสขยับ ${Math.round((at - bossAnchor.at) / 1000)} วิ (${hhmmssOf(bossAnchor.at)} → ${hhmmssOf(at)}) · จาก${why || 'ตัวนับบนจอ'}`);
+    }
+    bossAnchor = { at, readAt: Date.now(), secLeft, why: why || '' };
+    try { W.localStorage.setItem(BOSS_ANCHOR_KEY, JSON.stringify(bossAnchor)); } catch {}
+  }
+  // คืนเวลาบอสเกิดแบบสัมบูรณ์ (ms) ถ้า anchor ยังน่าเชื่อ · null = ไม่รู้
+  function bossAnchorAt() {
+    if (!bossAnchor || !(bossAnchor.at > 0)) return null;
+    if (Date.now() - bossAnchor.readAt > ANCHOR_FRESH_MS) return null;      // อ่านไว้นานมากแล้ว
+    if (bossAnchor.at < Date.now() - 15 * 60000) return null;               // เลยไปเกิน 15 นาที = รอบจบแล้ว
+    return bossAnchor.at;
+  }
+  const hhmmssOf = (ms) => { const d = new Date(ms), z = (x) => String(x).padStart(2, '0'); return `${z(d.getHours())}:${z(d.getMinutes())}:${z(d.getSeconds())}`; };
+  // อ่านตัวนับให้ได้ "วินาที" — ครบทั้ง 3 รูปแบบที่เกมใช้ (ของเดิมทิ้งวินาทีทุกแบบ)
+  function bossTimerSec() {
+    try {
+      // ① chip โหมดย่อ: "26:43" (นาที:วินาที) หรือ "1:28:32" (ชม.:นาที:วินาที) — มีวินาทีเต็ม ๆ
+      const b = [...document.querySelectorAll('button')].find((x) =>
+        !isBotUI(x) && x.offsetParent && /แตะดูเวลาเต็ม/.test(x.getAttribute('title') || ''));
+      if (b) {
+        const t = (b.textContent || '').trim();
+        if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(t)) {
+          const p = t.split(':').map(Number);
+          if (!p.some(isNaN)) return p.length === 3 ? p[0] * 3600 + p[1] * 60 + p[2] : p[0] * 60 + p[1];
+        }
+      }
+      // ② dialog หน้าประตูถ้ำ: "รอบต่อไปเปิดในอีก 4 นาที 32 วิ"
+      const g = gameTextMatch(/รอบต่อไปเปิดในอีก\s*(?:(\d+)\s*นาที)?\s*(?:(\d+)\s*วิ)?/);
+      if (g && (g[1] || g[2])) return (+(g[1] || 0)) * 60 + (+(g[2] || 0));
+      // ③ ป้าย "บอสถัดไป … อีก MM:SS" ในข้อความ
+      const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      let n;
+      while ((n = tw.nextNode())) {
+        if (n.parentElement && n.parentElement.closest('[data-tkbot]')) continue;   // กฎเหล็ก #7
+        const t = n.textContent || '';
+        if (!/บอสถัดไป/.test(t)) continue;
+        const ms = /อีก\s*(\d{1,2}):([0-5]\d)\b/.exec(t);
+        if (ms) return (+ms[1]) * 60 + (+ms[2]);
+        const rel = /อีก\s*(?:(\d+)\s*ชม\.?)?\s*(?:(\d+)\s*นาที)?/.exec(t);   // >1 ชม. เกมไม่โชว์วินาที
+        if (rel && (rel[1] || rel[2])) return ((+(rel[1] || 0)) * 60 + (+(rel[2] || 0))) * 60;
+      }
+    } catch {}
+    return null;
+  }
   let bossNowLabelSeen = false;   // v6.169: กัน log ซ้ำทุก 5 วิ ตอนป้าย "ถึงรอบบอสแล้ว" ค้างอยู่
   function bossTimerDom() {
+    // ⏱️ v6.362: ทุกครั้งที่อ่านตัวนับได้ ให้ตรึงเป็นเวลาสัมบูรณ์ไว้ก่อน (จุดเดียว ครอบคลุมทุกผู้เรียก)
+    try { const s = bossTimerSec(); if (s != null) setBossAnchor(s, 'ตัวนับบนจอ'); } catch {}
     let sawNowLabel = false;   // v6.173: เจอป้าย "ถึงรอบบอสแล้ว" ไหม — ตัดสินใจทีหลัง (ตัวนับถอยหลังต้องชนะก่อน)
     try {
       const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
@@ -3271,6 +3342,38 @@
   //      → งอกรอบผี 01:30 · 04:30 · 07:30 = บอทออกเดินทางไปเก้อ **3 รอบทุกคืน** (เสียเวลาตกปลา ~12 นาที/รอบ)
   //   หลักฐานยืนยัน: สถิติ 20 ไฟต์ตลอด 4 วัน อยู่ที่ชั่วโมง 10·13·16·19·22 เท่านั้น — ไม่มี 01·04·07 เลยสักครั้ง
   //   บทเรียน: "ช่วงห่างเท่ากัน" ไม่ได้แปลว่า "วนรอบทั้งวัน" — และเกมบอกตารางไว้ตรงๆ อยู่แล้ว แค่ไปอ่าน
+  // 📚 v6.362 — **ตารางที่ "วัดจากของจริง"** (ตัวที่ทำให้รอดเมื่อเกมอัปเดตเวลา)
+  //   ทุกครั้งที่เห็นบอสอยู่ในฉากจริง (`raidBossState().present` = ความจริงสัมบูรณ์) จดนาทีของวันไว้
+  //   ⇒ ได้ตารางที่มาจากความเป็นจริง ไม่ใช่จากค่าที่ประกาศไว้ · เกมแก้ตารางเมื่อไหร่ก็ตามทันเองใน 1-2 รอบ
+  //   ⚠️ ใช้แบบ **เพิ่มอย่างเดียว ไม่ลบของ config** (ผู้ใช้สั่ง 1/8/69: ยังไม่เอาระบบ "เลิกเชื่อช่องเวลา")
+  //      ช่องที่ config มีแต่ไม่เคยวัดเจอ (เช่น 00:11) จึงยังออกไปดักอยู่ — แต่รายงานจะฟ้องให้เห็น
+  const BOSS_SLOTS_KEY = 'tokpla_boss_slots';
+  const loadBossSlots = () => { try { const o = JSON.parse(W.localStorage.getItem(BOSS_SLOTS_KEY) || '{}'); return o && typeof o === 'object' ? o : {}; } catch { return {}; } };
+  function learnBossSlot(wallMs) {
+    try {
+      const d = new Date(wallMs);
+      // ปัดเข้าหา "นาทีที่บอสเกิด" — บอทเห็นบอสช้ากว่าเวลาเกิดจริงเล็กน้อยเสมอ (เดินทาง+poll)
+      //   จับกลุ่มทุก 5 นาที: 10:33 → 10:30 · กันตารางแตกเป็นสิบ ๆ ช่องเพราะคลาดกันไม่กี่นาที
+      const raw = d.getHours() * 60 + d.getMinutes();
+      // ⚠️ ต้อง **ปัดลง** ไม่ใช่ปัดใกล้สุด — บอทเห็นบอส "หลัง" เวลาเกิดเสมอ (เดินทาง + คาบ poll)
+      //   ปัดใกล้สุดทีละ 5 นาทีทำ 10:31 → 630 แต่ 10:33 → 635 = ช่องเดียวกันแตกเป็นสองช่อง (เทสต์จับได้)
+      //   ปัดลงทีละ 10 นาที: 10:31/10:33/10:35 → 630 ทั้งหมด · และพลาดทางที่ปลอดภัย (ออกเดินทางเร็วไป ไม่ใช่สายไป)
+      const slot = Math.floor(raw / 10) * 10;
+      const o = loadBossSlots();
+      const r = o[slot] || (o[slot] = { n: 0, first: wallMs, last: 0, mins: [] });
+      r.n++; r.last = wallMs;
+      r.mins.push(raw); if (r.mins.length > 20) r.mins.shift();
+      W.localStorage.setItem(BOSS_SLOTS_KEY, JSON.stringify(o));
+    } catch {}
+  }
+  // ช่องที่วัดเจอจริงตั้งแต่ 2 ครั้งขึ้นไป = เชื่อได้ (ครั้งเดียวอาจเป็นรอบพิเศษ/อ่านพลาด)
+  //   คืน "นาทีที่เห็นเร็วที่สุด" ของช่องนั้น ไม่ใช่เลขช่อง — ครั้งที่เห็นเร็วสุดคือครั้งที่ใกล้เวลาเกิดจริงที่สุด
+  const bossLearnedSlots = () => {
+    const o = loadBossSlots();
+    return Object.keys(o).map(Number).filter((m) => Number.isFinite(m) && (o[m].n || 0) >= 2)
+      .map((m) => { const ms = (o[m].mins || []).filter((x) => Number.isFinite(x)); return ms.length ? Math.min(...ms) : m; })
+      .sort((a, b) => a - b);
+  };
   function bossSchedList() {
     // 🌐 v6.314: ตารางจริงมาจากเซิร์ฟเวอร์ (raidSpawnMinutes ใน /api/config) — เชื่อค่านี้ก่อนเสมอ
     //   ของจริง 29/7/69 = 10:30 · 13:30 · 16:30 · 19:30 · **20:00** · 22:30 = 6 รอบ
@@ -3279,7 +3382,14 @@
     if (isOn('bossSchedFromServer') && SERVER_BOSS_TIMES && SERVER_BOSS_TIMES.length) {
       const out = [];
       for (const s of SERVER_BOSS_TIMES) { const m = /^(\d{1,2})[:.](\d{1,2})$/.exec(s); if (m) out.push(+m[1] * 60 + +m[2]); }
-      if (out.length) return [...new Set(out)].sort((a, b) => a - b);
+      // 📚 v6.362: รวมช่องที่ "วัดเจอจริง" เข้าไปด้วย — ถ้าเกมเพิ่ม/ย้ายรอบ ตาราง config อาจตามไม่ทัน
+      //   (เพิ่มอย่างเดียว ไม่ลบของ config — ไม่มีทางทำให้พลาดรอบที่เคยไปได้)
+      //   ⚠️ รับเฉพาะช่องที่ห่างจากทุกช่องใน config เกิน 5 นาที — ไม่งั้นได้ช่องซ้ำติดกัน (630 กับ 631)
+      //      = ออกเดินทางสองรอบห่างกันนาทีเดียว เปลืองเปล่า
+      if (out.length) {
+        const fresh = bossLearnedSlots().filter((m) => !out.some((c) => Math.abs(c - m) <= 5));
+        return [...new Set(out.concat(fresh))].sort((a, b) => a - b);
+      }
     }
     const raw = String(cfg.bossSchedTimes || '').trim();
     if (!raw) return null;                                   // ว่าง = ผู้ใช้เลือกใช้แบบ "รอบแรก + ทุก N นาที" (ของเดิม)
@@ -3312,9 +3422,69 @@
   const hhmmOf = (ms) => { const d = new Date(ms), z = (x) => String(x).padStart(2, '0'); return `${z(d.getHours())}:${z(d.getMinutes())}`; };
   // 🔮 v6.232: บอก "แหล่งที่มา" ของค่าทำนายล่าสุด — เดิม log เขียนตายตัวว่า "ทำนายจากรอบก่อน (ทุก N นาที)"
   //   ทั้งที่ v6.230 เปลี่ยนมาใช้ตารางเวลาเป็นหลักแล้ว → อ่าน log แล้วเข้าใจผิดว่าตารางไม่ทำงาน (เสียเวลาไล่ผิดจุด)
+  // 🎯 v6.362 — **บันทึกความแม่น**: คู่ (เวลาที่คาด, เวลาที่บอสมาจริง) → พิสูจน์ว่าระบบแม่นจริงไหม
+  //   ไม่มีตัวเลขนี้ = ได้แต่เชื่อว่าแม่น · มีแล้วถึงจะรู้ว่าต้องไปแก้ที่แหล่งไหน
+  const BOSS_ACC_KEY = 'tokpla_boss_accuracy';
+  function bossAccRecord(actualMs, predMs, src) {
+    try {
+      const a = JSON.parse(W.localStorage.getItem(BOSS_ACC_KEY) || '[]');
+      const arr = Array.isArray(a) ? a : [];
+      arr.push({ t: actualMs, err: predMs ? Math.round((actualMs - predMs) / 1000) : null, src: src || '' });
+      while (arr.length > 60) arr.shift();
+      W.localStorage.setItem(BOSS_ACC_KEY, JSON.stringify(arr));
+    } catch {}
+  }
+  function bossTimeReport() {
+    const lines = [];
+    const an = bossAnchorAt();
+    lines.push(`⏱️ นาฬิกาบอส (v6.362)\nยึดจากตัวนับ: ${an ? `${hhmmssOf(an)} น. (อ่านไว้เมื่อ ${Math.round((Date.now() - bossAnchor.readAt) / 1000)} วิที่แล้ว จาก${bossAnchor.why || '?'})` : 'ยังไม่มี/หมดอายุ'}`);
+    const nx = bossNextSpawnMs();
+    lines.push(`ใช้จริงตอนนี้: ${nx ? `${hhmmssOf(nx.at)} น. · อีก ${Math.max(0, Math.round((nx.at - Date.now()) / 1000))} วิ · แหล่ง: ${nx.src}` : 'ไม่รู้'}`);
+    const o = loadBossSlots();
+    const ks = Object.keys(o).map(Number).sort((a, b) => a - b);
+    const fmt = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+    lines.push(`\n📚 ตารางที่วัดจากของจริง (${ks.length} ช่อง):`);
+    for (const m of ks) lines.push(`   ${fmt(m)} · เจอ ${o[m].n} ครั้ง${o[m].n >= 2 ? ' ✅ เชื่อได้' : ' (ยังน้อย)'}`);
+    const cfgList = [];
+    try { for (const s of (SERVER_BOSS_TIMES || [])) { const mm = /^(\d{1,2})[:.](\d{1,2})$/.exec(s); if (mm) cfgList.push(+mm[1] * 60 + +mm[2]); } } catch {}
+    const never = cfgList.filter((m) => !ks.some((k) => Math.abs(k - m) <= 5));
+    if (never.length) lines.push(`⚠️ ช่องที่เซิร์ฟเวอร์ประกาศแต่ไม่เคยวัดเจอเลย: ${never.map(fmt).join(' · ')} (ยังออกไปดักอยู่ตามที่สั่งไว้)`);
+    const extra = ks.filter((m) => (o[m].n || 0) >= 2 && !cfgList.some((c) => Math.abs(c - m) <= 5));
+    if (extra.length) lines.push(`🆕 ช่องที่วัดเจอแต่ไม่มีในตารางเซิร์ฟเวอร์: ${extra.map(fmt).join(' · ')} (เพิ่มให้เองแล้ว)`);
+    try {
+      const acc = JSON.parse(W.localStorage.getItem(BOSS_ACC_KEY) || '[]').filter((r) => r.err != null);
+      if (acc.length) {
+        const abs = acc.map((r) => Math.abs(r.err)).sort((a, b) => a - b);
+        lines.push(`\n🎯 ความแม่น ${acc.length} รอบล่าสุด: กลาง ${abs[abs.length >> 1]} วิ · แย่สุด ${abs[abs.length - 1]} วิ`);
+        lines.push('   ' + acc.slice(-6).map((r) => `${hhmmOf(r.t)}${r.err >= 0 ? '+' : ''}${r.err}วิ`).join(' · '));
+      } else lines.push('\n🎯 ยังไม่มีข้อมูลความแม่น (เก็บตอนบอสโผล่รอบถัดไป)');
+    } catch {}
+    return lines.join('\n');
+  }
   let bossPredictSrc = '';
+  // 🥇 v6.362 — **ลำดับความน่าเชื่อของ "บอสมาเมื่อไหร่"** (ห้ามให้ชั้นล่างทับชั้นบน)
+  //   ① ตัวนับบนจอที่แปลงเป็นเวลาสัมบูรณ์แล้ว = คำตอบของเกมเอง แม่นระดับวินาที
+  //   ② ตาราง (config ∪ ที่วัดเจอจริง) = ใช้ตอนไม่มีตัวนับให้เห็น
+  //   ③ ของเดิม "รอบก่อน + ทุก N นาที" = ทางสำรองสุดท้าย
+  //   (ชั้นเหนือกว่าทั้งหมดคือ "บอสอยู่ในฉากจริงไหม" ซึ่ง bossFight เช็คตรงอยู่แล้ว ไม่ผ่านทางนี้)
+  function bossNextSpawnMs() {
+    const an = bossAnchorAt();
+    const sched = bossScheduleNextMs(Date.now());
+    if (an != null) {
+      // ถ้าตารางกับ anchor เห็นตรงกัน (ห่างไม่เกิน 3 นาที) ถือว่ายืนยันซึ่งกันและกัน
+      const agree = sched && Math.abs(sched - an) <= 180000;
+      return { at: an, src: agree ? 'ตัวนับบนจอ (ตรงกับตาราง)' : 'ตัวนับบนจอ' };
+    }
+    if (sched) return { at: sched, src: 'ตาราง' };
+    return null;
+  }
   function bossPredictNextMin() {
-    // 🕐 v6.230: ตารางเวลานาฬิกามาก่อน (แม่นกว่า + ไม่ drift)
+    // ⏱️ v6.362: ตัวนับที่ตรึงไว้มาก่อนตาราง — แม่นระดับวินาที และตามเกมได้แม้ตารางเปลี่ยน
+    const nx = bossNextSpawnMs();
+    if (nx) {
+      bossPredictSrc = `${nx.src} (รอบถัดไป ${hhmmssOf(nx.at)} น.)`;
+      return Math.max(0, Math.round((nx.at - Date.now()) / 60000));
+    }
     const sched = bossScheduleNextMs(Date.now());
     if (sched) {
       bossPredictSrc = `ตารางเวลา (รอบถัดไป ${hhmmOf(sched)} น.)`;
@@ -4248,6 +4418,9 @@
     };
     // ⏱️ v6.345: จับเวลา "บอสโผล่ → กดตีครั้งแรก" — ตัวเลขที่ต้องกดให้ต่ำ (เดิมไม่เคยวัด จึงไม่รู้ว่าช้าเพราะอะไร)
     let spawnSeenAt = 0, spawnSeenWall = 0, firstPressAt = 0, spawnWaitMs = null;
+    // 🎯 v6.362: จับ "คำทำนายตอนก่อนบอสโผล่" ไว้เทียบกับเวลาจริงทีหลัง — วัดความแม่นได้ต้องเก็บก่อน ไม่ใช่หลัง
+    let spawnPredAt = 0, spawnPredSrc = '';
+    try { const p = bossNextSpawnMs(); if (p) { spawnPredAt = p.at; spawnPredSrc = p.src; } } catch {}
     // 🆕 v6.310 (ผู้ใช้สั่ง): "ใช้ยา/สลับของ" ต้องทำ **หลังเข้าถ้ำ + เจอบอสจริง (ยังไม่ตาย)** เท่านั้น
     //   กันเปลืองของ (ต้ม 3,000🪙/2 ครั้งต่อวัน · เหยื่อจุดอ่อน) ตอนบอสไม่มา/ตายแล้ว/ป้ายค้าง/รีโหลดตัดรอบ
     //   รอบอสโผล่ก่อน (มี wrong-round guard ข้างบนแล้ว) · เห็นตาย = ออกทันที · หมดเวลา = ไม่ใช้ยา กลับไปฟาร์ม
@@ -4293,6 +4466,12 @@
         bossWrongRound = true; return false;
       }
       spawnSeenAt = now(); spawnSeenWall = Date.now();   // ⏱️ v6.345: นาฬิกาเริ่มเดินตรงนี้ = "บอสโผล่"
+      // 📚🎯 v6.362: จุดเดียวที่เป็น "ความจริงสัมบูรณ์" — บอสอยู่ในฉากจริง
+      //   ① เรียนตารางจากของจริง (เกมเปลี่ยนเวลาเมื่อไหร่ก็ตามทัน) ② จดว่าคาดไว้คลาดจากจริงกี่วินาที
+      try {
+        learnBossSlot(spawnSeenWall);
+        bossAccRecord(spawnSeenWall, spawnPredAt, spawnPredSrc);
+      } catch {}
       // 📊 v6.346: "รอในถ้ำกี่วินาทีกว่าจะเห็นบอส" — ตัวเลขที่ใช้พิสูจน์เกณฑ์ตัดรอ 90 วิ ของ v6.344
       //   คำถามที่ยังค้าง: `raidBossMeta.respawnSeconds` = 120-200 วิ แปลว่าบอสเกิดใหม่ในรอบเดียวกันหรือเปล่า?
       //   ถ้าเคยมีไฟต์ไหน "รอเกิน 90 วิแล้วบอสค่อยโผล่" ตัวเลขนี้จะฟ้องทันที → ค่อยขยับเกณฑ์ตามหลักฐาน (ไม่ใช่เดา)
