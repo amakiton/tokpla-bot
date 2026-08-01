@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.363
+// @version      6.364
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.363';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.364';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3887,6 +3887,25 @@
         //   เดิมยิง navigate ต่อจนหมดงบ 90 วิ แล้วค่อยสลับไปเดินเอง → ไปยืนหน้าประตูอีก 12 นาที
         const far = bossGateTooFar(bossGateWaitBudgetMs());
         if (far) { bossNavFail = `รอบบอสปิดแล้ว (ประตูเปิดอีก ${Math.round(far / 60)} นาที)`; aw.cancel && aw.cancel(); return false; }
+      }
+      // 🚪 v6.364 — **A* เข้าถ้ำไม่ได้ถ้ารอบยังไม่เปิด** (ประตูล็อก = เกมหาเส้นทางไม่เจอ) · หลักฐานสด 1/8/69:
+      //     19:58 รอบเปิดแล้ว → ถึงถ้ำใน 19 วิ ✅ | 22:46 รอบเปิดแล้ว → 16 วิ ✅
+      //     22:27 **ก่อนบอสเกิด 3 นาที** → ยิง navigate 10 ครั้ง 73 วิ **ตัวไม่ขยับเลย** ❌ จนต้องกด "พาฉันออกไป!"
+      //     แล้วเดินเอง village → boss_cave สำเร็จใน 26 วิ (ต้นทาง/ปลายทางเดียวกับรอบที่สำเร็จเป๊ะ)
+      //   ตัวกรองเดิม (bossGateTooFar) อ่านจากป้ายหน้าประตู — ตอนอยู่ไกลยังอ่านไม่ได้ จึงไม่เคยตัดวงจรนี้
+      //   ตอนนี้มีเวลาบอสระดับวินาทีจาก v6.362 แล้ว ⇒ รู้ได้ตั้งแต่ยังไม่ถึงประตูว่า "รอบยังไม่เปิด"
+      //   ⚠️ ยิงลองจริง 1 รอบก่อนเสมอ (rotations >= 1) — ถ้าวันหนึ่งเกมยอมให้ A* เข้าก่อนเวลา จะได้ไม่เสียโอกาส
+      if (isBossMap(targetMap) && !isBossMap(cur) && rotations >= 1) {
+        try {
+          const b = bossRoundBounds();
+          const roundOpen = b.prev && (Date.now() - b.prev) < SERVER_RAID_WINDOW_MIN * 60000;
+          if (!roundOpen && b.next && b.next > Date.now() + 5000) {
+            const sec = Math.round((b.next - Date.now()) / 1000);
+            bossNavFail = `รอบยังไม่เปิด (บอสมาอีก ${sec} วิ) — A* เข้าถ้ำไม่ได้ตอนประตูล็อก ใช้เดินเองแทน`;
+            logInfo(`🚪 A* เข้าถ้ำไม่ได้เพราะรอบยังไม่เปิด (อีก ${sec} วิ) → สลับไปเดินเองทันที (เดิมเสียเวลาลองซ้ำ ~73 วิ)`);
+            aw.cancel && aw.cancel(); return false;
+          }
+        } catch {}
       }
       // นับว่า "นิ่ง" (ไม่ขยับ) กี่รอบ — ถ้านิ่งนานทั้งที่ยังไม่ถึง = สั่ง navigate ใหม่ (เผื่อ NPC/หลุด)
       if (lastP && p && Math.abs(p.x - lastP.x) < 3 && Math.abs(p.y - lastP.y) < 3) stillFor++; else stillFor = 0;
