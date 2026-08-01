@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.331
+// @version      6.332
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.331';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.332';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2804,7 +2804,7 @@
       if (sched) {
         const domMs = Date.now() + dom * 60000;
         if (Math.abs(domMs - sched) > 6 * 60000) {
-          if (now() - bossChipDistrustAt > 600000) {
+          if (now() - bossChipDistrustAt > 1800000) {   // 🧹 v6.332: 10→30 นาที (คืนเดียว 35 บรรทัด กลบ log จริง)
             bossChipDistrustAt = now();
             logInfo(`🔮 ตัวนับบนจอบอก "อีก ${dom} นาที" แต่ตารางบอกรอบถัดไป ${hhmmOf(sched)} — น่าจะเป็นตัวนับของอย่างอื่น (แข่ง/อีเวนต์) ไม่เชื่อ ใช้ตาราง`);
           }
@@ -2826,7 +2826,7 @@
       //   แต่ยังกันเคสป้ายค้าง 11 ชม. ของ v6.215) · arm gate (v6.200) ยังคุมอยู่: รอบที่ล่าจบแล้ว disarm = ป้ายปลุกไม่ได้
       if (!bossNextMs || (rawGap >= -45 && rawGap <= lead + 2)) return 0;
       // ป้ายแย้งเวลาจริง (บอสยังอีกไกล) = ป้ายค้าง/เพี้ยน → ไม่เชื่อ ใช้ตัวทำนายแทน
-      if (now() - bossPredictSayAt > 600000) {
+      if (now() - bossPredictSayAt > 1800000) {   // 🧹 v6.332: 10→30 นาที
         bossPredictSayAt = now();
         logInfo(`🔮 ป้าย "ถึงรอบบอส" โชว์ทั้งที่เวลาบอสจริงยังอีก ~${Math.round(rawGap)} นาที (เกมเพี้ยน) → ไม่เชื่อป้าย ใช้ตัวทำนาย`);
       }
@@ -2834,7 +2834,7 @@
     }
     // dom == null (ไม่มีทั้งตัวนับและป้าย) → ทำนาย
     const pred = bossPredictNextMin();
-    if (pred != null && now() - bossPredictSayAt > 600000) {   // log ทุก 10 นาที กันสแปม
+    if (pred != null && now() - bossPredictSayAt > 1800000) {   // 🧹 v6.332: log ทุก 30 นาที (เดิม 10 — คืนเดียว 44 บรรทัด)
       bossPredictSayAt = now();
       logInfo(`🔮 อ่านเวลาบอสจาก DOM ไม่ได้ (ป้ายค้าง/ไม่มีตัวนับ) → ใช้${bossPredictSrc}: อีก ~${pred} นาที`);
     }
@@ -4188,7 +4188,24 @@
       const newBtns = [...document.querySelectorAll('button,[role="button"],[role="option"]')]
         .filter((b) => !isBotUI(b) && b.offsetParent && /Channel|ช่อง|คน/.test(b.textContent || ''))
         .map((b) => (b.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40));
+      // 🎨 v6.332: recon รอบแรก (31/7) เห็นแล้วว่า dialog เขียน "สีบอกความแน่น" — ความแน่นเป็น **สี** ไม่ใช่ตัวเลข
+      //   → เก็บสี (color/background) + class ของแถว "ช่อง N" แต่ละแถวมาด้วย ไม่งั้นสร้างระบบเลือกช่องว่างไม่ได้
+      const chRows = [...document.querySelectorAll('button,[role="button"],div,li,span')]
+        .filter((el) => !isBotUI(el) && el.offsetParent && el.children.length <= 3
+          && /^(Channel|ช่อง)\s*\d+/.test((el.textContent || '').trim()) && (el.textContent || '').trim().length < 25);
+      const colorInfo = chRows.slice(0, 8).map((el) => {
+        let c = '?';
+        try { const cs = getComputedStyle(el); c = `${cs.color}/bg:${cs.backgroundColor}`; } catch {}
+        // จุดสี (ความแน่น) มักเป็น element ลูกเล็กๆ — เก็บ background ของลูกที่มีสีด้วย
+        let dot = '';
+        try {
+          const kid = [...el.querySelectorAll('*')].find((k) => { const b = getComputedStyle(k).backgroundColor; return b && b !== 'rgba(0, 0, 0, 0)'; });
+          if (kid) dot = ' ·จุด:' + getComputedStyle(kid).backgroundColor;
+        } catch {}
+        return `${(el.textContent || '').trim().slice(0, 12)}[${c}${dot}] cls:${String(el.className || '').slice(0, 25)}`;
+      });
       logInfo(`📡 ช่องแมพ (ลาดตระเวน): ข้อความ=[${lines.join(' · ') || '-'}] · ปุ่ม=[${[...new Set(newBtns)].slice(0, 10).join(' | ') || '-'}] · Δtext=${txt.length - beforeLen}`);
+      if (colorInfo.length) logInfo(`🎨 สีช่อง: ${colorInfo.join(' ‖ ')}`);
       gameEscape(); await sleep(300);
     } catch (e) { logErr('ลาดตระเวนช่องแมพล้มเหลว', e); }
   }
@@ -5029,7 +5046,7 @@
     }
     return near;
   }
-  let lastBossBlockLog = 0;
+  let lastBossBlockLog = 0, lastBossBlockWhy = '';   // v6.332: จำ "เหตุผลล่าสุด" — เหตุผลเดิมซ้ำๆ ไม่ต้อง log ถี่
   // ⏸ v6.250: เตือนเมื่อ "พักค้างไว้" แล้วรอบบอสใกล้เข้ามา — พักบล็อก runBossHunt ทั้งหมด (ดู tick)
   //   เตือนครั้งเดียวต่อรอบ (กันสแปม) · ใช้เวลาจากป้ายเกมโดยตรง ไม่ใช่ตารางที่ตั้งไว้
   let pausedBossWarnAt = 0;
@@ -5063,9 +5080,13 @@
       : !bossArmed ? 'รอบนี้ล่าไปแล้ว — รอเห็นตัวนับรอบใหม่ก่อน (กันป้าย "ถึงรอบบอสแล้ว" ค้างปลุกเที่ยวเปล่า)'
       : testRunning ? 'กำลังทดสอบเหยื่อ'
       : null;
-    // บันทึกเฉพาะตอน "ถึงเวลาแล้วแต่ไปไม่ได้" (throttle 30 วิ กันสแปม) — นี่คือหลักฐานที่เคยหายไป
-    if (due && why && now() - lastBossBlockLog > 30000) {
-      lastBossBlockLog = now();
+    // บันทึกเฉพาะตอน "ถึงเวลาแล้วแต่ไปไม่ได้" — นี่คือหลักฐานที่เคยหายไป
+    // 🧹 v6.332: เดิม throttle 30 วิ แต่เหตุผลมีตัวเลขวิ่ง (คูลดาวน์เหลือ N วิ) → คืนเดียวสแปม 20+ บรรทัด
+    //   กลบเหตุการณ์จริงใน tokpla_boss_events จนอ่านยาก · ใหม่: log เมื่อ "เหตุผลเปลี่ยน" (ตัดตัวเลขก่อนเทียบ)
+    //   หรือเหตุผลเดิมค้างเกิน 5 นาที (ยังรู้ว่าค้างอยู่ แต่ไม่ท่วม log)
+    const whyKey = why ? why.replace(/\d+/g, '#') : '';
+    if (due && why && (whyKey !== lastBossBlockWhy || now() - lastBossBlockLog > 300000)) {
+      lastBossBlockLog = now(); lastBossBlockWhy = whyKey;
       bossEvent(`⏳ ถึงเวลาล่าแล้ว (บอสอีก ${min} นาที ≤ ตั้งไว้ ${cfg.bossLeadMin}) แต่ยังไม่ไป — ${why}`);
     }
     // 🧪 v6.148: เทสต์เหยื่อรันอยู่ + บอสใกล้มา → หยุดเทสต์ไปล่าบอสก่อน (resumeTestAfterBoss ทำต่อให้เอง)
