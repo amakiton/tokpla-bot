@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.348
+// @version      6.349
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.348';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.349';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -7738,7 +7738,7 @@
   function evCalib() {   // { wmult, junkBase, nW, nJ } — สอบเทียบใหม่ทุก 5 นาที
     if (_evCalib && now() - _evCalibAt < EV_CALIB_MS) return _evCalib;
     _evCalibAt = now();
-    const ratios = [], junkBases = [];
+    const ratios = [], junkBases = [], byTier = {};
     for (const t in profit.recs) {
       const list = profit.recs[t] || [];
       if (!list.length) continue;
@@ -7747,7 +7747,13 @@
         if (c.junk) { junkN++; continue; }
         const base = FISH_BY_NAME.get(String(c.fish || '').trim())?.price;
         // ตัด shiny ออกจากการสอบเทียบ (×10 จะลากค่าเฉลี่ยเพี้ยน) — ดูจากธง shiny ตรงๆ
-        if (base > 0 && c.price > 0 && !c.shiny) ratios.push(c.price / base);
+        if (base > 0 && c.price > 0 && !c.shiny) {
+          const rt = c.price / base;
+          ratios.push(rt);
+          // ⚖️ v6.349: เก็บ "แยกตามขั้นเหยื่อ" ด้วย — และ **ตัดช่วงที่กินยา 🐋 ออก** (ยาให้ +15% น้ำหนัก
+          //   = ทำให้ขั้นที่บังเอิญใช้ตอนมียาดูดีเกินจริง) · `bw` = ธงบัฟน้ำหนักที่บันทึกไว้ตอนตก (v6.75)
+          if (!c.bw) (byTier[t] = byTier[t] || []).push(rt);
+        }
       }
       const cut = (gameCfg?.tuning?.baitJunkCut || [])[(+t) - 1];
       if (list.length >= 100 && Number.isFinite(cut) && cut < 1) junkBases.push((junkN / list.length) / (1 - cut));
@@ -7758,11 +7764,27 @@
     //   ปลอดภัยเพราะสูตรเกมล็อกช่วงไว้แล้ว (weightPriceBase 0.9 → +weightPriceSpan/Over สูงสุด ~2) + ตัด shiny ออกแล้ว
     const okRatios = ratios.filter((x) => x >= 0.5 && x <= 3);
     const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+    const wmult = okRatios.length >= 50 ? mean(okRatios) : EV_FALLBACK_WMULT;
+    // ⚖️ v6.349 — **ตัวคูณน้ำหนักต้องแยก "ต่อขั้นเหยื่อ"** (ต่อยอดจากบทเรียน v6.341 อีกชั้น)
+    //   เกมมี `baitSizeBonus` = [0, .02, .05, .09, .14, .2, .28, .38, .42, .46, .5, …] = **ขั้นสูงได้ปลาตัวใหญ่กว่า**
+    //   และราคา = ฐาน × (weightPriceBase .9 + weightPriceSpan .875 × frac^1.5) ⇒ ตัวใหญ่ = แพงกว่าแบบไม่เชิงเส้น
+    //   ⇒ ปลา **ชนิดเดียวกัน** ที่ขั้น 10 แพงกว่าขั้น 5 ได้ ~20-25%
+    //   โมเดลเดิมใช้ค่าเฉลี่ย **รวมทุกขั้น** ค่าเดียว → ขั้นสูงถูกตีค่าต่ำไป · ขั้นต่ำถูกตีค่าสูงไป
+    //   (ประวัติการตกของบัญชีนี้ 75% อยู่ที่ขั้น 1/2/5 → ค่าเฉลี่ยรวมยิ่งถูกลากลงหาขั้นถูก = เอียงซ้ำรอยเดิม)
+    //   ⚠️ ไม่ยัดสูตร `baitSizeBonus` ลงโมเดลตรงๆ — **วัดจากผลตกจริงของบัญชีนี้เอง** (ปรัชญาเดิม v6.341)
+    //      ขั้นไหนตัวอย่างน้อย (< 50) = ถอยไปใช้ค่าเฉลี่ยรวม (ไม่เดา ไม่ทำให้แย่ลง)
+    const wTier = {};
+    for (const t in byTier) {
+      const ok = byTier[t].filter((x) => x >= 0.5 && x <= 3);
+      if (ok.length >= 50) wTier[t] = mean(ok);
+    }
     _evCalib = {
-      wmult: okRatios.length >= 50 ? mean(okRatios) : EV_FALLBACK_WMULT,
+      wmult,
+      wTier,
+      wmultOf: (tier) => wTier[tier] || wmult,
       junkBase: junkBases.length >= 3 ? med(junkBases) : EV_FALLBACK_JUNK,
       luck: evFitLuck(),
-      nW: okRatios.length, nJ: junkBases.length,
+      nW: okRatios.length, nJ: junkBases.length, nT: Object.keys(wTier).length,
     };
     return _evCalib;
   }
@@ -7806,7 +7828,9 @@
     if (!(tot > 0)) return null;
     const shiny = 1 + (1 / (T.shinyOneIn || 350)) * ((T.shinyMultiplier || 10) - 1);
     let fish = 0;
-    for (let r = 0; r <= ceil; r++) fish += (w[r] / tot) * (prices[RARITY[r].key] || 0) * cal.wmult * shiny;
+    // ⚖️ v6.349: ใช้ตัวคูณน้ำหนัก "ของขั้นนี้" (baitSizeBonus ทำให้ขั้นสูงได้ปลาตัวใหญ่ = แพงกว่า)
+    const wm = cal.wmultOf ? cal.wmultOf(tier) : cal.wmult;
+    for (let r = 0; r <= ceil; r++) fish += (w[r] / tot) * (prices[RARITY[r].key] || 0) * wm * shiny;
     const cut = (T.baitJunkCut || [])[i];
     const junk = clamp(cal.junkBase * (1 - (Number.isFinite(cut) ? cut : 0)), 0, 0.9);
     return junk * 4 + (1 - junk) * fish;                  // ขยะขายได้ ~4 🪙 (วัดจริง)
@@ -7851,6 +7875,11 @@
     }
     rows.sort((a, b) => b.score - a.score);
     out.push(`📐 EV ตามสูตรเกม · ตัวคูณน้ำหนัก ×${cal.wmult.toFixed(2)} (n=${cal.nW}) · โชคส่วนเกินที่ฟิตได้ +${(cal.luck || 0).toFixed(2)} · ขยะฐาน ${(cal.junkBase * 100).toFixed(1)}%`);
+    // ⚖️ v6.349: โชว์ตัวคูณน้ำหนักรายขั้นที่วัดได้จริง — พิสูจน์ว่า baitSizeBonus มีผลจริงบนบัญชีนี้แค่ไหน
+    if (cal.nT) {
+      const tl = Object.keys(cal.wTier).map(Number).sort((a, b) => a - b).map((t) => `ขั้น${t} ×${cal.wTier[t].toFixed(2)}`);
+      out.push(`⚖️ ตัวคูณน้ำหนักที่วัดแยกรายขั้น (ตัดช่วงกินยา 🐋 ออกแล้ว): ${tl.join(' · ')} — ขั้นที่ตัวอย่าง <50 ใช้ค่าเฉลี่ยรวม`);
+    }
     out.push(mapId
       ? `🗺️ ${curMap} (${mapId}) — ใช้ตารางปลาของแมพนี้`
       : `🗺️ ${curMap || 'ยังไม่รู้แมพ'} — ⚠️ จับคู่ id แมพไม่ได้ จึงใช้ราคาปลาเฉลี่ยทั้งเกม (ตัวเลขคลาดได้ · เปิดบอทให้อ่าน HUD ก่อนแล้วดูใหม่)`);
@@ -10389,7 +10418,11 @@ ${esc(reason)}
 
         // 🧪 กำลังใช้ยาบัฟอยู่ → ห้ามพัก/นั่งพัก (ยาอยู่แค่ 30 นาที ต้องตกให้คุ้ม) · พึ่งกาแฟเติมพลังแทน
         // เช็ค buffActive() (สแกน DOM) เฉพาะเมื่อมีระบบพัก/พักย่อยเปิดอยู่จริง (ไม่งั้นไม่ต้องเสียแรงสแกน)
-        const restBlocked = (cfg.energyManage || hOn('hSession') || hOn('hBreak')) && isOn('noRestOnBuff') && buffActive();
+        // 🌧️ v6.349: "ฝนตก/ปลาชุก" = ช่วงที่ปลากินไวขึ้นจริงตามคอนฟิกเกม
+        //   `rainBiteFactor 0.55` · `feverBiteFactor 0.45` = เวลารอปลากินเหลือ 55%/45% (ของเดิม 1.6-4.2 วิ)
+        //   ⇒ ช่วงนี้ตกได้ถี่ขึ้น ~25-45% แต่สั้นมาก (ฝน 75 วิ · ปลาชุก 45 วิ) — ไปพักตอนนี้ = ทิ้งช่วงที่ดีที่สุดทิ้ง
+        //   บอทตรวจเจอสภาพอากาศอยู่แล้วตั้งแต่ v6.x (แจ้ง Telegram) แต่ **ไม่เคยเอามาใช้ตัดสินใจ** — ใช้กติกาเดียวกับยาบัฟ
+        const restBlocked = (cfg.energyManage || hOn('hSession') || hOn('hBreak')) && isOn('noRestOnBuff') && (buffActive() || lastWeather != null);
 
         // จัดการพลังงานเชิงรุก (hysteresis): พักเมื่อถึงเกณฑ์ล่าง กลับมาตกเมื่อฟื้นถึงเกณฑ์บน
         // พลังฟื้นเองตอนไม่ตก (~100%/3ชม.) — แค่หยุดตกก็พอ · "นั่งพัก" เป็นท่าทางเสริม
