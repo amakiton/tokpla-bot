@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.344
+// @version      6.345
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.344';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.345';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2599,6 +2599,12 @@
       `⌛ ไม่เจอบอสเลย ${arr.filter((r) => r.outcome === 'noshow').length}/${n} ครั้ง` + (bossWasteText() ? `\n${bossWasteText()}` : ''),
       `⚔️ ดาเมจเฉลี่ย ${fmt(aDmg)}${aPct != null ? ` (${aPct.toFixed(1)}%)` : ''} · 🎯 กดเกจเฉลี่ย ${fmt(aGauge)}`,
       `❤️ HP ต่ำสุดเฉลี่ย ${aHpMin != null ? Math.round(aHpMin) + '%' : '–'} · 🌀 หลบ AoE เฉลี่ย ${fmt(aAoe, 1)} · ⏱️ ${aDur != null ? Math.round(aDur / 1000) + ' วิ/ไฟต์' : '–'}`,
+      // ⏱️ v6.345: เวลาที่เสียไป "ก่อนตีนัดแรก" — ตัวเลขที่ v6.345 ตั้งใจกดให้ต่ำ (เดิมไม่เคยวัด)
+      (() => {
+        const t2 = avg((r) => r.t2first);
+        return t2 == null ? '⏱️ เริ่มตีหลังบอสโผล่: (ยังไม่มีข้อมูล — เริ่มเก็บตั้งแต่ v6.345)'
+          : `⏱️ เริ่มตีหลังบอสโผล่เฉลี่ย ${(t2 / 1000).toFixed(1)} วิ (จาก ${arr.filter((r) => r.t2first != null).length} ไฟต์)`;
+      })(),
     ];
     // 🎁 v6.206: สรุปรางวัลรวม + ของที่ได้บ่อย
     const totCoin = arr.reduce((s, r) => s + ((r.reward && r.reward.coins) || 0), 0);
@@ -2639,6 +2645,8 @@
       { h: 'di', w: 3, g: (r) => r.deaths ?? 0 },
       { h: 'hp', w: 5, g: (r) => r.hpMin != null ? r.hpMin + '%' : '-' },
       { h: 'sec', w: 4, g: (r) => r.durMs ? Math.round(r.durMs / 1000) : '-' },
+      // ⏱️ v6.345: t2f = วินาทีจาก "บอสโผล่" ถึง "กดตีครั้งแรก" (ยิ่งต่ำยิ่งดี) · ก่อน v6.345 ไม่มีข้อมูล = '-'
+      { h: 't2f', w: 4, g: (r) => r.t2first != null ? (r.t2first / 1000).toFixed(1) : '-' },
       { h: 'coin', w: 8, g: (r) => r.reward && r.reward.coins ? r.reward.coins.toLocaleString() : '-' },   // 🎁 v6.206
     ];
     const rows = arr.slice().reverse();   // ใหม่สุดอยู่บน
@@ -2657,7 +2665,7 @@
     const totCoin = arr.reduce((s, r) => s + ((r.reward && r.reward.coins) || 0), 0);
     return `📊 เทียบรายไฟต์ล่าบอส (${arr.length} ครั้ง · ใหม่→เก่า) · ฆ่า ${kills}/${arr.length}`
       + (totCoin ? ` · รางวัลรวม ${totCoin.toLocaleString()} 🪙` : '') + '\n'
-      + `res: k=ฆ่า t=หมดเวลา m=ไม่มา · gg=กดเกจ dg=หลบAoE di=ตาย hp=HPต่ำสุด sec=วินาที coin=เหรียญรางวัล\n\n`
+      + `res: k=ฆ่า t=หมดเวลา m=ไม่มา · gg=กดเกจ dg=หลบAoE di=ตาย hp=HPต่ำสุด sec=วินาที t2f=วิกว่าจะตีนัดแรกหลังบอสโผล่ coin=เหรียญรางวัล\n\n`
       + header + '\n' + sep + '\n' + body
       + (rw.length ? `\n\n🎁 รางวัลที่ได้รับรายไฟต์\n${rw.join('\n')}` : '\n\n🎁 (ยังไม่มีข้อมูลรางวัล — จะเก็บตั้งแต่ไฟต์ถัดไป)');
   }
@@ -3669,8 +3677,41 @@
     const effMin = Math.min(45, Math.max(maxMin, (tmin != null && tmin >= 0 ? tmin : 0) + 3));
     const until = now() + effMin * 60000;
     if (effMin > maxMin) say(`👹 บอสยังอีก ~${tmin} นาที — รอในถ้ำถึง ${effMin} นาที (กันยอมแพ้ก่อนบอสมา)`);
+    // ⚡ v6.345 — **สลับเบ็ด/ทุ่น "ระหว่างยืนรอ" ไม่ใช่หลังบอสโผล่** (ผู้ใช้สั่ง: เริ่มตีให้เร็วขึ้นตอนบอสโผล่)
+    //   วัดจากโค้ดจริง: `equipRodBy` คลิกการ์ดเบ็ด **ทุกใบ × sleep 420ms** + เปิด/ปิดกระเป๋า · `equipFloatBy` ต้องเลื่อนหาทุ่นอีก
+    //   → เบ็ด+ทุ่นกินเวลา **~6-15 วิ** และเดิมทำ *หลังเห็นบอสแล้ว* = ยืนเปิดกระเป๋าอยู่ในขณะที่คนอื่นรุมตี
+    //   v6.310 ย้ายงานพวกนี้มาไว้หลัง "เจอบอสจริง" เพื่อ **ไม่ให้เปลืองของตอนบอสไม่มา** — เจตนานั้นยังถูก
+    //     แต่ใช้กับ "ของกิน" (ต้ม/ยา) เท่านั้น · **เบ็ดกับทุ่นไม่ใช่ของกิน สลับกี่ครั้งก็ไม่เสียอะไรนอกจากเวลา**
+    //   ⇒ ทำตอนรอได้ฟรีๆ · พอบอสโผล่เหลือแค่ เหยื่อจุดอ่อน (ต้องรอ HUD ประกาศ) + ต้ม (ของกิน คงกฎ v6.310 ไว้)
+    //   ⚠️ ถ้าสุดท้ายบอสไม่มา = ติดเบ็ดบอสกลับบ้าน → ตั้ง `lastFarmRodAt = 0` ตอน bail
+    //      ให้ตัวเช็ค idle (v6.301/6.305) สลับคืนเบ็ดฟาร์มทันทีที่ว่าง — ใช้ทางเดิมที่พิสูจน์แล้ว ไม่เพิ่มเส้นทางใหม่
+    let gearPrepped = false, gearPrepEarly = false;
+    const prepBossGear = async () => {
+      if (gearPrepped) return;
+      gearPrepped = true;
+      gearPrepEarly = !spawnSeenAt;   // ⏱️ v6.345: จัดของ "ก่อนบอสโผล่" ไหม — ตัวแปรที่ t2first ต้องเทียบด้วย
+      if (isOn('rodSwitchOn')) {
+        busy = true;
+        try {
+          say('👹 เลือกเบ็ดที่ดาเมจบอสสูงสุด');
+          if (!(await equipRodBy('boss'))) say('⚠️ ใช้เบ็ดชิ้นเดิมตีบอสแทน');
+        } catch (e) { logErr('เลือกเบ็ดบอสล้มเหลว', e); }
+        finally { busy = false; }
+      } else {
+        logInfo('👹 ปิดการสลับเบ็ดไว้ — ใช้เบ็ดที่ใส่อยู่ตีบอส');
+      }
+      // ⭕ v6.304 (ทุ่น "ตาดุก" = ของรางวัลบอส มี "ตีบอสแรงขึ้น 15%") · ไม่มีทุ่นบอส = คงทุ่นเดิม
+      if (isOn('floatSwitchOn')) {
+        busy = true;
+        try { say('👹 เลือกทุ่นที่ตีบอสแรงสุด'); await equipFloatBy('boss'); }
+        catch (e) { logErr('เลือกทุ่นบอสล้มเหลว', e); }
+        finally { busy = false; }
+      }
+    };
+    // ⏱️ v6.345: จับเวลา "บอสโผล่ → กดตีครั้งแรก" — ตัวเลขที่ต้องกดให้ต่ำ (เดิมไม่เคยวัด จึงไม่รู้ว่าช้าเพราะอะไร)
+    let spawnSeenAt = 0, spawnSeenWall = 0, firstPressAt = 0;
     // 🆕 v6.310 (ผู้ใช้สั่ง): "ใช้ยา/สลับของ" ต้องทำ **หลังเข้าถ้ำ + เจอบอสจริง (ยังไม่ตาย)** เท่านั้น
-    //   กันเปลืองของ (ต้ม 3,000🪙/2 ครั้งต่อวัน · สลับ rod/float/เหยื่อ) ตอนบอสไม่มา/ตายแล้ว/ป้ายค้าง/รีโหลดตัดรอบ
+    //   กันเปลืองของ (ต้ม 3,000🪙/2 ครั้งต่อวัน · เหยื่อจุดอ่อน) ตอนบอสไม่มา/ตายแล้ว/ป้ายค้าง/รีโหลดตัดรอบ
     //   รอบอสโผล่ก่อน (มี wrong-round guard ข้างบนแล้ว) · เห็นตาย = ออกทันที · หมดเวลา = ไม่ใช้ยา กลับไปฟาร์ม
     {
       let seen = !!(raidBossState() || {}).present;
@@ -3688,9 +3729,14 @@
       const untilNext = _rb0.next ? _rb0.next - Date.now() : Infinity;
       const lateArrival = sinceSpawn > 60000 && sinceSpawn < SERVER_RAID_WINDOW_MIN * 60000
         && untilNext > (clamp(cfg.bossMaxWaitMin, 1, 30) + 2) * 60000;
+      // ⚡ v6.345: บอสยังไม่โผล่ = มีเวลาว่างอยู่แล้ว → เก็บงานกระเป๋า (เบ็ด/ทุ่น) ให้จบตรงนี้
+      //   ⚠️ กลับมาเช็ค `present` ก่อนเสมอ — ถ้าบอสโผล่ระหว่างจัดของ ให้เข้าตีทันที ไม่ต้องรอลูปรอบถัดไป
+      if (!seen) { await prepBossGear(); seen = !!(raidBossState() || {}).present; }
+      // ⏱️ v6.345: 700 → 250ms — คาบ poll คือเวลาที่ "บอสโผล่แล้วแต่บอทยังไม่รู้" (เฉลี่ย 350ms → 125ms)
+      //   ราคาที่จ่าย: อ่าน scene.raidBoss ถี่ขึ้น (อ่าน object ตรงๆ ไม่ scan DOM) = ถูกมาก
       while (!seen && now() < until && enabled && (isOn('bossHunt') || mythicActive())) {
         const rb = raidBossState() || {};
-        if (rb.dead) { say('👹 บอสตายแล้ว — ไม่ใช้ยา/ไม่สลับของ (ประหยัด) กลับไปฟาร์ม'); bossEvent('💀 เจอบอสตายแล้วในถ้ำ — ข้ามการใช้ยา/สลับของ'); markBossRoundDone('เจอบอสตายแล้วในถ้ำ'); bossWrongRound = true; return false; }
+        if (rb.dead) { say('👹 บอสตายแล้ว — ไม่ใช้ยา/ไม่สลับของ (ประหยัด) กลับไปฟาร์ม'); bossEvent('💀 เจอบอสตายแล้วในถ้ำ — ข้ามการใช้ยา/สลับของ'); markBossRoundDone('เจอบอสตายแล้วในถ้ำ'); if (gearPrepped) lastFarmRodAt = 0; bossWrongRound = true; return false; }
         if (rb.present) { seen = true; break; }
         if (lateArrival && now() - waitT0 > 90000) {
           const left = Math.max(0, until - now());
@@ -3698,41 +3744,31 @@
           bossEvent(`✂️ เลิกรอในถ้ำแต่เนิ่นๆ (มาสาย + ไม่มีบอสในฉาก 90 วิ) — ประหยัดเวลาฟาร์ม ~${Math.round(left / 60000)} นาที`);
           bossWasteAdd('รอในถ้ำ', left);
           markBossRoundDone('เข้าถ้ำแล้วไม่มีบอส (มาหลังเวลาเกิด)');
+          if (gearPrepped) lastFarmRodAt = 0;   // ⚡ v6.345: ติดเบ็ดบอสอยู่ → ให้ตัวเช็ค idle สลับคืนเบ็ดฟาร์มทันทีที่ว่าง
           bossWrongRound = true; return false;
         }
-        await sleep(700);
+        await sleep(250);
       }
-      if (!seen) { say('👹 รอในถ้ำจนหมดเวลา บอสไม่โผล่ — ไม่ใช้ยา กลับไปฟาร์ม (ประหยัดของ)'); bossEvent('⌛ บอสไม่โผล่ในถ้ำ — ข้ามการใช้ยา/สลับของ'); bossWrongRound = true; return false; }
-      bossEvent('✅ เจอบอสจริงในถ้ำ (ยังไม่ตาย) — เริ่มใช้ยา/สลับของ + เข้าตี');
+      if (!seen) {
+        say('👹 รอในถ้ำจนหมดเวลา บอสไม่โผล่ — ไม่ใช้ยา กลับไปฟาร์ม (ประหยัดของ)'); bossEvent('⌛ บอสไม่โผล่ในถ้ำ — ข้ามการใช้ยา/สลับของ');
+        if (gearPrepped) lastFarmRodAt = 0;
+        bossWrongRound = true; return false;
+      }
+      spawnSeenAt = now(); spawnSeenWall = Date.now();   // ⏱️ v6.345: นาฬิกาเริ่มเดินตรงนี้ = "บอสโผล่"
+      bossEvent(`✅ เจอบอสจริงในถ้ำ (ยังไม่ตาย) — ${gearPrepped ? 'เบ็ด/ทุ่นจัดไว้ตั้งแต่ตอนรอแล้ว เหลือแค่เหยื่อ+ต้ม' : 'เริ่มจัดของ'} + เข้าตี`);
     }
     const fz = bossFishingZone();
     // เหยื่อจุดอ่อน (วิดีโอ: ขั้น2 มัดอ้วน / ขั้น4 กุ้งฝอย = ดาเมจ x1.5) — สลับก่อนตี (DOM ไม่ต้องเดิน)
     //   v6.121: จำขั้นเดิมไว้สลับคืนหลังสู้จบ — ไม่งั้นถ้าผู้ใช้ปิด forceBait เหยื่อจะค้างขั้นจุดอ่อนตลอด (ฟาร์มต่อผิดเหยื่อ)
     // 🎣 v6.174 (ผู้ใช้ขอ): สลับ "ชิ้นเบ็ด" ไปตัวที่อัปเกรดมาตีบอส (เช่นติดหินดาเมจบอสจากช่างหิน) แล้วสลับคืนตอนฟาร์ม
     //   เกมแยกเบ็ดเป็น instance (tokpla_rod_instance = UUID) → เบ็ด "ชนิดเดียวกันแต่อัปเกรดต่างกัน" แยกออกจากกันได้จริง
-    const prevRodId = currentRodId();
     // ⛔ v6.189: ปิดการสลับเบ็ดโดยปริยาย — พิสูจน์แล้วว่า G สลับได้แค่ "tier" (ดู CHANGELOG v6.188)
     //   ผลที่เกิดจริงถ้าปล่อยไว้: บอทกด G หาชิ้นที่ไม่อยู่ในวง → เขี่ยผู้ใช้หลุดจากเบ็ดบอสที่ใส่ไว้เอง
     //   → **แล้วคืนกลับไม่ได้** (ชิ้นนอกวง G เข้าถึงได้ทางหน้ากระเป๋าเท่านั้น) = แย่กว่าไม่ทำอะไรเลย
     // v6.190: เลือกเบ็ด "ดาเมจบอส สูงสุด" ผ่านกระเป๋า (ไม่ใช้ UUID แล้ว — ทน UUID เปลี่ยนตอนตีหิน)
-    if (isOn('rodSwitchOn')) {
-      busy = true;
-      try {
-        say('👹 เลือกเบ็ดที่ดาเมจบอสสูงสุด');
-        if (!(await equipRodBy('boss'))) say('⚠️ ใช้เบ็ดชิ้นเดิมตีบอสแทน');
-      } catch (e) { logErr('เลือกเบ็ดบอสล้มเหลว', e); }
-      finally { busy = false; }
-    } else {
-      logInfo('👹 ปิดการสลับเบ็ดไว้ — ใช้เบ็ดที่ใส่อยู่ตีบอส');
-    }
-    // ⭕ v6.304 (ผู้ใช้เจอสด: ทุ่น "ตาดุก" = ของรางวัลบอส มี "ตีบอสแรงขึ้น 15%"): สลับเป็นทุ่นดาเมจบอสสูงสุดก่อนตี
-    //   (สลับกลับทุ่นฟาร์มหลังสู้จบ — ดูจุด equipFloatBy('farm') ตอน return) · ไม่มีทุ่นบอส = คงทุ่นเดิม
-    if (isOn('floatSwitchOn')) {
-      busy = true;
-      try { say('👹 เลือกทุ่นที่ตีบอสแรงสุด'); await equipFloatBy('boss'); }
-      catch (e) { logErr('เลือกทุ่นบอสล้มเหลว', e); }
-      finally { busy = false; }
-    }
+    // ⚡ v6.345: ปกติทำไปแล้วตอนยืนรอ (prepBossGear เป็น idempotent) — เหลือทำตรงนี้เฉพาะเคส
+    //   "เข้าถ้ำมาแล้วบอสยืนรออยู่ก่อน" (มาสาย/ตีในถ้ำ) ซึ่งข้ามช่วงรอไปเลย
+    await prepBossGear();
     let prevBaitTier = null;
     // 🐛 v6.243: เดิมมีเงื่อนไข `currentBait() &&` → **เหยื่อหมด (currentBait null) = ข้ามการสลับ = ตีบอสไม่ได้** (ผู้ใช้เจอ)
     //   ใหม่: สลับเป็นเหยื่อจุดอ่อนแม้ตอนนี้ไม่มีเหยื่อติดเบ็ด — cycleTo จะ equip ให้ (ensureBossBaitStock ซื้อมารอแล้ว)
@@ -3976,6 +4012,12 @@
       //   → "ตี 110 ครั้ง ได้ 0 popup" จึงยังไม่ใช่หลักฐานว่าเกมเลิกใช้ showDamagePopup · ติดตั้งตรงนี้แล้วรอบหน้าจะตอบได้จริง
       installDmgTap();
       if (present) { bossSeen = true; goneAt = 0; if (!fightT0) fightT0 = now(); fightMap = bossMapId() || fightMap; learnBossMap(bossMapId()); }   // 🐛 v6.246: เห็นบอสในฉาก = แมพนี้เป็นถ้ำบอส (เรียนรู้ถ้ำที่ 3+ เอง) · v6.247 จำถ้ำไว้กลับเข้าหลังตาย
+      // ⏱️ v6.345: จับ "การกดตีครั้งแรกหลังบอสโผล่" — ใช้ lastBossPressAt (ทุกจุดกดตั้งค่านี้อยู่แล้ว)
+      //   ทำที่หัวลูปจุดเดียว = ไม่ต้องไปแตะทั้ง 6 จุดที่กดปุ่ม (คลาดได้ ≤ 1 รอบลูป ซึ่งสั้นกว่าที่วัดมาก)
+      if (!firstPressAt && spawnSeenWall && lastBossPressAt >= spawnSeenWall) {
+        firstPressAt = now();
+        bossEvent(`⚡ กดตีครั้งแรกหลังบอสโผล่ ${((firstPressAt - spawnSeenAt) / 1000).toFixed(1)} วิ${gearPrepEarly ? ' (เบ็ด/ทุ่นจัดไว้ตั้งแต่ตอนรอ)' : ' (ต้องจัดเบ็ด/ทุ่นหลังบอสโผล่ — เข้าถ้ำตอนบอสอยู่แล้ว)'}`);
+      }
       // 🧪 v6.234: เดินนาฬิกา A/B ทุกรอบลูป (ไม่ใช่เฉพาะตอนมีเกจ) — บล็อกจะได้ปิดตรงเวลาแม้ช่วงนั้นมัวหลบ AoE
       //   แพงเฉพาะจังหวะสลับบล็อก (อ่านเลขดาเมจ 1 ครั้ง/15 วิ) · นอกนั้นแค่ floor+เทียบ
       // 🐛 v6.235: **ห้ามวัด A/B ตอนโหมดวัดเกจเปิดอยู่** — โหมดวัดบังคับกดทุกมุมที่ 300ms ทั้งไฟต์
@@ -4417,6 +4459,7 @@
     const stat = `เริ่มตี ${hits} · กดเกจ ${gaugePresses} · กระโดด ${dodges} · หลบ AoE ${aoeDodges}${aoeStalls ? `(ค้างปากทาง ${aoeStalls})` : ''} · recenter ${recenters} · เข็ม ${Math.round(Math.abs(gVel))}°/s · ตาย ${deaths} · ${hpTxt}${dmgTxt}`;
     logInfo(`👹 จบสู้บอส: ${outcome} · ${stat}${aoeMid}`);
     bossEvent(`🏁 จบไฟต์: ${outcome}${dmgTxt} · กดเกจ ${gaugePresses} · หลบ ${aoeDodges} · ตาย ${deaths}`
+      + ((firstPressAt && spawnSeenAt) ? ` · ⏱️ เริ่มตีหลังบอสโผล่ ${((firstPressAt - spawnSeenAt) / 1000).toFixed(1)} วิ` : '')
       + ((dodgeHits || walkHits) ? ` · ⚔️ ตีแทรก: ระหว่างหลบ ${dodgeHits} · ระหว่างเดิน ${walkHits} (v6.336 คืน DPS ที่เคยทิ้ง)` : ''));
     // 📊 v6.195: เก็บสถิติไฟต์นี้เข้า ring buffer (N ครั้งล่าสุด · ตั้งที่ bossStatKeep)
     recordBossFight({
@@ -4429,6 +4472,9 @@
       hpEnd: hpEnd != null ? Math.round(hpEnd) : null,
       gVel: Math.round(Math.abs(gVel)), map: bossMapId() || BOSS_MAP,
       durMs: fightT0 ? Math.round(now() - fightT0) : 0,
+      // ⏱️ v6.345: "บอสโผล่ → กดตีครั้งแรก" (ms) + จัดเบ็ด/ทุ่นไว้ก่อนไหม — เทียบไฟต์ก่อน/หลังได้ตรงๆ
+      t2first: (firstPressAt && spawnSeenAt) ? Math.round(firstPressAt - spawnSeenAt) : null,
+      gearPre: gearPrepEarly ? 1 : 0,   // 1 = จัดเบ็ด/ทุ่นเสร็จก่อนบอสโผล่ (ทางที่ v6.345 ตั้งใจให้เป็น)
       // 👊 v6.252: จดโหมดตี + จุดอ่อนที่เกมประกาศ + เหยื่อที่ใช้จริง → ไฟต์หน้าเทียบได้ว่าโหมดไหน/เหยื่อไหนคุ้ม
       // v6.264: ใช้ค่าที่ "จับภาพตอนกำลังสู้" — อ่านตอนนี้ไม่ได้แล้ว (HUD หาย + สลับเหยื่อคืนไปแล้ว)
       hitMode: bossHitMode, approaches: meleeApproaches, charges: chargeShots,
