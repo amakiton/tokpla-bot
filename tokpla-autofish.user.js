@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.338
+// @version      6.339
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.338';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.339';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2379,6 +2379,18 @@
   //   เก็บทุกครั้งที่เลข "⚔️ ของเรา" ขยับ พร้อมบริบทที่ควบคุมได้: โหมด · ระยะประชิด · ขั้นเหยื่อ · ตรงจุดอ่อนไหม · คอมโบ · เฟส
   //   ⚠️ ไม่ใช่ "ดาเมจของการกด 1 ครั้ง" — HUD เด้งทุก ~1.35 วิ ช้ากว่าจังหวะกด (บทเรียน v6.229)
   //      จึงเทียบเป็น "ดาเมจต่อวินาที" ในแต่ละบริบทแทน · ต้องมีตัวอย่างพอ (n) ถึงจะเชื่อ
+  // ⏱️ v6.339 — **A/B จังหวะตี melee: 220ms (ถี่) vs 900ms** — ตอบว่า "คลิกเร็วช่วยไหม" ด้วยข้อมูล ไม่ใช่เดา
+  //   หลักฐานจาก 7 ไฟต์ melee (บอสตัวเดียวกัน เจ้าเปลวใต้พิภพ · ใส่เหยื่อจุดอ่อนตรงทั้งหมด):
+  //     1.71 คลิก/วิ → 75 dmg/วิ · 2.38 → 86 · 2.57 → 77   = **คลิกเร็วขึ้น 50% แต่ดาเมจ/วิ ไม่ขึ้น**
+  //   สอดคล้องกับ `tuning.raidAdvanceMinMs = 900` (น่าจะเป็น "ช่วงห่างขั้นต่ำระหว่างการตีที่นับจริง")
+  //   ถ้าจริง = คลิกเกิน ~1.1 ครั้ง/วิ ทิ้งเปล่า → ตี 900ms ได้ดาเมจเท่ากันแต่คลิกน้อยลง 4 เท่า = **ดูเป็นบอทน้อยลงมาก**
+  //   ⚠️ ยังไม่ล็อกทันที — สลับวัดในไฟต์เดียวกัน (บล็อกละ 15 วิ) แล้วอ่านผลจากรายงานก่อนตัดสิน
+  let meleeGapArm = 'fast';
+  function meleeGapMs(fightT0) {
+    const idx = Math.floor((now() - (fightT0 || now())) / 15000);
+    meleeGapArm = (idx % 2) ? 'slow' : 'fast';
+    return meleeGapArm === 'slow' ? 900 : 220;
+  }
   const DMGATTR_KEY = 'tokpla_dmg_attrib';
   let dmgAttrRing = [];
   try { const a = JSON.parse(W.localStorage.getItem(DMGATTR_KEY) || '[]'); if (Array.isArray(a)) dmgAttrRing = a.slice(-900); } catch {}
@@ -2411,6 +2423,7 @@
       + grp((r) => r.m, '⚔️ ตามโหมดตี') + '\n\n'
       + grp(distBucket, '📏 ตามระยะประชิด (เฉพาะ melee)') + '\n\n'
       + grp((r) => (r.weak ? '✅ ตรงจุดอ่อน' : '❌ ไม่ตรงจุดอ่อน'), '🎯 เหยื่อจุดอ่อน (x1.5)') + '\n\n'
+      + grp((r) => (r.arm == null ? null : (r.arm === 'slow' ? 'ตี 900ms (ช้า)' : 'ตี 220ms (ถี่)')), '⏱️ ตามจังหวะตี melee — ถ้าเท่ากัน แปลว่าคลิกถี่ไม่ช่วย (ควรใช้ 900ms = ดูเป็นบอทน้อยลง)') + '\n\n'
       + grp((r) => (r.combo == null ? null : `คอมโบ ×${r.combo}`), '🔥 ตามคอมโบ (+5%/ขั้น เพดาน +30%)') + '\n\n'
       + grp((r) => (r.bait == null ? null : `เหยื่อขั้น ${r.bait}`), '🪱 ตามขั้นเหยื่อ') + '\n\n'
       + grp((r) => (r.boss || null), '👹 ตามตัวบอส');
@@ -3804,6 +3817,7 @@
                 bait: snapBait, weak: (snapWeak || []).includes(snapBait) ? 1 : 0,
                 combo: lastComboSeen, ph: (rb && rb.phase) || null,
                 gap: Math.round(now() - lastAttribAt), boss: snapBossName || '',
+                arm: bossHitMode === 'melee' ? meleeGapArm : null,   // ⏱️ v6.339: จังหวะตีตอนนั้น (fast 220ms / slow 900ms)
               });
               lastAttribAt = now();
             }
@@ -3961,7 +3975,7 @@
           else if (!gd && (bossHitMode === 'melee' || bossHitMode === 'charge')) {
             const orbd = bossHitOrb();
             const okHit = bossHitMode === 'charge' || !bossHudMeta().tooFar;
-            if (orbd && !orbd.disabled && okHit && !bossDisabledNow() && now() - lastPress > 220) {
+            if (orbd && !orbd.disabled && okHit && !bossDisabledNow() && now() - lastPress > (bossHitMode === 'melee' ? meleeGapMs(fightT0) : 220)) {
               lastPress = now(); lastBossPressAt = Date.now(); fireClick(orbd); hits++; dodgeHits++;
               if (gabBlock) gabBlock.p++;
             }
@@ -4076,7 +4090,7 @@
             //   ทำไมต้องเชื่อป้ายเกมมากกว่าระยะที่เราคำนวณ: จาก 268 ตัวอย่างจริง เกมขึ้น "ไกลไป" ตอนห่าง 4px
             //   และเงียบตอนห่าง 141px → สูตร `ครึ่งตัว+range` ของเราไม่ตรงกับกติกาเกม (ใช้ตัดสินว่าจะเดินต่อไหมพอ)
             //   เดิม `continue` ทิ้งการตีทั้งช่วงเดิน = เสียเปล่าอีกก้อนใหญ่ (meleeApproaches หลักร้อยต่อไฟต์)
-            if (!meta.tooFar && orb && !orb.disabled && !bossDisabledNow() && now() - lastPress > 220) {
+            if (!meta.tooFar && orb && !orb.disabled && !bossDisabledNow() && now() - lastPress > meleeGapMs(fightT0)) {
               lastPress = now(); lastBossPressAt = Date.now(); fireClick(orb); hits++; walkHits++;
               if (gabBlock) gabBlock.p++;
             }
@@ -4126,7 +4140,8 @@
           }
         }
         await sleep(30);   // ถี่พอจับเข็ม
-      } else if (orb && !orb.disabled && now() - lastEngage > 220) {
+      // ⏱️ v6.339: จังหวะตีหลัก (melee/ไม่มีเกจ) มาจาก A/B — สลับ 220ms ↔ 900ms ทุก 15 วิ เพื่อวัดว่าคลิกเร็วช่วยจริงไหม
+      } else if (orb && !orb.disabled && now() - lastEngage > (bossHitMode === 'melee' ? meleeGapMs(fightT0) : 220)) {
         // 🐛 v6.277: สาขานี้ "ไม่มีเกจ + ปุ่มกดได้ = เริ่มตีครั้งใหม่" เดิม **ไม่เช็คว่าอยู่ในถ้ำหรือเปล่า**
         //   หลักฐาน: สถิติไฟต์ 16:30 บันทึก `map: village · hits: 107 · outcome: noshow` และรอบ 13:30 `hits: 498`
         //   = บอทยืนกดปุ่มนอกถ้ำหลายร้อยครั้งระหว่างรอบอส · `bossHitOrb()` นอกถ้ำไปโดนปุ่มอื่น (ปุ่มตกปลา)
