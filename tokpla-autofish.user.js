@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.373
+// @version      6.374
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.373';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.374';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -550,6 +550,9 @@
     grabChest: false,            // เปิด = เจอหีบในแมพปัจจุบัน → เดินไปเปิด (กด E) แล้วกลับมาตกต่อ · มีลิมิตต่อวันของเกมเอง (chestDailyComplete)
     chestCheckMin: 3,            // เช็คหาหีบทุกกี่นาที (ถี่ไป = เดินบ่อยเสียเวลาตก · ห่างไป = หีบอาจหมดอายุก่อน)
     buyPacks: 1,                 // ซื้อกี่แพ็ค (แพ็คละ 100 ชิ้น)
+    // 🎓 v6.374: แวะเปิด "หน้าตัวละคร" ทุก 20 นาที เพื่ออ่านแถบ XP (หน้าเดียวที่โชว์ — ร้านค้าไม่โชว์)
+    //   ราคา: หยุดเหวี่ยง ~2 วิ/ครั้ง ≈ 0.2% ของเวลาฟาร์ม · ปิด = ไม่มี ETA เลเวล (โมเดล XP/ชม. ยังใช้ได้)
+    xpTrack: true,
     forceBait: false,            // บังคับสลับไปใช้เหยื่อระดับที่ตั้งไว้
     forceRod: false,             // บังคับสลับไปใช้เบ็ดขั้นที่ตั้งไว้
     rodTier: 1,                  // เบ็ดขั้นที่อยากใช้ (ต้องมีเบ็ดขั้นนั้นแล้ว)
@@ -1360,6 +1363,7 @@
     '🪱 /baitbtn - ส่องแถวปุ่มเหยื่อ (ในถ้ำบอสเกมโชว์ 2 ปุ่ม = จุดอ่อนสองขั้น)',
     '🎓 /xp - XP ต่อครั้ง/ชม. ของเหยื่อทุกขั้น (เลเวลคือคอขวดของการอัปเกรดของ)',
     '🔎 /xpprobe - ส่องว่าแถบ XP อยู่ตรงไหนบนจอ (เปิดแผงโปรไฟล์แล้วพิมพ์)',
+    '🎓 /xpnow - สั่งเปิดหน้าตัวละครอ่าน XP เดี๋ยวนี้ + รายงาน',
     '🔎 /probe &lt;ชื่อปุ่ม&gt; - เปิดแผงในเกมแล้วอ่านโครงให้ดู (เช่น /probe แลกเศษบอส)',
     '🌈 /mythic - สถานะล่าปลาเทพ · /mythic on|off · /mythic map ชื่อแมพ|auto - ล็อกแมพล่า',
     '🌍 /chat - เปิด/ปิดคุยแชทโลกผ่าน TG (พิมพ์ข้อความมาได้เลย)',
@@ -1432,6 +1436,10 @@
         reply(`<pre>${esc(bossTimeReport())}</pre>`); break;
       case 'xp': case 'เลเวล':   // 🎓 v6.370: XP/ครั้ง · XP/ชม. ทุกขั้นเหยื่อ เทียบกับกำไร
         reply('<pre>' + esc(xpReport()) + '</pre>'); break;
+      case 'xpnow': case 'อ่านxp':   // 🎓 v6.374: สั่งเปิดหน้าตัวละครอ่าน XP เดี๋ยวนี้ (ไม่รอ 20 นาที)
+        reply('🎓 เปิดหน้าตัวละครอ่าน XP...');
+        void (async () => { const ok = await sampleXpViaPanel(true); reply(ok ? '<pre>' + esc(xpReport()) + '</pre>' : '🎓 อ่านไม่สำเร็จ — ลอง /xpprobe ตอนเปิดหน้าตัวละครค้างไว้'); })();
+        break;
       case 'xpprobe': case 'ส่องxp':   // 🔎 v6.372: ส่องว่าข้อความ XP/เลเวลอยู่ตรงไหนบนจอ
         reply('<pre>' + esc(xpProbeDiag()) + '</pre>'); break;
       case 'baitbtn': case 'ปุ่มเหยื่อ':   // 🪱 v6.367: ส่องแถวปุ่มเหยื่อตอนนี้ (ในถ้ำบอสมี 2 ปุ่ม)
@@ -8882,6 +8890,39 @@
       if (last && r.lv > last.lv) logInfo(`🎓 เลเวลอัพเป็น Lv.${r.lv} — จดลงประวัติ XP แล้ว`);
     } catch {}
   }
+  // 🎓 v6.374 — **แวะเปิด "หน้าตัวละคร" เพื่ออ่านแถบ XP** (ผู้ใช้ยืนยัน 2/8/69: ร้านค้าไม่โชว์ XP
+  //   มีแค่หน้าตัวละครเท่านั้นที่โชว์ XP + สถานะทั้งหมด) ⇒ ไม่มีทางอ่านได้เลยถ้าไม่เปิดแผงเอง
+  //   ราคาที่จ่าย: หยุดเหวี่ยง ~2 วินาที ต่อครั้ง · จ่ายทุก 20 นาที = ~0.2% ของเวลาฟาร์ม (ถูกมากเทียบกับ
+  //   การได้รู้ "อีกกี่ชั่วโมงถึงเลเวลถัดไป" ซึ่งเป็นคอขวดของเป้าหมายอัปเกรดของ)
+  //   ⚠️ ต้องปิดแผงคืนเสมอ (finally) — แผงค้าง = บอทตกปลาต่อไม่ได้ (บทเรียน v6.313 ป๊อบอัพค้าง)
+  let lastXpPanelAt = NEVER;
+  async function sampleXpViaPanel(force) {
+    if (busy || orchestrating || bossPhase !== 'idle' || paused || testRunning) return false;
+    if (!force && now() - lastXpPanelAt < 20 * 60000) return false;
+    lastXpPanelAt = now();
+    busy = true;
+    try {
+      // ปุ่มบนจอก่อน (ทนต่อการเปลี่ยนคีย์ลัด) — ไม่เจอค่อยใช้คีย์ C ของเกม
+      let btn = qBtn('ตัวละคร') || btnByText('ตัวละคร') || qBtn('โปรไฟล์');
+      if (!btn) {
+        const open = qBtn('กางแผงเมนู');
+        if (open) { fireClick(open); await sleep(500); btn = qBtn('ตัวละคร') || btnByText('ตัวละคร'); }
+      }
+      if (btn) fireClick(btn);
+      else { bossFireKey('keydown', 'KeyC', 67); bossFireKey('keyup', 'KeyC', 67); }   // ⌨️ v6.164: C = ตัวละคร
+      await sleep(900);
+      const before = loadXpHist().length;
+      xpSampleTick();
+      const got = loadXpHist().length > before;
+      const bar = readXpBar();
+      if (!got && !bar) logWarn('🎓 เปิดหน้าตัวละครแล้วแต่ยังอ่านแถบ XP ไม่เจอ — ใช้ /xpprobe ตอนเปิดแผงเพื่อดูโครงจริง');
+      return got;
+    } catch (e) { logErr('อ่าน XP จากหน้าตัวละครล้มเหลว', e); return false; }
+    finally {
+      try { gameEscape(); await sleep(250); } catch {}   // ปิดแผงคืนเสมอ
+      busy = false;
+    }
+  }
   // อัตรา XP/ชม. ที่วัดได้จริงจากประวัติ — คืน null ถ้าข้อมูลไม่พอ (ไม่เดา)
   function xpMeasuredRate() {
     const h = loadXpHist();
@@ -11481,9 +11522,11 @@ ${esc(reason)}
         }
         // 🎓 v6.371: จดแถบ XP เป็นระยะ (บทเรียน v6.363 — ตัวเก็บที่ไม่มีใครเรียก = ไม่เคยทำงาน)
         //   ทุก 3 นาทีพอ: แถบ XP ขยับช้า + ตัววัดอัตราตัดช่องว่าง >45 นาทีทิ้งอยู่แล้ว
+        //   🎓 v6.374: อ่านฟรีก่อน (เผื่อผู้ใช้เปิดหน้าตัวละครค้างไว้) — ไม่เจอค่อยแวะเปิดแผงเองทุก 20 นาที
         if (now() - lastXpSample > 180000) {
           lastXpSample = now();
           try { xpSampleTick(); } catch {}
+          if (isOn('xpTrack')) void sampleXpViaPanel();
         }
 
         // 🛡️ v6.218: ยามเฝ้าป๊อบอัพค้างทั่วไป — "ควรตกได้แต่ตกไม่ได้เพราะมี dialog ค้าง ≥3 วิ" → เคลียร์อัตโนมัติ
@@ -13349,6 +13392,8 @@ ${esc(reason)}
       //   ค้างไว้ที่ 8 = คนใส่คันขั้น 11 กด "บังคับเบ็ด" เมื่อไหร่ ก็โดนลากลงมาขั้น 8 ทันที
       labeled('บังคับเบ็ดขั้น', checkbox('forceRod')), numInput('rodTier', 1, 24, 44),
       labeled('บังคับเหยื่อขั้น', checkbox('forceBait')), numInput('baitTier', 1, MAX_BAIT_TIER, 44),
+      // 🎓 v6.374: อ่านแถบ XP ต้องเปิดหน้าตัวละคร (หน้าเดียวที่โชว์) — ให้ปิดได้ถ้าไม่อยากให้บอทแวะเปิด
+      labeled('ติดตาม XP (เปิดหน้าตัวละครทุก 20 นาที)', checkbox('xpTrack')),
     ));
 
     const gearBtn = document.createElement('button');
