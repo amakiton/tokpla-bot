@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.357
+// @version      6.358
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.357';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.358';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -147,6 +147,7 @@
   let SERVER_RAID_WINDOW_MIN = 60;       // 🪟 v6.344: รอบบอสเปิดยาวกี่นาที (raidWindowMinutes) — ป้าย "ถึงรอบบอสแล้ว" ขึ้นทั้งช่วงนี้
   let BOSS_META = new Map();             // 👹 v6.346: ชื่อบอส (ไทย/อังกฤษ) → {id, hitMode, mapId, respawn} จาก raidBossMeta
   let SERVER_CONTESTS = null;            // 🏆 v6.352: รอบแข่งจากเซิร์ฟเวอร์ [{id,start,dur,days,modes}]
+  let SERVER_SHARD_SHOP = null;          // 🦴 v6.358: ราคาของในตู้แลกเศษบอส {rod9:80, float9:50, armor_scale:60, ...}
   // กำลังอยู่ในรอบแข่งไหม — คืน {id, leftMin, modes} · null = ไม่ได้แข่ง
   //   `days` ว่าง = ทุกวัน (ตามที่เซิร์ฟเวอร์ใช้: rounds[].days = [] แปลว่าไม่จำกัดวัน)
   function contestNow() {
@@ -222,6 +223,8 @@
         if (m.size) { if (m.size !== FISH_BY_NAME.size) changed.push(`ตารางปลา ${FISH_BY_NAME.size || 0}→${m.size} ชนิด`); FISH_BY_NAME = m; }
       }
       if (c.mapPools && typeof c.mapPools === 'object') MAP_POOLS = c.mapPools;
+      // 🦴 v6.358: ราคาของในตู้แลกเศษบอส (`shardShop`) — ใช้บอก "อีกกี่เศษถึงของที่อยากได้" ตามค่าจริง ไม่ฝังตัวเลข
+      if (c.shardShop && typeof c.shardShop === 'object') SERVER_SHARD_SHOP = c.shardShop;
       // 🛡️ v6.347: "แมพไหนตกปลาได้" จากเซิร์ฟเวอร์ — ใช้วีโต้การเรียนถ้ำบอสทับแมพทำมาหากิน (ดู raidBossMeta ล่าง)
       if (Array.isArray(c.fishableMaps) && c.fishableMaps.length) SERVER_FISHABLE = new Set(c.fishableMaps.filter((m) => typeof m === 'string'));
       // 🕐 ตารางบอสจากเซิร์ฟเวอร์ (นาทีตั้งแต่เที่ยงคืน) — ของจริง 29/7/69 มี 6 รอบ (บอทฝังไว้แค่ 5 รอบ ตกหล่น 20:00)
@@ -260,7 +263,9 @@
         const m = new Map();
         for (const [id, b] of Object.entries(c.raidBossMeta)) {
           if (!b || typeof b !== 'object' || b.active === false) continue;
-          const rec = { id, hitMode: b.hitMode || null, mapId: b.mapId || null, respawn: +b.respawnSeconds || null, nameTh: b.nameTh || '' };
+          const rec = { id, hitMode: b.hitMode || null, mapId: b.mapId || null, respawn: +b.respawnSeconds || null, nameTh: b.nameTh || '',
+            // 🦴 v6.358: บันไดเศษบอสตามส่วนแบ่งดาเมจ [[0.3,5],[0.15,4],[0.08,3],[0.03,2],[0,1]]
+            ladder: Array.isArray(b.shardLadder) ? b.shardLadder : null };
           if (b.nameTh) m.set(String(b.nameTh).trim(), rec);
           if (b.nameEn) m.set(String(b.nameEn).trim(), rec);
           // 🗺️ ถ้ำบอสจากเซิร์ฟเวอร์ = หลักฐานชั้นดีที่สุด → เรียนได้เลย (force ข้ามบัญชีดำ v6.249 ที่มีไว้กันการ "เดา")
@@ -2811,6 +2816,52 @@
       W.localStorage.setItem(BOSS_STATS_KEY, JSON.stringify(arr));
     } catch (e) { logErr('บันทึกสถิติบอสล้มเหลว', e); }
   }
+  // 🦴 v6.358 — **รายงานความคืบหน้า "เศษบอส"** (เป้าหมายที่ผู้ใช้เลือก: เก็บเศษไปอัปเกรดของ ไม่แลกเป็นยา)
+  //   ทำไมต้องมี: เศษ/ไฟต์ ผูกกับ **ส่วนแบ่งดาเมจ** ผ่าน `shardLadder` แบบขั้นบันได —
+  //   ดันดาเมจขึ้นอีกนิดเดียวแต่ข้ามขั้นได้ = เศษเพิ่มทั้งก้อน (13.7% → 15% = 3 → 4 ชิ้น/ไฟต์ = +33%)
+  //   ตัวเลขทั้งหมดมาจากเซิร์ฟเวอร์ (`shardLadder` + `shardShop`) ไม่ฝังค่าเดา
+  function shardLadderOf(bossName) {
+    try {
+      const b = bossName ? bossMetaByName(bossName) : null;
+      if (b && Array.isArray(b.ladder) && b.ladder.length) return b.ladder;
+      for (const [, r] of BOSS_META) if (Array.isArray(r.ladder) && r.ladder.length) return r.ladder;
+    } catch {}
+    return null;
+  }
+  function shardReport() {
+    const arr = loadBossStats();
+    const out = [];
+    const total = arr.reduce((s, r) => s + ((r.reward && r.reward.shards) || 0), 0);
+    const withRw = arr.filter((r) => r.reward && (r.reward.shards || 0) > 0);
+    const avg = withRw.length ? total / withRw.length : 0;
+    out.push(`🦴 เศษบอสที่บันทึกได้: รวม ${total} ชิ้น จาก ${withRw.length} ไฟต์${avg ? ` (เฉลี่ย ${avg.toFixed(1)}/ไฟต์)` : ''}`);
+    if (!withRw.length) out.push('   (ยังไม่มีข้อมูล — v6.358 เพิ่งเริ่มบันทึก ไฟต์ถัดไปจะเห็นตัวเลข)');
+    // ขั้นบันไดถัดไป: ต้องดันส่วนแบ่งดาเมจอีกเท่าไรถึงได้เศษเพิ่ม
+    const last = arr.filter((r) => r.pct != null).slice(-1)[0];
+    const lad = shardLadderOf(last && last.bossName);
+    if (last && lad) {
+      const p = last.pct / 100;
+      const sorted = lad.slice().sort((a, b) => b[0] - a[0]);   // สูง→ต่ำ
+      const cur = sorted.find((x) => p >= x[0]);
+      const next = sorted.filter((x) => x[0] > p).slice(-1)[0];   // ขั้นถัดไปที่ใกล้สุด
+      out.push(`📈 ไฟต์ล่าสุด ${last.pct}% → ได้ ${cur ? cur[1] : '?'} เศษ`
+        + (next ? ` · **อีก ${((next[0] * 100) - last.pct).toFixed(1)}% ถึงขั้น ${(next[0] * 100).toFixed(0)}% = ${next[1]} เศษ/ไฟต์**` : ' · อยู่ขั้นสูงสุดแล้ว'));
+    }
+    // อีกกี่เศษถึงของที่ต้องการ (ราคาจริงจาก shardShop)
+    if (SERVER_SHARD_SHOP) {
+      const want = ['rod9', 'float9', 'armor_scale'].filter((k) => SERVER_SHARD_SHOP[k] > 0);
+      if (want.length) {
+        const per = avg || 3;
+        out.push('🎯 เป้าอัปเกรด (ราคาจริงจากเซิร์ฟเวอร์): ' + want.map((k) => {
+          const need = SERVER_SHARD_SHOP[k];
+          const left = Math.max(0, need - total);
+          return `${k} ${need} เศษ${left ? ` (ขาดอีก ${left} ≈ ${Math.ceil(left / per)} ไฟต์)` : ' ✅ ครบแล้ว'}`;
+        }).join(' · '));
+        out.push('   ℹ️ นับเฉพาะเศษที่บอทเห็นในจดหมายหลัง v6.358 — ของที่มีอยู่ก่อนหน้าไม่ได้นับ (ดูจำนวนจริงในตู้แลก)');
+      }
+    }
+    return out.join('\n');
+  }
   // สรุปสถิติเป็นข้อความ (ใช้ทั้งแผง/Telegram) — เฉลี่ยเฉพาะไฟต์ที่มีข้อมูลนั้นจริง
   function bossStatsSummary() {
     const arr = loadBossStats();
@@ -2846,6 +2897,7 @@
     const itemTop = Object.entries(itemCnt).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([k, v]) => `${k}×${v}`);
     const nRw = arr.filter((r) => r.reward && r.reward.coins).length;
     if (totCoin || itemTop.length) {
+      lines.push(shardReport());   // 🦴 v6.358: เป้าหมายหลักของผู้ใช้ — วางไว้เหนือเรื่องเหรียญ
       lines.push(`🎁 รางวัลรวม ${totCoin.toLocaleString()} 🪙${nRw ? ` (เฉลี่ย ${Math.round(totCoin / nRw).toLocaleString()}/ไฟต์ จาก ${nRw} ไฟต์ที่มีข้อมูล)` : ''}`
         + (itemTop.length ? `\n📦 ของที่ได้: ${itemTop.join(' · ')}` : ''));
     }
@@ -5291,9 +5343,15 @@
       const last = arr[arr.length - 1];
       if (!last) return;
       if (Date.now() - (last.ts || 0) > 15 * 60000) return;   // ห่างเกินไป = ไม่ใช่รางวัลของไฟต์นี้ อย่าผูกมั่ว
-      const rw = last.reward || (last.reward = { coins: 0, items: [], mails: 0, raw: [] });
+      // 🦴 v6.358: เดิมรับ bones/shards/fashion เข้ามาแล้ว **ทิ้งทั้งหมด** เก็บแค่ coins/items/mails
+      //   ⇒ "เศษบอสต่อไฟต์" ซึ่งเป็นทรัพยากรเดียวที่ผู้ใช้ตั้งเป้า (อัปเกรด rod9 80 · armor 60 · float9 50)
+      //     ถูก parse ได้ถูกต้องแล้วแต่ไม่เคยถูกบันทึก = วัดความคืบหน้าไม่ได้เลย
+      const rw = last.reward || (last.reward = { coins: 0, items: [], mails: 0, raw: [], shards: 0, bones: 0, fashion: 0 });
       rw.coins += r.coins || 0;
       rw.mails += r.mails || 0;
+      rw.shards = (rw.shards || 0) + (r.shards || 0);
+      rw.bones = (rw.bones || 0) + (r.bones || 0);
+      rw.fashion = (rw.fashion || 0) + (r.fashion || 0);
       for (const it of (r.items || [])) rw.items.push(it);
       for (const t of (r.raw || [])) if (rw.raw.length < 6) rw.raw.push(t.slice(0, 160));
       W.localStorage.setItem(BOSS_STATS_KEY, JSON.stringify(arr));
