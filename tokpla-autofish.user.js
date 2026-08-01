@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.360
+// @version      6.361
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.360';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.361';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4195,6 +4195,12 @@
     let gearPrepped = false, gearPrepEarly = false;
     // 🎯 v6.355: เหยื่อจุดอ่อนมาจากไหน — 0 = ไม่ได้จัด · 1 = บอทติดล่วงหน้าเอง · 2 = ติดอยู่แล้ว (ผู้ใช้/รอบก่อน) · 3 = สลับตอนไฟต์
     let baitPreState = 0;
+    // 🔴 v6.361 — **ต้องประกาศตรงนี้ ห้ามย้ายลงไปอีก** (บั๊กที่ v6.355 ทำไว้ · ระเบิดสดรอบ 22:30 วันที่ 1/8/69)
+    //   v6.355 เพิ่มบรรทัด `if (snapBossName || hudMeta.name) recordBossRota(...)` ไว้ **เหนือ** จุดที่ประกาศ `let snapBossName`
+    //   → JS โยน `Cannot access 'snapBossName' before initialization` (TDZ) ทุกครั้งที่เดินมาถึง
+    //   อาการที่เห็นจริง: `สู้บอส(ในถ้ำ)ล้มเหลว` แล้ววน "เจอบอสในถ้ำ — เข้าตี" ใหม่ไม่จบ = **ไม่ได้ตีบอสเลยทั้งรอบ**
+    //   ⚠️ `node --check` จับไม่ได้ (ถูกไวยากรณ์) และเทสต์ที่ตัดฟังก์ชันมา eval ก็ไม่เจอ เพราะไม่ได้รันลำดับจริง
+    let snapWeak = [], snapWeakNames = [], snapBait = null, snapBossName = null, snapHpMax = null, snapHpMaxEnd = null;
     const prepBossGear = async () => {
       if (gearPrepped) return;
       gearPrepped = true;
@@ -4487,7 +4493,7 @@
     // 🐛 v6.264: ไฟต์ 22:30 เผยว่าสถิติใหม่ของ v6.252 **เก็บผิดจังหวะจนใช้ไม่ได้** —
     //   `weakTiers: []` (อ่านตอนจบไฟต์ = HUD หายไปแล้ว) · `baitUsed: null` (อ่านหลังสลับเหยื่อคืนเป็นเหยื่อฟาร์มแล้ว)
     //   → ต้อง "จับภาพตอนกำลังสู้จริง" แล้วเก็บไว้ ไม่ใช่ไปอ่านย้อนตอนจบ
-    let snapWeak = [], snapWeakNames = [], snapBait = null, snapBossName = null, snapHpMax = null, snapHpMaxEnd = null;
+    // (ประกาศ snapWeak/snapBossName/… ถูกย้ายขึ้นไปไว้ก่อน "ลูปรอบอสในถ้ำ" ตั้งแต่ v6.361 — ดูเหตุผลตรงนั้น)
     // 🥁 v6.266: สถิติจังหวะ — จดว่า "กดที่เฟสไหนของบีต แล้วเกมตอบว่าอะไร" เพื่อหาว่าบีตอยู่ตรงไหน
     const beatBuckets = Array.from({ length: BEAT_NB }, () => ({ n: 0, score: 0 }));
     let beatLockSlot = null;          // ช่องที่ล็อกแล้ว (ms ใน 0..1199) · null = ยังวัดอยู่
