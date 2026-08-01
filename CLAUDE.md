@@ -40,10 +40,15 @@
 
 1. bump `// @version` ในหัวไฟล์ (+ `BOT_VER` ให้ตรง)
 2. `node --check tokpla-autofish.user.js`
-3. grep หา dangling refs ของสิ่งที่ลบ/เปลี่ยนชื่อ
-4. ถ้าแก้ตรรกะเงิน/สถิติ → เขียนเทสต์ Node จำลองใน scratchpad รันยืนยัน
-5. อัปเดต `docs/CHANGELOG.md` (เวอร์ชัน + สิ่งที่แก้ + เหตุผล) และ `docs/ARCHITECTURE.md`/`GAME.md` ถ้าโครง/selector เปลี่ยน
-6. **deploy (v6.129+):** `git -C <โฟลเดอร์> add -A && commit && push` → repo **public** `github.com/amakiton/tokpla-bot` (raw URL คือ `@updateURL`) · บอทรันบน **VPS คนละเครื่องกับไฟล์** — Tampermonkey บน VPS ตั้ง `@updateURL` = raw URL นี้ → ผู้ใช้กด "ตรวจหาอัปเดต" หรือรอ auto = ได้เวอร์ชันใหม่ (bump `@version` เท่านั้นถึงจะเด้ง) · **ห้าม commit ไฟล์ที่มีความลับ** (token อยู่ localStorage ไม่ใช่ในโค้ด — repo จึง public ได้)
+3. **`node tools/check-order.js`** ← 🔴 **ห้ามข้าม** ตรวจ "ใช้ตัวแปรก่อนบรรทัดที่ประกาศ" (TDZ)
+   · `node --check` จับไม่ได้เพราะ**ไวยากรณ์ถูกต้อง** — JS พังตอนรันเท่านั้น
+   · บทเรียน v6.355→v6.360: แทรก `recordBossRota(snapBossName)` ไว้เหนือ `let snapBossName`
+     ⇒ **ไฟต์บอสล่มทั้งรอบ 6 เวอร์ชันติด** (crash → retry → วนเลือกเบ็ด/เหยื่อไม่จบ) กว่าจะรู้ก็ตอนผู้ใช้แจ้ง
+   · ⚠️ การ "ตรวจอีกรอบ" ด้วยการอ่าน diff/grep **มองไม่เห็นบั๊กชนิดนี้** — ต้องรันเครื่องมือเท่านั้น
+4. grep หา dangling refs ของสิ่งที่ลบ/เปลี่ยนชื่อ
+5. ถ้าแก้ตรรกะเงิน/สถิติ → เขียนเทสต์ Node จำลองใน scratchpad รันยืนยัน
+6. อัปเดต `docs/CHANGELOG.md` (เวอร์ชัน + สิ่งที่แก้ + เหตุผล) และ `docs/ARCHITECTURE.md`/`GAME.md` ถ้าโครง/selector เปลี่ยน
+7. **deploy (v6.129+):** `git -C <โฟลเดอร์> add -A && commit && push` → repo **public** `github.com/amakiton/tokpla-bot` (raw URL คือ `@updateURL`) · บอทรันบน **VPS คนละเครื่องกับไฟล์** — Tampermonkey บน VPS ตั้ง `@updateURL` = raw URL นี้ → ผู้ใช้กด "ตรวจหาอัปเดต" หรือรอ auto = ได้เวอร์ชันใหม่ (bump `@version` เท่านั้นถึงจะเด้ง) · **ห้าม commit ไฟล์ที่มีความลับ** (token อยู่ localStorage ไม่ใช่ในโค้ด — repo จึง public ได้)
 
 ## แนวโค้ด
 
