@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.350
+// @version      6.351
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.350';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.351';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -465,6 +465,10 @@
     advExploreHours: 6,          // สำรวจทุกกี่ชั่วโมง
     advExploreCasts: 30,         // สำรวจครั้งละกี่ครั้ง (ยิ่งมากยิ่งแม่น แต่ยิ่งแพง)
     advExploreMaxCost: 3000,     // งบต่อรอบสำรวจ (🪙) สำหรับขั้น "ต่ำกว่าพื้น" · ขั้น ≥ พื้น ไม่ติดงบ (ไปลุ้นแจ็คพอต)
+    // 🔬 v6.351: โหมดสำรวจบาง ๆ — ใช้ตอนมีโมเดล EV แล้ว (เก็บตัวอย่างไว้ "สอบเทียบ/ตรวจสอบ" ไม่ใช่ไว้ตัดสินใจ)
+    advThinScan: true,           // เก็บตัวอย่างขั้นข้างเคียงบาง ๆ เพื่อสอบเทียบตัวคูณน้ำหนักรายขั้น + จับว่าโมเดลเพี้ยนไหม
+    advThinCasts: 50,            // กี่ครั้งต่อขั้น (50 = พอดีเกณฑ์ที่โมเดลใช้ยอมรับตัวอย่าง)
+    advThinSpan: 2,              // เก็บเฉพาะขั้นที่ห่างจาก "ขั้นที่ดีที่สุด" ไม่เกินกี่ขั้น (ไกลกว่านี้ = จ่ายแพงโดยไม่เปลี่ยนคำตอบ)
     // 🎯 v6.315: "พื้นขั้นเหยื่อ" — Advisor ห้ามเลือกต่ำกว่านี้ (เกมใหม่: ขั้นเหยื่อ = เพดานระดับปลา)
     //   ขั้น 5 = ตกได้ถึงตำนาน + กำไรตัดฟลุ๊คยังชนะขั้นต่ำ · สำรวจ (advExplore) จะแตะขั้น 6-8 เป็นระยะเพื่อลุ้น เทพนิยาย/เทพ/บรรพกาล
     advBaitFloor: 5,
@@ -7773,9 +7777,10 @@
     //   (ประวัติการตกของบัญชีนี้ 75% อยู่ที่ขั้น 1/2/5 → ค่าเฉลี่ยรวมยิ่งถูกลากลงหาขั้นถูก = เอียงซ้ำรอยเดิม)
     //   ⚠️ ไม่ยัดสูตร `baitSizeBonus` ลงโมเดลตรงๆ — **วัดจากผลตกจริงของบัญชีนี้เอง** (ปรัชญาเดิม v6.341)
     //      ขั้นไหนตัวอย่างน้อย (< 50) = ถอยไปใช้ค่าเฉลี่ยรวม (ไม่เดา ไม่ทำให้แย่ลง)
-    const wTier = {};
+    const wTier = {}, tierN = {};
     for (const t in byTier) {
       const ok = byTier[t].filter((x) => x >= 0.5 && x <= 3);
+      tierN[t] = ok.length;                       // 🔬 v6.351: จำนวนตัวอย่าง "สะอาด" ต่อขั้น — โหมดสำรวจบางใช้เลือกขั้นที่ยังขาดข้อมูล
       if (ok.length >= 50) wTier[t] = mean(ok);
     }
     // 🔒 v6.350 — **กันอคติ "ล็อกตัวเองที่ขั้นที่วัดแล้ว" ที่ v6.349 สร้างขึ้นเอง**
@@ -7796,6 +7801,7 @@
     _evCalib = {
       wmult,
       wTier,
+      tierN,
       wmultOf,
       junkBase: junkBases.length >= 3 ? med(junkBases) : EV_FALLBACK_JUNK,
       luck: evFitLuck(),
@@ -8582,16 +8588,19 @@
   //   วิธี: เป็นระยะ สลับไปตกขั้นที่ "ข้อมูลเก่าสุด" สั้นๆ (N ครั้ง) เพื่อรีเฟรชสถิติ แล้วกลับขั้นเดิม
   //   ⚖️ คุมต้นทุน: ประเมิน (กำไร/ครั้งของขั้นดีสุด − ของขั้นที่จะลอง) × จำนวนครั้ง · เกินงบ = ข้ามขั้นนั้น
   let exploreTier = 0, exploreLeft = 0, lastExploreAt = NEVER, exploreMismatch = 0;
+  let thinScanTier = 0;   // 🔬 v6.351: รอบนี้เป็น "สำรวจบาง ๆ" ของขั้นไหน (0 = สำรวจแบบเดิม) — คุมรายงานตอนจบ
   try { const t = +W.localStorage.getItem('tokpla_bait_explore') || 0; if (t) lastExploreAt = now() - Math.min(Date.now() - t, 24 * 3600000); } catch {}
   // 🔬 v6.212 (ผู้ใช้ขอ): เก็บ "ความคืบหน้าการสำรวจ" ข้ามรีโหลด — เดิมอยู่ใน memory ล้วน
   //   → รีโหลด (Tampermonkey อัปเดต/RDP หลุด/เกมค้าง) กลางสำรวจ = หาย เก็บได้ไม่ครบ N (ผู้ใช้เจอ: ขั้น5=26 · ขั้น7=22 แทน 100)
   const EXPLORE_PROG_KEY = 'tokpla_bait_explore_prog';
-  const saveExploreProg = () => { try { if (exploreTier) W.localStorage.setItem(EXPLORE_PROG_KEY, JSON.stringify({ tier: exploreTier, left: exploreLeft, at: Date.now() })); else W.localStorage.removeItem(EXPLORE_PROG_KEY); } catch {} };
+  //   🔬 v6.351: ต้องจำ `thin` ด้วย — หน้าเกมรีโหลดบ่อยมาก (วัดได้ 21 ครั้ง/100 นาที) ถ้าไม่จำ
+  //   รอบที่กู้คืนมาจะไปออกรายงานแบบเก่า = เสียคุณค่าหลักของโหมดนี้ (การเทียบโมเดล vs ของจริง) ไปเงียบ ๆ
+  const saveExploreProg = () => { try { if (exploreTier) W.localStorage.setItem(EXPLORE_PROG_KEY, JSON.stringify({ tier: exploreTier, left: exploreLeft, thin: thinScanTier, at: Date.now() })); else W.localStorage.removeItem(EXPLORE_PROG_KEY); } catch {} };
   try {   // กู้คืนตอนโหลด — ถ้าค้างไม่เกิน 12 ชม. (นานกว่านั้นถือว่าเก่าเกิน สภาพเกมอาจเปลี่ยน)
     const d = JSON.parse(W.localStorage.getItem(EXPLORE_PROG_KEY) || 'null');
     if (d && d.tier && d.left > 0 && Date.now() - (d.at || 0) < 12 * 3600000) {
-      exploreTier = d.tier; exploreLeft = d.left;
-      exploreEvent(`🔄 กู้คืนหลังรีโหลด — สำรวจขั้น ${exploreTier} ต่อ (เหลือ ${exploreLeft} ครั้ง)`);
+      exploreTier = d.tier; exploreLeft = d.left; thinScanTier = d.thin || 0;
+      exploreEvent(`🔄 กู้คืนหลังรีโหลด — ${thinScanTier ? 'เก็บตัวอย่างบาง ๆ' : 'สำรวจ'}ขั้น ${exploreTier} ต่อ (เหลือ ${exploreLeft} ครั้ง)`);
     }
   } catch {}
   // เวลาที่ "เก็บข้อมูลขั้นนี้ล่าสุด" (แมพปัจจุบัน) — ไม่มีข้อมูลเลย = เก่าสุด (ควรลองก่อน)
@@ -8623,14 +8632,58 @@
     cands.sort((a, b) => a.at - b.at);                       // ข้อมูลเก่าสุดก่อน
     return { ...cands[0], casts, baseTier };
   }
+  // 🔬 v6.351 — **โหมดสำรวจบาง ๆ (thin scan)** — ผู้ใช้สั่ง: 50 ครั้ง/วัน/ขั้น
+  //   ต่างจากการสำรวจแบบเดิมตรง "เอาผลไปทำอะไร":
+  //     เดิม: เอาตัวเลขที่วัดได้ไป **ตัดสินใจเลือกขั้น** → ตัวอย่าง 30-100 ครั้งคลาด ±75-140% = ต้นเหตุอคติ v6.341
+  //     ใหม่: เอาไป **สอบเทียบตัวคูณน้ำหนักรายขั้น** (`wTier`) + **ตรวจว่าโมเดลตรงกับของจริงไหม** เท่านั้น
+  //           การตัดสินใจยังเป็นของโมเดล EV เหมือนเดิมทุกประการ
+  //   ทำไมถึงต้องมี: v6.350 เผยว่าถ้าไม่มีใครเก็บตัวอย่าง ขั้นที่บอทไม่ได้ใช้จะ **ไม่มีวันมีข้อมูล**
+  //     → โมเดลต้องเดา (ถอยไปใช้ค่าที่ไม่ได้วัด) และไม่มีวันรู้ตัวว่าเดาผิด = ปมคลาสสิกของ explore/exploit
+  //   คุมต้นทุน 3 ชั้น: ① เฉพาะขั้นใกล้ ๆ ขั้นที่ดีที่สุด (±advThinSpan) ② ขั้นละครั้ง/วัน ③ งบตามที่โมเดลประเมิน
+  const THIN_KEY = 'tokpla_thin_scan';
+  const thinDay = () => { const d = new Date(); return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`; };
+  const thinDone = () => { try { const o = JSON.parse(W.localStorage.getItem(THIN_KEY) || '{}'); return (o && o.d === thinDay() && Array.isArray(o.t)) ? o.t : []; } catch { return []; } };
+  const thinMark = (tier) => { try { const cur = thinDone(); W.localStorage.setItem(THIN_KEY, JSON.stringify({ d: thinDay(), t: [...new Set([...cur, tier])] })); } catch {} };
+  function pickThinTier() {
+    if (!isOn('advThinScan')) return null;
+    const casts = clamp(cfg.advThinCasts || 50, 20, 300);
+    const span = clamp(cfg.advThinSpan || 2, 1, 5);
+    const budget = Math.max(0, cfg.advExploreMaxCost || 0);
+    let best = cfg.baitTier || 1;
+    try { const a = advisorDecide(); if (a && a.bestTier) best = a.bestTier; } catch {}
+    const ceil = baitCeilSafe();
+    const cal = evCalib();
+    const evBest = evPerCast(best, mapIdOfName(curMap));
+    const done = thinDone();
+    const cands = [];
+    for (let t = Math.max(1, best - span); t <= Math.min(ceil, best + span); t++) {
+      if (t === best) continue;                            // ขั้นที่ใช้อยู่ได้ตัวอย่างเองอยู่แล้ว
+      if (!advTierOk(t)) continue;                         // เคารพ "ห้าม Advisor ใช้ขั้นนี้"
+      if (done.includes(t)) continue;                      // ขั้นนี้เก็บไปแล้ววันนี้
+      const have = (cal.tierN || {})[t] || 0;
+      if (have >= casts) continue;                         // ข้อมูลพอแล้ว ไม่ต้องจ่ายซ้ำ
+      const evT = evPerCast(t, mapIdOfName(curMap));
+      // ต้นทุนข้อมูล = ส่วนต่างรายได้ที่ยอมเสียระหว่างเก็บตัวอย่าง (ให้โมเดลเป็นคนตีราคาเอง)
+      const cost = (evBest != null && evT != null) ? Math.max(0, (evBest - baitUnit(best)) - (evT - baitUnit(t))) * casts : 0;
+      if (budget && cost > budget) continue;
+      cands.push({ tier: t, have, cost, d: Math.abs(t - best) });
+    }
+    if (!cands.length) return null;
+    cands.sort((a, b) => (a.have - b.have) || (a.d - b.d) || (a.cost - b.cost));   // ขาดข้อมูลสุดก่อน → ใกล้สุด → ถูกสุด
+    return { ...cands[0], casts, baseTier: best };
+  }
   function startExplore() {
-    // 📐 v6.341: มีโมเดล EV แล้วไม่ต้องสำรวจ — การสำรวจคือ "จ่ายเงินซื้อข้อมูล" ที่โมเดลรู้อยู่แล้วฟรี
-    //   และตัวอย่างระดับ 30–100 ครั้งให้ค่าคลาด ±75–140% (SD ≈ 7× ของค่าเฉลี่ย) = ตัดสินใจจากมันไม่ได้อยู่ดี
-    //   ที่แย่กว่า: ระหว่างสำรวจต้องไปตกด้วยขั้นที่แย่กว่า = เสียกำไรจริงทุกครั้งที่สำรวจ
+    // 📐 v6.341: มีโมเดล EV แล้ว **ไม่สำรวจเพื่อตัดสินใจ** — ตัวอย่าง 30-100 ครั้งคลาด ±75-140% ตัดสินจากมันไม่ได้
+    //   🔬 v6.351: แต่ยัง "เก็บตัวอย่างบาง ๆ" เพื่อสอบเทียบ/ตรวจสอบโมเดล (ดูเหตุผลที่ pickThinTier)
     if (isOn('advModel') && evReady()) {
       lastExploreAt = now();
       try { W.localStorage.setItem('tokpla_bait_explore', String(Date.now())); } catch {}
-      logInfo('🔬 ข้ามการสำรวจขั้นเหยื่อ — ใช้ EV ตามสูตรเกมแทน (แม่นกว่า + ไม่ต้องจ่ายค่าสำรวจ)');
+      const th = pickThinTier();
+      if (!th) { logInfo('🔬 ไม่ต้องสำรวจรอบนี้ — ข้อมูลรายขั้นครบพอสำหรับสอบเทียบแล้ว (หรือเก็บครบโควตาวันนี้/เกินงบ)'); return; }
+      thinMark(th.tier);
+      exploreTier = th.tier; exploreLeft = th.casts; exploreMismatch = 0; thinScanTier = th.tier; saveExploreProg();
+      exploreEvent(`🔬 สำรวจบาง ๆ ขั้น ${th.tier} × ${th.casts} ครั้ง (มีตัวอย่างสะอาด ${th.have} · ต้นทุนที่โมเดลประเมิน ~${Math.round(th.cost).toLocaleString()} 🪙) — เก็บไว้สอบเทียบตัวคูณน้ำหนัก ไม่ได้เอาไปตัดสินใจ`);
+      say(`🔬 เก็บตัวอย่างขั้น ${th.tier} × ${th.casts} ครั้ง (สอบเทียบโมเดล · ตอนนี้มี ${th.have} ตัวอย่าง) แล้วจะกลับขั้น ${th.baseTier}`);
       return;
     }
     const p = pickExploreTier();
@@ -8645,10 +8698,32 @@
   }
   // จบการสำรวจ (ครบ N หรือยกเลิก) — เริ่มนับรอบถัดไป "ตอนจบ" (v6.208) การันตีได้ฟาร์มเต็มช่วง
   function exploreEnd(tier, completed) {
-    exploreTier = 0; exploreLeft = 0; exploreMismatch = 0; saveExploreProg();
+    const wasThin = thinScanTier === tier;
+    exploreTier = 0; exploreLeft = 0; exploreMismatch = 0; thinScanTier = 0; saveExploreProg();
     lastExploreAt = now();
     try { W.localStorage.setItem('tokpla_bait_explore', String(Date.now())); } catch {}
-    if (completed) {
+    if (completed && wasThin) {
+      // 🔬 v6.351: จบรอบเก็บตัวอย่าง — **ตรวจว่าโมเดลตรงกับของจริงไหม** (นี่คือคุณค่าหลักของโหมดนี้)
+      //   ไม่เอาผลไปสลับขั้นเอง — ถ้าโมเดลเพี้ยนจริงจะเห็นจากบรรทัดนี้ แล้วค่อยตัดสินใจกันทีหลัง
+      _evCalib = null;                                     // บังคับสอบเทียบใหม่ทันที (ตัวอย่างเพิ่งเพิ่ม)
+      const cal = evCalib();
+      const evT = evPerCast(tier, mapIdOfName(curMap));
+      const pred = evT != null ? evT - baitUnit(tier) : null;
+      const real = advTrimStat(tier, cfg.advThinCasts || 50);
+      const wm = cal.wmultOf ? cal.wmultOf(tier) : cal.wmult;
+      const gap = (pred != null && real) ? real.score - pred : null;
+      const msg = `ตัวคูณน้ำหนักที่วัดได้ ×${wm.toFixed(2)} (ตัวอย่างสะอาด ${(cal.tierN || {})[tier] || 0})`
+        + (pred != null ? ` · โมเดลทำนายสุทธิ ${Math.round(pred)}/ครั้ง` : '')
+        + (real ? ` · วัดจริง(ตัดฟลุ๊ค) ${Math.round(real.score)}/ครั้ง` : ' · ตัวอย่างยังไม่พอเทียบ');
+      say(`🔬 เก็บตัวอย่างขั้น ${tier} ครบ — ${msg}`);
+      exploreEvent(`✅ สำรวจบาง ๆ ขั้น ${tier} ครบ — ${msg}`);
+      // เตือนเมื่อ "โมเดล vs ของจริง" ห่างกันมาก — ⚠️ ค่าที่วัดได้ตัดฟลุ๊คทิ้ง (ปลาแพงไม่ถูกนับ) จึงต่ำกว่าโมเดลเป็นปกติ
+      //   ฟ้องเฉพาะทิศที่ผิดปกติจริง: **ของจริงสูงกว่าโมเดลมาก** = โมเดลตีค่าขั้นนี้ต่ำไป (คือทิศที่เคยทำเสียเงิน)
+      if (gap != null && pred != null && gap > Math.max(30, Math.abs(pred) * 0.5)) {
+        logWarn(`📐 ขั้น ${tier}: วัดจริงได้ ${Math.round(real.score)}/ครั้ง สูงกว่าที่โมเดลทำนาย (${Math.round(pred)}) มาก — โมเดลอาจตีค่าขั้นนี้ต่ำไป (ดู 📐 ตาราง EV แล้วเทียบ)`);
+        if (isOn('tgOn') && isOn('tgWarn')) void tgSend(`📐 <b>โมเดล EV อาจตีค่าขั้น ${tier} ต่ำไป</b>\nวัดจริง ${Math.round(real.score)}/ครั้ง vs ทำนาย ${Math.round(pred)}/ครั้ง (จาก ${real.n} ตัวอย่าง)`);
+      }
+    } else if (completed) {
       const s = advTrimStat(tier, cfg.advExploreCasts || 30);
       const res = s ? `กำไร/ครั้งล่าสุด ${Math.round(s.score)} 🪙 (จาก ${s.n} ตัวอย่าง)` : 'เก็บตัวอย่างไม่พอ';
       say(`🔬 สำรวจขั้น ${tier} ครบแล้ว — ${res} · ให้ Advisor ตัดสินต่อ`);
@@ -11990,6 +12065,19 @@ ${esc(reason)}
       labeled('ทุกกี่ชั่วโมง', numInput('advExploreHours', 1, 72, 48)),
       labeled('ครั้งละ', numInput('advExploreCasts', 5, 300, 48)),
       labeled('งบ/รอบ 🪙', numInput('advExploreMaxCost', 0, 999999, 64)),
+    ));
+
+    panel.appendChild(row(
+      '🔬 เก็บตัวอย่างบาง ๆ (ตอนใช้โมเดล EV)',
+      '**ใช้เมื่อ "คิด EV จากสูตรจริง" เปิดอยู่** (ปกติ) — ตัวสำรวจแบบเต็มด้านบนจะถูกข้าม เพราะโมเดลรู้คำตอบฟรีอยู่แล้ว · '
+      + 'แต่โมเดลมีจุดบอด: **ขั้นที่บอทไม่ได้ใช้จะไม่มีวันมีตัวอย่าง** → ตัวคูณน้ำหนักรายขั้น (จาก baitSizeBonus) ต้องเดา และไม่มีวันรู้ตัวว่าเดาผิด · '
+      + 'โหมดนี้เก็บตัวอย่าง "ขั้นข้างเคียง" วันละ 1 ครั้งต่อขั้น เพื่อ ① สอบเทียบตัวคูณน้ำหนักของขั้นนั้น ② จับว่าโมเดลตรงกับของจริงไหม · '
+      + '⛔ **ไม่เอาตัวเลขที่วัดได้ไปตัดสินใจเลือกขั้น** (ตัวอย่างระดับ 50 ครั้งคลาดสูงมาก — บทเรียน v6.341) การเลือกขั้นยังเป็นของโมเดลล้วน · '
+      + '⚖️ คุมต้นทุน 3 ชั้น: เฉพาะขั้นห่างจากขั้นดีสุดไม่เกิน N · ขั้นละครั้ง/วัน · เกิน "งบ/รอบ" ด้านบน = ข้าม · '
+      + 'ครบแล้วจะรายงาน "โมเดลทำนาย vs วัดจริง" — ถ้าของจริงสูงกว่าทำนายมาก จะเตือนว่าโมเดลอาจตีค่าขั้นนั้นต่ำไป',
+      labeled('เปิด', checkbox('advThinScan')),
+      labeled('ครั้ง/ขั้น/วัน', numInput('advThinCasts', 20, 300, 56)),
+      labeled('ห่างได้ ±ขั้น', numInput('advThinSpan', 1, 5, 48)),
     ));
 
     panel.appendChild(row(
