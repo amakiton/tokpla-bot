@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.374
+// @version      6.375
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.374';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.375';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -8973,20 +8973,32 @@
     out.push(`ℹ️ ขยะไม่นับ XP (ยังไม่ยืนยัน — ถ้าเกมให้ XP ขยะด้วย ตัวเลขจริงจะสูงกว่านี้)`);
     out.push('ℹ️ ยังไม่รวม: ตกปลาชนิดใหม่ครั้งแรก +30 · ฆ่าบอส +100');
     // 📊 v6.371: ของจริงจากจอ + อัตราที่วัดได้ → ETA เลเวลถัดไป (ground truth ชนะโมเดลเสมอ)
-    const bar = readXpBar();
+    // 🐛 v6.375: อ่านจอไม่ได้ ≠ ไม่มีข้อมูล — `/xpnow` ปิดแผงคืนก่อนเรียกรายงานเสมอ (finally)
+    //   ⇒ เดิมรายงานขึ้น "อ่านแถบ XP จากจอไม่ได้" ทั้งที่เพิ่งจดค่าลงประวัติสำเร็จเมื่อ 1 วินาทีก่อน
+    //   แก้: จอว่าง → ใช้รายการล่าสุดจาก `tokpla_xp_hist` พร้อมบอกว่าเป็นค่าเมื่อกี่นาทีที่แล้ว
+    let bar = readXpBar(), fromHist = 0;
+    if (!bar || bar.cur == null) {
+      const h = loadXpHist();
+      const last = h[h.length - 1];
+      if (last) { bar = { lv: last.lv, cur: last.cur, max: last.max, remain: (last.max || 0) - last.cur, next: last.lv + 1 }; fromHist = Date.now() - last.t; }
+    }
     if (bar && (bar.lv != null || bar.remain != null)) {
       out.push('');
-      out.push(`📊 จากจอจริง: ${bar.lv != null ? `Lv.${bar.lv}` : ''}${bar.cur != null ? ` · ${bar.cur.toLocaleString()}/${(bar.max || 0).toLocaleString()} XP` : ''}${bar.remain != null ? ` · อีก ${bar.remain.toLocaleString()} XP → Lv.${bar.next}` : ''}`);
+      out.push(`📊 ${fromHist ? `ค่าล่าสุด (${Math.round(fromHist / 60000)} นาทีที่แล้ว)` : 'จากจอจริง'}: ${bar.lv != null ? `Lv.${bar.lv}` : ''}${bar.cur != null ? ` · ${bar.cur.toLocaleString()}/${(bar.max || 0).toLocaleString()} XP` : ''}${bar.remain > 0 ? ` · อีก ${bar.remain.toLocaleString()} XP → Lv.${bar.next}` : ''}`);
       const rate = xpMeasuredRate();
-      if (rate && bar.remain != null) {
+      if (rate && bar.remain > 0) {
         out.push(`⏱️ อัตราที่วัดได้จริง: ${Math.round(rate.perHour).toLocaleString()} XP/ชม. (จาก ${rate.minutes} นาที)`
           + ` ⇒ ถึง Lv.${bar.next} ในอีก ~${(bar.remain / rate.perHour).toFixed(1)} ชม.`);
-      } else if (bar.remain != null) {
-        out.push('⏱️ ยังวัดอัตราจริงไม่พอ (ต้องเห็นแถบ XP ขยับรวม ≥10 นาที) — จะสะสมเองระหว่างฟาร์ม');
+      } else if (bar.remain > 0) {
+        // ยังวัดอัตราจริงไม่ได้ → ใช้โมเดลของขั้นที่ใช้อยู่ประเมินไปก่อน (บอกให้ชัดว่าเป็นค่าประเมิน)
+        const est = cur && cur.xph > 0 ? bar.remain / cur.xph : null;
+        out.push(est != null
+          ? `⏱️ ยังวัดอัตราจริงไม่พอ (ต้องเก็บ ≥10 นาที) — ประเมินจากโมเดล: ถึง Lv.${bar.next} ในอีก ~${est.toFixed(1)} ชม.`
+          : '⏱️ ยังวัดอัตราจริงไม่พอ (ต้องเก็บ ≥10 นาที) — จะสะสมเองระหว่างฟาร์ม');
       }
     } else {
       out.push('');
-      out.push('📊 อ่านแถบ XP จากจอไม่ได้ตอนนี้ (ป้ายไม่อยู่บนจอ) — บอทจะลองอ่านเป็นระยะระหว่างฟาร์ม');
+      out.push('📊 ยังไม่มีข้อมูล XP เลย — สั่ง /xpnow เพื่อให้บอทเปิดหน้าตัวละครอ่านให้เดี๋ยวนี้');
     }
     return out.join('\n');
   }
