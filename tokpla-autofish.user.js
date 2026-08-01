@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.353
+// @version      6.354
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.353';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.354';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4603,6 +4603,17 @@
     bossEvent(`🏁 จบไฟต์: ${outcome}${dmgTxt} · กดเกจ ${gaugePresses} · หลบ ${aoeDodges} · ตาย ${deaths}`
       + ((firstPressAt && spawnSeenAt) ? ` · ⏱️ เริ่มตีหลังบอสโผล่ ${((firstPressAt - spawnSeenAt) / 1000).toFixed(1)} วิ` : '')
       + ((dodgeHits || walkHits) ? ` · ⚔️ ตีแทรก: ระหว่างหลบ ${dodgeHits} · ระหว่างเดิน ${walkHits} (v6.336 คืน DPS ที่เคยทิ้ง)` : ''));
+    // 🧹 v6.354 — **ห้ามบันทึกไฟต์ที่ "ไม่ได้กดสักครั้ง"** (เจอสด 1/8 รอบ 19:30)
+    //   หลักฐาน: ไฟต์เดียวถูกบันทึก 2 แถว — 19:35:13 timeout (299 วิ · กดเกจ 350 · ดาเมจ 40,506)
+    //   แล้ว 19:35:35 kill (10 วิ · **กดเกจ 0** · ดาเมจ 40,506 ซ้ำ · ชื่อบอส/โหมด/จุดอ่อน = null)
+    //   ที่มา: re-entry loop (v6.275) กลับเข้าไปรอบสอง แล้วบอสตายพอดีก่อนได้กด → บันทึกอีกแถว
+    //   พิษ: ดาเมจนับซ้ำ (HUD "ของเรา" ยังค้างค่าเดิม) · จำนวนไฟต์เฟ้อ · ค่าเฉลี่ย/อัตราฆ่าเพี้ยนทั้งตาราง
+    //   เกณฑ์: ไม่ได้กดเลย = ไม่ได้มีส่วนร่วมในไฟต์นั้น = ไม่ใช่ "ไฟต์" → บันทึกเป็นเหตุการณ์พอ
+    const _presses = gaugePresses + hits + chargeShots;
+    if (_presses === 0) {
+      bossEvent(`🧹 ไม่บันทึกเป็นไฟต์ (ไม่ได้กดสักครั้ง — ${outcome.replace(/[✅🏁⌛]\s*/, '')}) · กันดาเมจนับซ้ำจาก HUD ที่ค้างค่าเดิม`);
+      logInfo('🧹 ข้ามการบันทึกสถิติไฟต์นี้ — ไม่ได้กดตีเลยสักครั้ง (กันสถิติซ้ำ/เฟ้อ)');
+    } else
     // 📊 v6.195: เก็บสถิติไฟต์นี้เข้า ring buffer (N ครั้งล่าสุด · ตั้งที่ bossStatKeep)
     recordBossFight({
       ts: Date.now(),
@@ -5636,12 +5647,26 @@
     //   ถ้าไม่ตัดตรงนี้ = บอท "หยุดตกปลารอบอส" ไปจนจบชั่วโมง ทั้งที่ไม่มีบอสให้ล่าแล้ว
     //   (ทริปเสียเปล่าที่แพงที่สุดคือทริปที่ไม่ได้ออกเดินทางด้วยซ้ำ — แค่ยืนรอเฉยๆ)
     //   ⚠️ ต้องไหลลงไปถึงบล็อกทาสีปุ่มด้วย — return ตรงนี้เลยจะทำให้ปุ่มม่วงค้างเป็น "หยุดฟาร์มแล้ว" ทั้งที่กลับไปตกปลาแล้ว
+    // 🔴 v6.354 — **ปิดรูที่เหลือของ "บอทไม่ตกปลา" (ยืนยันจาก log สด VPS 19:42)**
+    //   v6.344 กันได้เฉพาะรอบที่ "รู้ผลแล้ว" (ฆ่าได้/บอสหาย/ประตูบอกว่าปิด) — แต่รอบที่จบแบบไม่รู้ผล
+    //   (noshow/timeout/ไปไม่ถึง) จะไม่มีใครตั้ง roundDone → ป้าย "ถึงรอบบอสแล้ว" ที่ค้างยาวเต็มรอบ
+    //   ทำให้ `min` = 0 ตลอด → `near` จริงตลอด → **ปุ่มม่วงบล็อกการตกปลาทั้งชั่วโมง**
+    //   log สดยืนยันว่าป้ายค้างจริง: `🐯 ป้าย "ถึงรอบบอสแล้ว" + ไม่มีตัวนับถอยหลังบนจอ → ถือว่าถึงเวลาบอส` (ซ้ำทุกนาที)
+    //   กติกาใหม่: **หน้าต่างรอบปิดแล้ว (เลย spawn + raidWindowMinutes) = เลิกเชื่อป้าย ใช้นาฬิกาแทน**
+    //   และถ้าใช้ทริปครบเพดานของรอบนี้แล้ว ก็ไม่มีอะไรให้เตรียมอีก → ปล่อยตกปลา
     const roundOver = !!bossRoundDone();
-    if (!roundOver && now() - bossTimerCacheAt > 5000) { bossTimerCacheAt = now(); bossTimerCache = bossTimerMin(); }
-    const min = bossTimerCache;
-    if (!roundOver && min == null) return false;              // อ่านเวลาบอสไม่ได้ = ตกปลาไปก่อน (ไม่เดา)
+    const _rb = bossRoundBounds();
+    const windowOver = !!_rb.prev && (Date.now() - _rb.prev) > SERVER_RAID_WINDOW_MIN * 60000;
+    const tripsUsed = bossTripsThisRound() >= BOSS_TRIPS_MAX;
+    const stale = roundOver || windowOver || tripsUsed;
+    if (!stale && now() - bossTimerCacheAt > 5000) { bossTimerCacheAt = now(); bossTimerCache = bossTimerMin(); }
     const soloLead = Math.max(clamp(cfg.bossOnlyLeadMin || 5, 1, 60), clamp(cfg.bossLeadMin, 1, 60));
-    const near = !roundOver && min != null && min <= soloLead;   // ใกล้เวลาบอส (≤ lead) = หยุดตก เตรียมออกเดินทาง
+    // ป้ายเชื่อไม่ได้แล้ว → นับถอยหลังจาก "ตารางนาฬิกา" ของรอบถัดไปแทน (ยังหยุดตกก่อนรอบใหม่ได้ตามเดิม)
+    const min = stale
+      ? (_rb.next ? Math.max(0, Math.round((_rb.next - Date.now()) / 60000)) : null)
+      : bossTimerCache;
+    if (min == null) return false;                            // อ่านเวลาบอสไม่ได้ = ตกปลาไปก่อน (ไม่เดา)
+    const near = !roundOver && min <= soloLead;               // ใกล้เวลาบอส (≤ lead) = หยุดตก เตรียมออกเดินทาง
     if (near !== bossSoloAutoOn) {                            // สลับสถานะ → ทาสีปุ่ม/แถบใหม่ (ไม่ใช่ checkbox)
       bossSoloAutoOn = near;
       try { if (bossSoloPaint) bossSoloPaint(); } catch {}
