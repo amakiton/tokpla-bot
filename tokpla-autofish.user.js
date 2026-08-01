@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.352
+// @version      6.353
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.352';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.353';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1481,8 +1481,14 @@
           + `<code>/bosscaves add &lt;map_id&gt;</code> เพิ่มเอง · <code>/bosscaves reset</code> ล้าง`);
         break;
       }
-      case 'gaugeprobe': case 'probe': {   // 🔬 v6.238: อ่านผลเก่าอย่างเดียว (ถอดสวิตช์วัดออกแล้ว)
+      // 🔬 v6.238: อ่านผลเก่าอย่างเดียว (ถอดสวิตช์วัดออกแล้ว)
+      // 🐛 v6.353: เดิม case นี้กิน `probe` ด้วย → คำสั่ง `/probe <ชื่อปุ่ม>` (v6.352) **ไม่มีวันถูกเรียก**
+      //   (JS ยอมให้ case ซ้ำ · ตัวแรกชนะ · `node --check` จับไม่ได้) — ผู้ใช้พิมพ์ /probe แลกเศษบอส แล้วได้รายงานเกจแทน
+      //   แก้แบบไม่ทำใครพัง: `/probe` **ที่มีชื่อปุ่มต่อท้าย** = ส่องแผง · ไม่มีอะไรต่อท้าย = รายงานเกจแบบเดิม
+      case 'gaugeprobe': case 'probe': {
         const a = (args[0] || '').toLowerCase();
+        //   ⚠️ ตัวแปรคำสั่งในฟังก์ชันนี้ชื่อ `c` (ไม่ใช่ `cmd`) และ `args` = ทุกคำหลังคำสั่งแล้ว (ห้าม slice ซ้ำ)
+        if (c === 'probe' && args.length && !['on', 'off', 'reset'].includes(a)) { void probePanel(args.join(' ').trim(), reply); break; }
         if (a === 'on') { reply('🔬 โหมดวัดเกจถูกถอดออกแล้ว (v6.238) — มันตอบ "ดาเมจต่อมุม" ไม่ได้จริง และเปิดค้างไว้จะทำให้ A/B หยุดเก็บข้อมูล · ใช้ <code>/gaugeab on</code> แทน'); break; }
         if (a === 'reset') { gProbeRing = []; gProbeSave(); reply('🔬 ล้างผลวัดเกจเก่าแล้ว'); break; }
         reply(`<code>${esc(gaugeProbeReport())}</code>`);
@@ -1498,24 +1504,8 @@
       //     · 🎫 ตู้แลกเหรียญเลเวล (20 เหรียญ = +10 ช่อง ทำได้ 5 ครั้ง) · 🏆 ห้องแข่ง
       //   บทเรียน v6.288/6.289 (เดาโครงแผงลุงหยัดผิด 2 รอบติด): **อ่านของจริงก่อนเขียนโค้ด** —
       //   ตัวนี้คือทางอ่านของจริงโดยไม่ต้องให้ผู้ใช้ไปนั่ง inspect เอง (เกม single-session เปิดแท็บ 2 ไม่ได้)
-      case 'probe': {
-        const label = args.slice(1).join(' ').trim();
-        if (!label) { reply('🔎 ใช้: <code>/probe ชื่อปุ่ม</code> เช่น <code>/probe แลกเศษบอส</code> · <code>/probe กระเป๋า</code>\nบอทจะเปิดแผงนั้น อ่านโครงข้างใน แล้วปิดให้'); break; }
-        if (busy || orchestrating) { reply('🔎 บอทติดงานอยู่ ลองใหม่อีกครั้ง'); break; }
-        reply(`🔎 กำลังเปิดแผง "${esc(label)}" เพื่ออ่านโครง...`);
-        void (async () => {
-          busy = true;
-          try {
-            const btn = qBtn(label) || btnByText(label);
-            if (!btn) { reply(`🔎 หาปุ่ม "${esc(label)}" ไม่เจอบนจอ (ต้องกางเมนูก่อนไหม? ลอง <code>/probe กางแผงเมนู</code> ก่อน)`); return; }
-            fireClick(btn); await sleep(1200);
-            const out = domOutline(90);
-            reply(`🔎 <b>โครงแผง "${esc(label)}"</b>\n<code>${esc(out)}</code>`);
-            logInfo(`🔎 probe "${label}":\n${out}`);
-            gameEscape(); await sleep(300);
-          } catch (e) { reply('🔎 ส่องแผงล้มเหลว: ' + esc(String(e && e.message || e))); }
-          finally { busy = false; }
-        })();
+      case 'panel': case 'ส่อง': {   // ชื่อสำรองที่ไม่ชนใคร
+        void probePanel(args.join(' ').trim(), reply);
         break;
       }
       case 'bossgate': {   // 🚪 v6.242: ข้อความหน้าประตูถ้ำ (หา mechanic เวลาเปิด)
@@ -6484,6 +6474,29 @@
       }
     } catch (e) { out.push('อ่านไม่สำเร็จ: ' + (e && e.message)); }
     return out.join('\n') || '(ไม่เจอ element ที่ใช้ได้)';
+  }
+
+  // 🔎 v6.353: ตัวส่องแผงตัวจริง (ใช้ร่วมกันทั้งคำสั่ง Telegram และปุ่มในแผงบอท)
+  //   แยกออกมาเป็นฟังก์ชันเดียว — v6.352 เขียนซ้ำ 2 ที่ แล้วฝั่ง Telegram ก็ถูก case เก่ากินทิ้งอีก
+  async function probePanel(label, reply) {
+    const say2 = (t) => { try { reply ? reply(t) : showTextModal('🔎 ส่องแผงเกม', String(t).replace(/<[^>]+>/g, '')); } catch {} };
+    if (!label) { say2('🔎 ใช้: <code>/probe ชื่อปุ่ม</code> เช่น <code>/probe แลกเศษบอส</code> · <code>/probe จดหมาย</code> · <code>/probe กระเป๋า</code>'); return; }
+    if (busy || orchestrating) { say2('🔎 บอทติดงานอยู่ (busy/orchestrating) — ลองใหม่อีกครั้ง'); return; }
+    busy = true;
+    try {
+      let btn = qBtn(label) || btnByText(label);
+      if (!btn) {   // เมนูถูกย่อ = ปุ่มหายจาก DOM (v6.104) → กางก่อนแล้วหาใหม่
+        const open = qBtn('กางแผงเมนู');
+        if (open) { fireClick(open); await sleep(600); btn = qBtn(label) || btnByText(label); }
+      }
+      if (!btn) { say2(`🔎 หาปุ่ม "${esc(label)}" ไม่เจอบนจอ · ลองชื่อที่เห็นบนปุ่มจริง เช่น "แลกเศษบอส" / "จดหมาย" / "กระเป๋า" / "ร้านค้านักตกปลา"`); return; }
+      fireClick(btn); await sleep(1300);
+      const out = domOutline(110);
+      say2(`🔎 <b>โครงแผง "${esc(label)}"</b>\n<code>${esc(out)}</code>`);
+      logInfo(`🔎 probe "${label}":\n${out}`);
+      gameEscape(); await sleep(300);
+    } catch (e) { say2('🔎 ส่องแผงล้มเหลว: ' + esc(String(e && e.message || e))); }
+    finally { busy = false; }
   }
 
   function warnText() {
@@ -12171,6 +12184,43 @@ ${esc(reason)}
       evb.style.cssText = 'padding:5px 10px;border-radius:7px;border:1px solid #4a5568;background:#2d3748;color:#e2e8f0;font-size:11px;cursor:pointer;margin:2px 3px 6px 0;';
       evb.addEventListener('click', () => showTextModal('📐 EV ต่อการเหวี่ยง 1 ครั้ง (ตามสูตรเกม)', evTableLines().join('\n')));
       panel.appendChild(evb);
+    }
+
+    // 🔎 v6.353 — **ปุ่มส่องแผงเกม** (คู่กับคำสั่ง /probe)
+    //   ผู้ใช้ถามว่า "พิมพ์คำสั่งที่ไหน" → คำสั่งทั้งหมดวิ่งผ่าน Telegram เท่านั้น (tgControl)
+    //   ถ้าไม่ได้เปิด Telegram ไว้ = ใช้ /probe ไม่ได้เลย ⇒ ของที่เพิ่งทำใน v6.352 เข้าไม่ถึงมือผู้ใช้
+    //   บทเรียนเดิมของโปรเจกต์ (v6.287 ตัวเฝ้าแผงลุงหยัดต้องทำงานแม้บอทปิด): **ฟีเจอร์ต้องเข้าถึงได้จริง**
+    {
+      const pw = document.createElement('div');
+      pw.style.cssText = 'display:flex;gap:4px;align-items:center;margin:2px 3px 8px 0;flex-wrap:wrap;';
+      const pin = document.createElement('input');
+      pin.setAttribute('data-tkbot', '1');
+      pin.placeholder = 'ชื่อปุ่มในเกม เช่น แลกเศษบอส';
+      pin.style.cssText = 'flex:1;min-width:150px;padding:4px 7px;border-radius:6px;border:1px solid #4a5568;background:#1a202c;color:#e2e8f0;font-size:11px;';
+      const pb = document.createElement('button');
+      pb.setAttribute('data-tkbot', '1');
+      pb.textContent = '🔎 ส่องแผงเกม';
+      pb.style.cssText = 'padding:5px 10px;border-radius:7px;border:1px solid #4a5568;background:#2d3748;color:#e2e8f0;font-size:11px;cursor:pointer;';
+      pb.addEventListener('click', () => {
+        const label = pin.value.trim();
+        if (!label) { showTextModal('🔎 ส่องแผงเกม', 'ใส่ "ชื่อปุ่มในเกม" ก่อน เช่น:\n  แลกเศษบอส\n  จดหมาย\n  กระเป๋า\n  ร้านค้านักตกปลา\n\nบอทจะเปิดแผงนั้น อ่านโครงข้างใน แล้วปิดคืนให้'); return; }
+        if (busy || orchestrating) { showTextModal('🔎 ส่องแผงเกม', 'บอทติดงานอยู่ (busy/orchestrating) — ลองใหม่อีกครั้ง'); return; }
+        void (async () => {
+          busy = true;
+          try {
+            const btn = qBtn(label) || btnByText(label);
+            if (!btn) { showTextModal('🔎 ส่องแผงเกม', `หาปุ่ม "${label}" ไม่เจอบนจอ\n\nถ้าเมนูถูกย่อไว้ ให้ลองส่อง "กางแผงเมนู" ก่อน แล้วค่อยส่องแผงที่ต้องการ`); return; }
+            fireClick(btn); await sleep(1200);
+            const out = domOutline(120);
+            showTextModal(`🔎 โครงแผง "${label}"`, out + '\n\n— ก๊อปข้อความนี้ส่งให้ผู้พัฒนาเพื่อต่อระบบ —');
+            logInfo(`🔎 probe "${label}":\n${out}`);
+            gameEscape();
+          } catch (e) { showTextModal('🔎 ส่องแผงเกม', 'ล้มเหลว: ' + String(e && e.message || e)); }
+          finally { busy = false; }
+        })();
+      });
+      pw.appendChild(pin); pw.appendChild(pb);
+      panel.appendChild(pw);
     }
 
     panel.appendChild(row(
