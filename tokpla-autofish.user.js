@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.336
+// @version      6.337
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.336';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.337';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2829,6 +2829,34 @@
     bossPredictSrc = `รอบก่อน + ทุก ${Math.round(iv / 60000)} นาที (ตารางเวลาปิดอยู่)`;
     return Math.max(0, Math.round((target - Date.now()) / 60000));
   }
+  // 🔁 v6.337 — **นับ "ทริปต่อรอบบอส" เพื่ออุดลูปวิ่งเข้าถ้ำซ้ำ (regression ที่ v6.328 สร้างขึ้น)**
+  //   ผู้ใช้เจอสด 1/8 11:04: บอทไม่ตกปลาเลย วนเข้าถ้ำ→ไม่เจอบอส→กลับ→เข้าใหม่ ไม่จบ
+  //   ลูปเกิดจาก 2 กลไกตีกัน: (ก) v6.328 ขยายกรอบเชื่อป้าย "ถึงรอบบอสแล้ว" จาก -6 เป็น -45 นาที
+  //     (ข) bossHuntDue re-arm อัตโนมัติเมื่อตัวทำนายบอกว่า "รอบถัดไปอีกไกล" (min > lead)
+  //   → ป้ายค้างจากรอบ 10:30 ยังอยู่ตอน 11:04 (rawGap −34 = อยู่ในกรอบใหม่) → due จริง → ออกล่า → noshow → disarm
+  //     → ตัวทำนายพูด → re-arm → ป้ายค้างปลุกอีก → **วนไม่จบ ไม่ได้ตกปลาเลย**
+  //   ตัวนับต่อรอบตัดวงจรนี้ได้โดยไม่ต้องเลือกข้าง: ยังคงเจตนา v6.328 (บอสยังไม่ตาย = กลับเข้าไปตีต่อ) แต่จำกัด 2 ทริป/รอบ
+  //   ⚠️ ต้องประกาศ **ก่อน** bossTimerMin (ผู้ใช้ค่าตัวแรก) — const อยู่ใน TDZ จนกว่าจะรันถึงบรรทัดนี้
+  const BOSS_TRIP_KEY = 'tokpla_boss_round_trips';
+  const BOSS_TRIPS_MAX = 2;
+  // คีย์ "รอบบอสที่กำลังอยู่" = วันที่ + เวลารอบล่าสุดที่ผ่านมาแล้ว (นาทีตั้งแต่เที่ยงคืน) → ข้ามรอบ/ข้ามวัน = ตัวนับรีเซ็ตเอง
+  function bossRoundKey() {
+    try {
+      const list = bossSchedList();
+      if (!Array.isArray(list) || !list.length) return '';
+      const d = new Date(), nowMin = d.getHours() * 60 + d.getMinutes();
+      let best = null;
+      for (const m of list) if (m <= nowMin && (best == null || m > best)) best = m;
+      if (best == null) return '';                       // ยังไม่ถึงรอบแรกของวัน
+      return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}#${best}`;
+    } catch { return ''; }
+  }
+  function bossTripsThisRound() {
+    try { const o = JSON.parse(W.localStorage.getItem(BOSS_TRIP_KEY) || '{}'); return o && o.k === bossRoundKey() ? (o.n || 0) : 0; } catch { return 0; }
+  }
+  function bumpBossTrip() {
+    try { const n = bossTripsThisRound() + 1; W.localStorage.setItem(BOSS_TRIP_KEY, JSON.stringify({ k: bossRoundKey(), n })); return n; } catch { return 0; }
+  }
   let bossPredictSayAt = 0;
   let bossChipDistrustAt = 0;
   function bossTimerMin() {
@@ -2864,6 +2892,17 @@
       //   กลับเข้าไปตีต่อได้ · v6.275 ออกแบบ re-entry ไว้บนข้อเท็จจริงนี้แล้ว) → ป้ายจริงตอน rawGap=-17 ถูกปัดตก
       //   ว่า "เกมเพี้ยน" ทั้งที่บอสยังมีเลือดอยู่จริง = บอทไม่ยอมไปล่า · ขยายกรอบลบเป็น -45 นาที (คลุมรอบเปิดยาว
       //   แต่ยังกันเคสป้ายค้าง 11 ชม. ของ v6.215) · arm gate (v6.200) ยังคุมอยู่: รอบที่ล่าจบแล้ว disarm = ป้ายปลุกไม่ได้
+      // 🔁 v6.337: กรอบ -45 ของ v6.328 เปิดช่องให้ "ป้ายค้าง" ปลุกการล่าซ้ำไม่จบ (ผู้ใช้เจอสด 1/8 11:04 — บอทไม่ตกปลาเลย)
+      //   ทางออกที่ไม่ต้องเลือกข้างระหว่าง "กลับไปตีบอสที่ยังไม่ตาย" กับ "อย่าวนเข้าถ้ำเปล่า" = **จำกัดทริปต่อรอบ**
+      //   ครบ 2 ทริปในรอบเดียวกันแล้ว → เลิกเชื่อป้าย ใช้ตัวทำนาย (ป้ายค้างจึงปลุกไม่ได้อีก จนกว่าจะถึงรอบใหม่จริง)
+      const _trips = bossTripsThisRound();
+      if (_trips >= BOSS_TRIPS_MAX && rawGap < -2) {
+        if (now() - bossPredictSayAt > 1800000) {
+          bossPredictSayAt = now();
+          logInfo(`🔁 ป้าย "ถึงรอบบอส" ยังค้างอยู่ แต่รอบนี้ออกล่าไปแล้ว ${_trips}/${BOSS_TRIPS_MAX} ทริป → ไม่เชื่อป้าย รอรอบใหม่ (กันวนเข้าถ้ำเปล่า)`);
+        }
+        return bossPredictNextMin();
+      }
       if (!bossNextMs || (rawGap >= -45 && rawGap <= lead + 2)) return 0;
       // ป้ายแย้งเวลาจริง (บอสยังอีกไกล) = ป้ายค้าง/เพี้ยน → ไม่เชื่อ ใช้ตัวทำนายแทน
       if (now() - bossPredictSayAt > 1800000) {   // 🧹 v6.332: 10→30 นาที
@@ -4514,7 +4553,8 @@
       }
       if (!resumeHome) {
         bossPhase = 'travel'; saveBossState();
-        say('👹 ใกล้เวลาบอส — ออกเดินทางไปถ้ำบ่อโบราณ');
+        const _tripN = bumpBossTrip();   // 🔁 v6.337: นับทริปของรอบนี้ (ครบเพดาน = ป้ายค้างปลุกไม่ได้อีก)
+        say(`👹 ใกล้เวลาบอส — ออกเดินทางไปถ้ำบ่อโบราณ (ทริปที่ ${_tripN}/${BOSS_TRIPS_MAX} ของรอบนี้)`);
         bossEvent(`🚶 ออกเดินทางไปถ้ำ (บอสอีก ${bossTimerMin() ?? '?'} นาที · ตั้ง lead ${cfg.bossLeadMin} · จาก ${bossHome})`);
         if (isOn('tgOn')) void tgSend(`👹 <b>ออกล่าบอส</b> — จากแมพ ${bossHome} → ถ้ำบ่อโบราณ (จะกลับมาฟาร์มต่อ)`);
         recordBossGraph();
