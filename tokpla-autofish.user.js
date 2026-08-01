@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.332
+// @version      6.333
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.332';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.333';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -7972,6 +7972,37 @@
     }
     return m || homeMapId() || 'lotus_marsh';
   };
+  // 🏠 v6.333 (ผู้ใช้เจอ: บันทึกจุดที่ท่าเรือ แต่บอทตกต่อแมพเดิม): "จุดตกปลา" เดิมเป็นแค่จุดยืน **ในแมพ**
+  //   ไม่เคยมีใครพาบอท "ข้ามแมพ" ไปหาจุดนั้นเลย (bossHomeMap ใช้แค่ขากลับหลังตีบอส) → ผู้ใช้บันทึกจุดแมพอื่น = ไม่มีผล
+  //   ใหม่: ตั้ง "แมพบ้าน" ไว้ (จากช่องแมพบ้าน หรือปุ่มบันทึกจุดที่ตั้งให้อัตโนมัติ) → tick เดินไปเอง
+  //   เดินด้วย A* เกม (anyMode — ไม่ผูกกับสวิตช์ล่าบอส บทเรียน v6.221) + fallback เดินเองถ้าล่าบอสเปิด
+  //   พลาด 3 ครั้ง = พัก 30 นาที (กันวนเดินทั้งวันถ้าเส้นทางพัง) · ไม่ทำงานตอน ล่าบอส/ล่าปลาเทพ/เทสต์เหยื่อ
+  let lastGoHomeAt = NEVER, goHomeFails = 0;
+  const goHomeDue = () => {
+    const home = homeMapId(); if (!home) return false;
+    const cur = bossMapId();
+    if (!cur || cur === home || isBossMap(cur)) return false;
+    if (mythicActive() || testRunning) return false;                       // โหมดพวกนี้เลือกแมพเอง — อย่าแย่งพวงมาลัย
+    if (goHomeFails >= 3 && now() - lastGoHomeAt < 1800000) return false;  // พังซ้ำ = พักยาว
+    return now() - lastGoHomeAt > 60000;
+  };
+  async function goHomeMap() {
+    const home = homeMapId(), cur = bossMapId();
+    if (!home || !cur || cur === home) return;
+    orchestrating = true;
+    try {
+      say(`🏠 แมพบ้านคือ ${home} แต่ตอนนี้อยู่ ${cur} — เดินไปเอง`);
+      let okGo = await bossGameNavTo(home, 120000, true);
+      if (!okGo && (isOn('bossHunt') || mythicActive())) okGo = await bossTravelTo(home);   // WASD fallback (ผูกสวิตช์บอสอยู่แล้ว)
+      if (bossMapId() === home) okGo = true;
+      if (okGo) { goHomeFails = 0; saveFishMap(home); say(`🏠 ถึงแมพบ้าน ${home} — ฟาร์มต่อ (มีจุดตกปลาบันทึกไว้จะเดินไปจุดนั้นเอง)`); }
+      else {
+        goHomeFails++;
+        say(`🏠 เดินไปแมพบ้าน ${home} ไม่สำเร็จ — ${bossNavFail || 'ไม่ทราบสาเหตุ'} (ครั้งที่ ${goHomeFails}/3${goHomeFails >= 3 ? ' · พัก 30 นาที ฟาร์มที่นี่ไปก่อน' : ''})`);
+      }
+    } catch (e) { logErr('เดินไปแมพบ้านล้มเหลว', e); goHomeFails++; }
+    finally { orchestrating = false; lastCast = now(); }
+  }
   // 📍 v6.300 (ผู้ใช้ขอ): "จุดตกปลาที่บันทึกเอง" ต่อแมพ — เก็บพิกัดเป๊ะที่ผู้ใช้ยืน แล้วบอทเดินไปจุดนั้นก่อนเหวี่ยง
   //   แก้ปัญหา sea_dock: nearPond=true ตั้งแต่บนหาด → บอทยืนผิดจุดเหวี่ยงไม่ออก · บันทึกจุดบนสะพานเอง = ตรงเป๊ะ
   const FISH_SPOT_KEY = 'tokpla_fish_spots';       // { mapId: {x,y} }
@@ -9410,6 +9441,9 @@ ${esc(reason)}
         // 🎁 v6.216: เก็บหีบสมบัติที่โผล่ในแมพเป็นระยะ (opt-in) — ลำดับต่ำสุด (หลังบอส/เมือง) · self-throttle chestCheckMin นาที
         if (chestGrabDue()) { void runChestGrab(); return requestAnimationFrame(tick); }
 
+        // 🏠 v6.333: อยู่ผิดแมพจาก "แมพบ้าน" ที่ตั้งไว้ → เดินข้ามแมพไปก่อน (ต้องมาก่อน walkToPond —
+        //   ไม่งั้นบอทเดินเข้าบ่อของแมพผิดแล้วตกต่อที่นั่น = อาการที่ผู้ใช้เจอ "บันทึกจุดท่าเรือแต่ตกบ่อเดิม")
+        if (goHomeDue()) { lastGoHomeAt = now(); void goHomeMap(); return requestAnimationFrame(tick); }
         // 🎣 v6.219: ตัวละครไม่ได้อยู่ริมบ่อ (รีโหลด/เก็บหีบ/กลับจากบอส) → เดินกลับบ่อก่อน ไม่งั้นไม่มี orb ตกปลา = ยืนนิ่ง
         if (walkToPondIfNeeded()) { updateBadge(); return requestAnimationFrame(tick); }
 
@@ -10562,7 +10596,7 @@ ${esc(reason)}
     panel.appendChild(row(
       '🎯 เหยื่อจุดอ่อน & แมพบ้าน',
       '"เหยื่อจุดอ่อน" = สลับเป็นเหยื่อขั้นนี้ตอนตีบอส เพื่อดาเมจ x1.5 (จากวิดีโอจริง: มัดอ้วนขั้น 2 / กุ้งฝอยขั้น 4) · 0 = ไม่สลับ (ใช้เหยื่อเดิม) · '
-      + '"แมพบ้าน" = แมพที่จะกลับไปฟาร์มต่อหลังตีเสร็จ (ว่าง = แมพที่อยู่ตอนเริ่มล่า) · พิมพ์ชื่อไทยได้เลย เช่น "ท่าเรือทะเล" (หรือ id เช่น sea_dock ก็ได้) · '
+      + '"แมพบ้าน" = แมพประจำของบอท (v6.333: อยู่ผิดแมพเมื่อไหร่เดินกลับเอง — ทั้งตอนเริ่มบอทและหลังตีบอส · ปุ่ม "บันทึกจุดตกปลา" ตั้งค่านี้ให้อัตโนมัติ) · ว่าง = ฟาร์มแมพที่ยืนอยู่ · พิมพ์ชื่อไทยได้เลย เช่น "ท่าเรือทะเล" (หรือ id เช่น sea_dock ก็ได้) · '
       + 'ไม่ต้องกลัวตาย: โดนบอสตีแค่สลบชั่วคราวแล้ว respawn HP เต็ม (พิสูจน์จาก log จริง — จึงไม่มีตัวเลือกถอยหนี)',
       labeled('เหยื่อจุดอ่อน (ขั้น)', numInput('bossBaitTier', 0, 8, 44)),
       labeled('แมพบ้าน', smallTextInput('bossHomeMap', 'เช่น ท่าเรือทะเล', 110)),
@@ -10593,7 +10627,10 @@ ${esc(reason)}
         const m = bossMapId(), p = bossPlayerXY();
         if (!m || !p) { say('📍 บันทึกไม่ได้ — อ่านตำแหน่ง/แมพไม่ได้ตอนนี้ (ต้องอยู่ในเกม + เปิดแท็บไว้หน้าสุด)'); return; }
         saveFishSpot(m, p.x, p.y); spotWalkStart = 0;
-        say(`📍 บันทึกจุดตกปลาแมพ ${m} = (${Math.round(p.x)},${Math.round(p.y)}) แล้ว — ต่อไปบอทจะเดินมาจุดนี้ก่อนเหวี่ยง`);
+        // 🏠 v6.333 (ผู้ใช้เจอ: บันทึกจุดที่ท่าเรือแล้วบอทตกต่อบ่อเดิม): บันทึกจุด = ตั้งใจให้ฟาร์ม "ที่นี่"
+        //   → ตั้งแมพนี้เป็น "แมพบ้าน" ด้วยเสมอ (goHomeMap จะพาเดินมาเองแม้เปิดบอทจากแมพอื่น)
+        if (homeMapId() !== m) { cfg.bossHomeMap = m; saveCfg(); syncPanel(); lastGoHomeAt = NEVER; goHomeFails = 0; }
+        say(`📍 บันทึกจุดตกปลาแมพ ${m} = (${Math.round(p.x)},${Math.round(p.y)}) แล้ว — ตั้งเป็น "แมพบ้าน" ด้วย · เปิดบอทจากแมพไหนก็จะเดินมาแมพนี้+จุดนี้เอง`);
         refresh();
       });
       const clrBtn = document.createElement('button');
