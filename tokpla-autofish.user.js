@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.340
+// @version      6.341
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.340';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.341';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -412,6 +412,9 @@
     // 🎯 v6.315: "พื้นขั้นเหยื่อ" — Advisor ห้ามเลือกต่ำกว่านี้ (เกมใหม่: ขั้นเหยื่อ = เพดานระดับปลา)
     //   ขั้น 5 = ตกได้ถึงตำนาน + กำไรตัดฟลุ๊คยังชนะขั้นต่ำ · สำรวจ (advExplore) จะแตะขั้น 6-8 เป็นระยะเพื่อลุ้น เทพนิยาย/เทพ/บรรพกาล
     advBaitFloor: 5,
+    // 📐 v6.341: ให้ Advisor คิด EV จาก "สูตรจริงในบันเดิลเกม" (rarityWeights × baitTailMult × เพดานขั้น) แทนการวัดจากตัวอย่าง
+    //   ปิดตัวนี้ = กลับไปใช้กำไรตัดฟลุ๊คแบบเดิม (เอียงเข้าขั้นถูก เพราะมองไม่เห็นมูลค่าหางยาว)
+    advModel: true,
 
     // 🎁 v6.216: เก็บหีบสมบัติที่โผล่ในแมพเป็นระยะ (opt-in — ต้องเดินออกจากจุดตกปลา · บอส/เมือง/ล่าปลาเทพ สำคัญกว่า)
     grabChest: false,            // เปิด = เจอหีบในแมพปัจจุบัน → เดินไปเปิด (กด E) แล้วกลับมาตกต่อ · มีลิมิตต่อวันของเกมเอง (chestDailyComplete)
@@ -7289,6 +7292,159 @@
       ? `เพดานขั้น ${tier} = ${RARITY_TH[c]} — ตก ${blocked.join('/')} ไม่ได้เลย (ต้องขั้น ${BAIT_RARITY_CEILING.findIndex((v) => v > c) + 1}+)`
       : `เพดานขั้น ${tier} = ${RARITY_TH[c]} (สูงสุดแล้ว — ตกได้ทุกระดับ)`;
   }
+  // ===== 📐 v6.341: EV/ครั้ง แบบ "คำนวณตรงจากสูตรเกม" — เลิกเดาจากตัวอย่าง =====
+  // ทำไมต้องมี: กำไรจริง/ครั้ง หางยาวมาก (ตำนาน 4.6k · เทพนิยาย 28k · เทพ 67k · บรรพกาล 155k)
+  //   วัดจากตัวอย่าง → SD ≈ 7× ของค่าเฉลี่ย ⇒ ต้องเหวี่ยง ~5,600 ครั้ง (13 ชม.) ต่อขั้น ถึงแม่น ±10%
+  //   (advExploreCasts=30–100 → คลาดเคลื่อน ±75–140% = เดาสุ่มล้วน · ยิ่งตัด legendary/mythic ทิ้งยิ่งเอียงหนัก)
+  // แต่ `gameCfg.tuning` บอกความน่าจะเป็นทุกระดับ "ตรงๆ" อยู่แล้ว → คำนวณ EV ได้เป๊ะ ไม่ต้องจ่ายค่าสำรวจ
+  // สูตร (สอบเทียบกับ recs จริง 3,107 ตัวอย่าง — อัตราขยะตรงทุกขั้น ±1.5%):
+  //   น้ำหนักสุ่มระดับ r = rarityWeights[r] × (r ≥ หายาก ? baitTailMult[ขั้น] × (1+baitBonuses[ขั้น])^luckRankExps[r] : 1)
+  //   ตัดที่ baitRarityCeiling[ขั้น] · ขยะ = junkBase × (1 − baitJunkCut[ขั้น]) · ราคา = ฐานในตารางปลา × ตัวคูณน้ำหนัก × shiny
+  // ⚠️ ตัวคูณน้ำหนัก/junkBase สอบเทียบจาก recs ของบัญชีนี้เอง (เบ็ด/ทุ่น/ชุดของเรา) — ไม่ hardcode สมมติฐานเกม
+  const EV_FALLBACK_WMULT = 1.5, EV_FALLBACK_JUNK = 0.17, EV_CALIB_MS = 5 * 60000;
+  let _evCalib = null, _evCalibAt = NEVER;
+  // 🎣 "โชคส่วนเกิน" ของบัญชีนี้ (เบ็ด/ทุ่น/ชุด/บัฟ) — เกมรวมทุกอย่างเข้าฐานเลขชี้กำลังเดียวกับ baitBonuses
+  //   ไม่ hardcode สูตรรวมโชค (เดาผิดครั้งเดียว = EV เพี้ยนทั้งตาราง) แต่ **ฟิตจากผลตกจริงของเราเอง**:
+  //   หา x ที่ทำให้ P(หายากขึ้นไป) ที่โมเดลทำนาย ใกล้ค่าที่วัดได้จริงที่สุด (ถ่วงน้ำหนักด้วย n)
+  //   ผลพลอยได้: อัปเกรดเบ็ด/ทุ่น/เปลี่ยนชุดเมื่อไร ค่านี้ขยับตามเอง — ไม่ต้องแก้โค้ด
+  //   วัดสด 1/8/69: ฟิตได้ 0.315 · rodBonuses ของเบ็ด Lv.11 = 0.383 (ใกล้กันมาก = สูตรที่ถอดมาถูกทาง)
+  // สัดส่วนความน่าจะเป็นของทุกระดับที่ขั้น t เมื่อโชคส่วนเกิน = x (ไม่รวมขยะ)
+  function evRarityP(tier, extraLuck) {
+    const T = gameCfg.tuning, i = (tier | 0) - 1;
+    const RW = T.rarityWeights, CE = T.baitRarityCeiling;
+    const ceil = Number.isFinite(CE[i]) ? Math.min(CE[i], RW.length - 1) : RW.length - 1;
+    const tail = T.baitTailMult[i] || 1, bb = 1 + (T.baitBonuses[i] || 0) + extraLuck;
+    const w = [];
+    let tot = 0;
+    for (let r = 0; r <= ceil; r++) { w[r] = (RW[r] || 0) * (r >= 3 ? tail * Math.pow(bb, T.luckRankExps[r] || 0) : 1); tot += w[r]; }
+    if (!(tot > 0)) return null;
+    return w.map((x) => x / tot);
+  }
+  // ฟิตด้วย maximum likelihood บนการแจกแจง "ทุกระดับ" (ไม่ใช่แค่ %หายากขึ้นไป)
+  //   ใช้ข้อมูลครบทุกช่อง → ตรึงค่าเลขชี้กำลังได้แน่นกว่ามาก (เทสต์ round-trip: คลาด ≤0.05 แม้โชคจริงสูง 0.8)
+  function evFitLuck() {
+    if (!gameCfg?.tuning?.rarityWeights) return 0;
+    const buckets = [];
+    for (const t in profit.recs) {
+      const list = (profit.recs[t] || []).filter((c) => c && !c.junk && c.rarity);
+      if (list.length < 100) continue;                    // น้อยกว่านี้สัดส่วนแกว่งเกินจะฟิต
+      const cnt = RARITY.map(() => 0);
+      let used = 0;
+      for (const c of list) { const idx = RARITY.findIndex((r) => r.key === c.rarity); if (idx >= 0) { cnt[idx]++; used++; } }
+      if (used >= 100) buckets.push({ t: +t, cnt });
+    }
+    if (buckets.length < 3) return 0;                      // ข้อมูลไม่พอ → ไม่เดา (ประเมินต่ำไว้ก่อน = ปลอดภัย)
+    let bestX = 0, bestLL = -Infinity;
+    for (let x = 0; x <= 2.0001; x += 0.005) {
+      let ll = 0;
+      for (const b of buckets) {
+        const p = evRarityP(b.t, x);
+        if (!p) continue;
+        for (let r = 0; r < p.length; r++) if (b.cnt[r] > 0) ll += b.cnt[r] * Math.log(Math.max(p[r], 1e-12));
+      }
+      if (ll > bestLL) { bestLL = ll; bestX = x; }
+    }
+    return bestX;
+  }
+  function evCalib() {   // { wmult, junkBase, nW, nJ } — สอบเทียบใหม่ทุก 5 นาที
+    if (_evCalib && now() - _evCalibAt < EV_CALIB_MS) return _evCalib;
+    _evCalibAt = now();
+    const ratios = [], junkBases = [];
+    for (const t in profit.recs) {
+      const list = profit.recs[t] || [];
+      if (!list.length) continue;
+      let junkN = 0;
+      for (const c of list) {
+        if (c.junk) { junkN++; continue; }
+        const base = FISH_BY_NAME.get(String(c.fish || '').trim())?.price;
+        // ตัด shiny ออกจากการสอบเทียบ (×10 จะลากค่าเฉลี่ยเพี้ยน) — ดูจากธง shiny ตรงๆ
+        if (base > 0 && c.price > 0 && !c.shiny) ratios.push(c.price / base);
+      }
+      const cut = (gameCfg?.tuning?.baitJunkCut || [])[(+t) - 1];
+      if (list.length >= 100 && Number.isFinite(cut) && cut < 1) junkBases.push((junkN / list.length) / (1 - cut));
+    }
+    const med = (a) => { if (!a.length) return null; const s = a.slice().sort((x, y) => x - y); return s[s.length >> 1]; };
+    // ⚠️ ตัวคูณน้ำหนักต้องใช้ "ค่าเฉลี่ย" ไม่ใช่มัธยฐาน — EV คือค่าคาดหวัง E[ฐาน×ตัวคูณ] = ฐาน×E[ตัวคูณ]
+    //   มัธยฐานจะต่ำกว่าเสมอ (การแจกแจงเบ้ขวา) → ประเมินรายได้ต่ำไป → เอียงไปเลือกขั้นถูกอีก (บั๊กเดิมในรูปแบบใหม่)
+    //   ปลอดภัยเพราะสูตรเกมล็อกช่วงไว้แล้ว (weightPriceBase 0.9 → +weightPriceSpan/Over สูงสุด ~2) + ตัด shiny ออกแล้ว
+    const okRatios = ratios.filter((x) => x >= 0.5 && x <= 3);
+    const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+    _evCalib = {
+      wmult: okRatios.length >= 50 ? mean(okRatios) : EV_FALLBACK_WMULT,
+      junkBase: junkBases.length >= 3 ? med(junkBases) : EV_FALLBACK_JUNK,
+      luck: evFitLuck(),
+      nW: okRatios.length, nJ: junkBases.length,
+    };
+    return _evCalib;
+  }
+  // ราคาฐานเฉลี่ยต่อระดับ ของแมพที่ยืนอยู่ (ปลาแต่ละแมพคนละพูล — ท่าเรือทะเลหางแพงสุด)
+  let _evPricesMap = null, _evPricesKey = '';
+  function evMapPrices(mapId) {
+    // key ต้องผูกกับขนาดตารางปลาด้วย — applyGameConfig อาจมาทีหลังการเรียกครั้งแรก
+    // ไม่งั้น cache ที่คำนวณตอนตารางยังว่าง จะค้างถาวร (EV = 0 ทุกขั้น เงียบๆ)
+    const key = (mapId || '*') + '#' + FISH_BY_NAME.size;
+    if (_evPricesKey === key && _evPricesMap) return _evPricesMap;
+    const pool = (MAP_POOLS && MAP_POOLS[mapId]) || null;
+    const names = Array.isArray(pool) ? pool.map((x) => (x && x.name) ? x.name : x) : null;
+    const sum = {}, cnt = {};
+    const add = (f) => { if (!f || !f.rarity || !(f.price > 0)) return; sum[f.rarity] = (sum[f.rarity] || 0) + f.price; cnt[f.rarity] = (cnt[f.rarity] || 0) + 1; };
+    if (names && names.length) names.forEach((n) => add(FISH_BY_NAME.get(String(n).trim())));
+    else FISH_BY_NAME.forEach((f) => add(f));            // ไม่รู้พูลแมพ → เฉลี่ยทั้งเกม (หยาบกว่าแต่ยังใช้เทียบขั้นได้)
+    const out = {};
+    for (const r in sum) out[r] = sum[r] / cnt[r];
+    _evPricesKey = key; _evPricesMap = out;
+    return out;
+  }
+  const evReady = () => {
+    const T = gameCfg?.tuning;
+    return !!(T && Array.isArray(T.rarityWeights) && Array.isArray(T.baitTailMult) &&
+      Array.isArray(T.baitBonuses) && Array.isArray(T.baitRarityCeiling) && Array.isArray(T.luckRankExps) && FISH_BY_NAME.size);
+  };
+  // รายได้คาดหวังต่อการเหวี่ยง 1 ครั้ง (รวมขยะ+shiny แล้ว) · คืน null ถ้ายังไม่มี config
+  function evPerCast(tier, mapId) {
+    if (!evReady()) return null;
+    const T = gameCfg.tuning;
+    const RW = T.rarityWeights, EXP = T.luckRankExps, TAIL = T.baitTailMult, BB = T.baitBonuses, CE = T.baitRarityCeiling;
+    const i = (tier | 0) - 1;
+    if (i < 0 || i >= TAIL.length) return null;
+    const ceil = Number.isFinite(CE[i]) ? Math.min(CE[i], RW.length - 1) : RW.length - 1;
+    const cal = evCalib(), prices = evMapPrices(mapId);
+    const tail = TAIL[i] || 1, bb = 1 + (BB[i] || 0) + (cal.luck || 0);
+    const RARE_IDX = 3;                                   // index ของ 'rare' ใน RARITY/rarityWeights
+    const w = [];
+    for (let r = 0; r <= ceil; r++) w[r] = (RW[r] || 0) * (r >= RARE_IDX ? tail * Math.pow(bb, EXP[r] || 0) : 1);
+    const tot = w.reduce((a, b) => a + b, 0);
+    if (!(tot > 0)) return null;
+    const shiny = 1 + (1 / (T.shinyOneIn || 350)) * ((T.shinyMultiplier || 10) - 1);
+    let fish = 0;
+    for (let r = 0; r <= ceil; r++) fish += (w[r] / tot) * (prices[RARITY[r].key] || 0) * cal.wmult * shiny;
+    const cut = (T.baitJunkCut || [])[i];
+    const junk = clamp(cal.junkBase * (1 - (Number.isFinite(cut) ? cut : 0)), 0, 0.9);
+    return junk * 4 + (1 - junk) * fish;                  // ขยะขายได้ ~4 🪙 (วัดจริง)
+  }
+  // รูปแบบเดียวกับ advTrimStat เพื่อเสียบแทนกันได้ตรงๆ ใน advisorDecide
+  function advModelStat(tier) {
+    const ev = evPerCast(tier, mapIdOfName(curMap));
+    if (ev == null) return null;
+    return { tier, n: (profit.recs[tier] || []).length, revCast: ev, score: ev - baitUnit(tier), model: true };
+  }
+  // ตารางเทียบทุกขั้น (ไว้ log / แผง / Telegram)
+  function evTableLines(limit) {
+    if (!evReady()) return ['📐 ยังไม่มี config เกม — โมเดล EV ยังใช้ไม่ได้ (บอทจะใช้สถิติที่วัดเองแทน)'];
+    const cal = evCalib(), mapId = mapIdOfName(curMap), out = [];
+    const rows = [];
+    for (let t = 1; t <= (baitCeil || MAX_BAIT_TIER); t++) {
+      const s = advModelStat(t);
+      if (s) rows.push({ t, ...s });
+    }
+    rows.sort((a, b) => b.score - a.score);
+    out.push(`📐 EV ตามสูตรเกม · 🗺️ ${curMap || '?'}${mapId ? ` (${mapId})` : ''} · ตัวคูณน้ำหนัก ×${cal.wmult.toFixed(2)} (n=${cal.nW}) · โชคส่วนเกินที่ฟิตได้ +${(cal.luck || 0).toFixed(2)} · ขยะฐาน ${(cal.junkBase * 100).toFixed(1)}%`);
+    for (const r of rows.slice(0, limit || rows.length)) {
+      out.push(`  ขั้น ${String(r.t).padStart(2)} · ต้นทุน ${String(baitUnit(r.t)).padStart(3)} · รายได้/ครั้ง ${Math.round(r.revCast).toLocaleString().padStart(5)} · สุทธิ ${signed(Math.round(r.score))}/ครั้ง (~${Math.round(r.score * 420).toLocaleString()}/ชม.)`);
+    }
+    return out;
+  }
+
   // ===== 🧠 Advisor: สมองเลือกเหยื่อ + จัดสรรยา (โหมดเดียว 2 ระดับ: แนะนำ / ลงมือเอง) =====
   // หลักคิด (เดิม จากข้อมูล 1,300+ casts): เทียบขั้นด้วย "กำไร/ครั้งแบบตัดฟลุ๊ค" (trimmed) · prior = ขั้นถูกสุดชนะ
   // ⚠️ v6.315 — สมมติฐานเดิม "ปลาแพง = ฟลุ๊คที่เกิดเท่ากันทุกขั้น" **ไม่จริงแล้ว** หลังเกมแพตช์ใหญ่ (29/7/69):
@@ -7389,11 +7545,13 @@
   function advisorDecide() {
     const curT = currentBait()?.tier || lastKnownBaitTier || cfg.baitTier;
     // ---- เหยื่อ ---- (ข้ามขั้นที่ผู้ใช้ห้าม Advisor เลือก · advisorNoTiers)
+    // 📐 v6.341: มี config เกม = ใช้ EV ตามสูตร (แม่นกว่าและไม่ต้องรอตัวอย่าง) · ไม่มี = ถอยไปใช้สถิติที่วัดเองแบบเดิม
+    const useModel = isOn('advModel') && evReady();
     const stats = {};
     for (let t = 1; t <= (baitCeil || 8); t++) {
       if (!advTierOk(t)) continue;
-      const s = advTrimStat(t, cfg.statWin || 200);
-      if (s && s.n >= ADV.MINN) stats[t] = s;
+      const s = useModel ? advModelStat(t) : advTrimStat(t, cfg.statWin || 200);
+      if (s && (useModel || s.n >= ADV.MINN)) stats[t] = s;
     }
     const known = Object.values(stats).sort((a, b) => b.score - a.score);
     let bestTier = curT, why = '', urgent = false;
@@ -7403,16 +7561,22 @@
       why = `ยังไม่มีข้อมูลพอในแมพนี้ — เริ่มขั้น ${low} (ถูกสุดที่อนุญาต เสี่ยงต่ำสุด)`;
     } else {
       const best = known[0], cur = stats[curT];
-      if (best.tier === curT) why = `ขั้น ${curT} ดีสุดอยู่แล้ว (${signed(best.score)}/ครั้ง หลังตัดฟลุ๊ค · n=${best.n})`;
-      else if (!cur) { bestTier = best.tier; why = `ขั้น ${curT} ยังไม่มีข้อมูลพอในแมพนี้ → ใช้ขั้น ${best.tier} ที่วัดแล้ว (${signed(best.score)}/ครั้ง · n=${best.n})`; }
+      // โมเดลไม่มีความคลาดเคลื่อนจากขนาดตัวอย่าง → ไม่ต้องใช้เกณฑ์ "ขึ้นช้า" (MARGIN_UP/UPN) ที่มีไว้กันฟลุ๊ค
+      const marginUp = useModel ? ADV.MARGIN_DOWN : ADV.MARGIN_UP;
+      const src = useModel ? 'ตามสูตรเกม' : 'หลังตัดฟลุ๊ค';
+      const nNote = (s) => (useModel ? '' : ` · n=${s.n}`);
+      if (best.tier === curT) why = `ขั้น ${curT} ดีสุดอยู่แล้ว (${signed(best.score)}/ครั้ง ${src}${nNote(best)})`;
+      else if (!cur) { bestTier = best.tier; why = `ขั้น ${curT} ยังไม่มีข้อมูลพอในแมพนี้ → ใช้ขั้น ${best.tier} (${signed(best.score)}/ครั้ง ${src}${nNote(best)})`; }
       else {
         const diff = best.score - cur.score;
         if (best.tier < curT && diff >= ADV.MARGIN_DOWN) { bestTier = best.tier; why = `ลงขั้น ${best.tier} (ถูกกว่า+กำไรดีกว่า ${signed(diff)}/ครั้ง: ${signed(best.score)} vs ${signed(cur.score)})`; }
-        else if (best.tier > curT && diff >= ADV.MARGIN_UP && best.n >= ADV.UPN) { bestTier = best.tier; why = `ขึ้นขั้น ${best.tier} (ชนะชัด ${signed(diff)}/ครั้ง · n=${best.n} — ผ่านเกณฑ์ขึ้นช้า)`; }
+        else if (best.tier > curT && diff >= marginUp && (useModel || best.n >= ADV.UPN)) { bestTier = best.tier; why = `ขึ้นขั้น ${best.tier} (ชนะ ${signed(diff)}/ครั้ง ${src}${nNote(best)})`; }
         else why = `คงขั้น ${curT} (${signed(cur.score)}/ครั้ง · ตัวดีสุดห่าง ${signed(diff)} ไม่พอ margin)`;
       }
       // จับกำไรช่วงหลังตก (หน้าต่างสั้น) — ขาดทุนจริงหรือร่วง >40% จาก baseline = เตือนด่วน
-      const recent = advTrimStat(curT, ADV.RECENT), base = stats[curT];
+      // ⛔ v6.341: ปิดเมื่อใช้โมเดล — 50 ครั้งล่าสุดมี SD ≈ 7× ของค่าเฉลี่ย ⇒ "กำไรตก" เกือบทุกครั้งคือ noise
+      //   ของเดิมยิง urgent=true ข้าม cooldown แล้วสลับเหยื่อทุก 5 นาที (เจอสด 1/8: ลากขั้น 10 → 5 ซ้ำๆ ทั้งวัน)
+      const recent = useModel ? null : advTrimStat(curT, ADV.RECENT), base = stats[curT];
       if (recent && base && recent.n >= 25 && (recent.score < 0 || recent.score < base.score * 0.6)) {
         urgent = true;
         why += ` · ⚠️ ${ADV.RECENT} ครั้งหลังกำไรตก (${signed(recent.score)}/ครั้ง vs ปกติ ${signed(base.score)})`;
@@ -7468,7 +7632,7 @@
       if (up != null) pot.note.push(`📐 วัดจริง: ยา🐋 เพิ่มน้ำหนักเฉลี่ย ${signed(up * 100)}% (ทฤษฎี +15%)`);
     }
     const lines = [
-      `🧠 Advisor${curMap ? ` · 🗺️ ${curMap}` : ''}${isOn('advisorAuto') ? ' · โหมดลงมือเอง' : ' · โหมดแนะนำ'}`,
+      `🧠 Advisor${curMap ? ` · 🗺️ ${curMap}` : ''}${isOn('advisorAuto') ? ' · โหมดลงมือเอง' : ' · โหมดแนะนำ'}${useModel ? ' · 📐 EV ตามสูตรเกม' : ' · 📊 จากสถิติที่วัดเอง'}`,
       `🪱 เหยื่อ: ${bestTier === curT ? `คงขั้น ${curT}` : `แนะนำขั้น ${curT} → ${bestTier}`} — ${why}`,
       `🎯 ${baitCeilingNote(bestTier)}`,   // v6.268: บอกเพดานความหายากของขั้นที่เลือก
       ...pot.note.map((n) => `🧪 ${n}`),
@@ -7998,6 +8162,15 @@
     return { ...cands[0], casts, baseTier };
   }
   function startExplore() {
+    // 📐 v6.341: มีโมเดล EV แล้วไม่ต้องสำรวจ — การสำรวจคือ "จ่ายเงินซื้อข้อมูล" ที่โมเดลรู้อยู่แล้วฟรี
+    //   และตัวอย่างระดับ 30–100 ครั้งให้ค่าคลาด ±75–140% (SD ≈ 7× ของค่าเฉลี่ย) = ตัดสินใจจากมันไม่ได้อยู่ดี
+    //   ที่แย่กว่า: ระหว่างสำรวจต้องไปตกด้วยขั้นที่แย่กว่า = เสียกำไรจริงทุกครั้งที่สำรวจ
+    if (isOn('advModel') && evReady()) {
+      lastExploreAt = now();
+      try { W.localStorage.setItem('tokpla_bait_explore', String(Date.now())); } catch {}
+      logInfo('🔬 ข้ามการสำรวจขั้นเหยื่อ — ใช้ EV ตามสูตรเกมแทน (แม่นกว่า + ไม่ต้องจ่ายค่าสำรวจ)');
+      return;
+    }
     const p = pickExploreTier();
     lastExploreAt = now();
     try { W.localStorage.setItem('tokpla_bait_explore', String(Date.now())); } catch {}
@@ -11286,6 +11459,23 @@ ${esc(reason)}
       labeled('เปิด', checkbox('useBaitStock')),
       labeled('กองใหญ่เมื่อ ≥', numInput('baitStockMin', 20, 1000, 56)),
     ));
+
+    panel.appendChild(row(
+      '📐 คิด EV จากสูตรจริงในเกม (แทนการเดาจากตัวอย่าง)',
+      'บอทดึง config เกมจริงมาอยู่แล้ว (rarityWeights · baitTailMult · baitRarityCeiling · baitJunkCut) → คำนวณ "รายได้คาดหวังต่อครั้ง" ของทุกขั้นได้เป๊ะโดยไม่ต้องลองตก · '
+      + 'ทำไมสำคัญ: กำไรจริง/ครั้งมีค่าเบี่ยงเบน ≈ 7 เท่าของค่าเฉลี่ย (ปลาตำนาน 4,600 / เทพนิยาย 28,000 / เทพ 67,000 / บรรพกาล 155,000 นานๆ ออกที) — '
+      + 'ต้องตกถึง ~5,600 ครั้ง (13 ชม.) ต่อขั้น ถึงจะวัดแม่น ±10% · ระบบเดิมตัดปลาตำนาน/เทพนิยายทิ้งเพื่อลดความแกว่ง แต่นั่นคือ 35% ของรายได้ที่ขั้นสูง → เอียงไปเลือกขั้นถูกเสมอ · '
+      + 'ราคาปลาใช้ตารางปลาของแมพที่ยืนอยู่ × ตัวคูณน้ำหนักที่วัดจากปลาที่ตกได้จริงของบัญชีนี้ (ไม่ใช่ค่าสมมติ) · ปิด = กลับไปใช้กำไรตัดฟลุ๊คแบบเดิม',
+      labeled('เปิด', checkbox('advModel')),
+    ));
+    {
+      const evb = document.createElement('button');
+      evb.setAttribute('data-tkbot', '1');
+      evb.textContent = '📐 ดูตาราง EV ทุกขั้น';
+      evb.style.cssText = 'padding:5px 10px;border-radius:7px;border:1px solid #4a5568;background:#2d3748;color:#e2e8f0;font-size:11px;cursor:pointer;margin:2px 3px 6px 0;';
+      evb.addEventListener('click', () => showTextModal('📐 EV ต่อการเหวี่ยง 1 ครั้ง (ตามสูตรเกม)', evTableLines().join('\n')));
+      panel.appendChild(evb);
+    }
 
     panel.appendChild(row(
       '🔬 สำรวจขั้นเหยื่อเป็นระยะ (กันสถิติค้างเมื่อเกมปรับค่า)',
