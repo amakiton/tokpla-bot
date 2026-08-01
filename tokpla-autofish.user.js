@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.337
+// @version      6.338
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.337';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.338';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3127,7 +3127,8 @@
             //   ออกจากรอบบอสตรงเวลาเป็นเรื่องคอขวด (บอสอยู่แค่ 3-6 นาที) → ทุกวินาทีมีค่า
             if (rotations >= list.length * 2) {
               // 🆘 v6.328: สั่งครบทุกจุดแล้วตัวไม่ขยับเลย = เข้าเกณฑ์ "ตัวติดแมพ" — ถ้าเกมเด้งปุ่มกู้มา กดก่อนยอมแพ้
-              if (tryMapRescue('A* สั่งครบทุกจุดแล้วตัวไม่ขยับ')) { rotations = 0; navIdx = 0; await sleep(2500); continue; }
+              // v6.338: ใช้ตัวกู้แบบเปิดแผงตั้งค่าเอง — เคสจริงคือเกม "ไม่เด้ง dialog" ให้ (ดูคอมเมนต์ tryMapRescueDeep)
+              if (await tryMapRescueDeep('A* สั่งครบทุกจุดแล้วตัวไม่ขยับ')) { rotations = 0; navIdx = 0; await sleep(2500); continue; }
               bossNavFail = `A* สั่งแล้วตัวไม่ขยับ ครบทุกจุด ${list.length} จุด × 2 รอบ (${Math.round((now() - t0) / 1000)} วิ) — ส่งต่อให้วิธีเดินเอง`;
               logInfo(`🧭 ${bossNavFail}`);
               return false;
@@ -3255,7 +3256,7 @@
         // 🆘 v6.328: เปลี่ยนแมพไม่ได้บ่อยครั้ง = ตัวติด (หลักฐานสด 31/7: ติดที่ river_bank จนเกมเด้งปุ่มกู้เอง)
         //   ครั้งที่ 1-2 อาจแค่เดินพลาด — แต่ครั้งที่ 3+ ในแมพเดิม ให้มองหาปุ่มกู้ของเกมด้วย (ถ้าเกมเด้งมาแล้วกดเลย)
         mapChangeFails = (mapChangeFailAt === cur) ? mapChangeFails + 1 : 1; mapChangeFailAt = cur;
-        if (mapChangeFails >= 2 && tryMapRescue(`เปลี่ยนแมพไม่สำเร็จที่ ${cur} ติดกัน ${mapChangeFails} ครั้ง`)) {
+        if (mapChangeFails >= 2 && await tryMapRescueDeep(`เปลี่ยนแมพไม่สำเร็จที่ ${cur} ติดกัน ${mapChangeFails} ครั้ง`)) {
           mapChangeFails = 0; await sleep(2500); continue;   // วาร์ปแล้วตำแหน่งเปลี่ยน — เริ่ม hop ใหม่จากจุดเริ่มแมพ
         }
         // 🚪 v6.334: ถ้าเกมประกาศว่า "ประตูบอสยังไม่เปิด" การเปลี่ยนแมพไม่สำเร็จ = **เรื่องปกติ ไม่ใช่ความล้มเหลว**
@@ -6125,6 +6126,32 @@
     if (isOn('tgOn')) void tgSend(`🆘 ตัวละครติดแมพ — ใช้ปุ่มกู้ของเกมวาร์ปออกแล้ว (${why})`);
     return true;
   }
+  // 🆘 v6.338 — **เปิดแผง "ตั้งค่า" ของเกมเองเพื่อไปกดปุ่มกู้** (ยกระดับจาก v6.328 ที่รอให้ dialog เด้งมาเอง)
+  //   หลักฐานสด 1/8 11:15: ตัวละครติดหลังรั้วที่ village · A* สั่ง 5 จุด × หลายรอบ **ตัวไม่ขยับสักครั้ง**
+  //   แต่เกม **ไม่เด้ง dialog ให้เลย** → v6.328 ที่หาแค่ "ปุ่มที่โผล่อยู่" จึงกู้ไม่ได้ ต้องคนเข้าไปกดเอง
+  //   ของจริง: แถบ "ติดแผนที่ เดินต่อไม่ได้?" + ปุ่ม "พาฉันออกไป!" **อยู่ในแผงตั้งค่าของเกมตลอดเวลา**
+  //   → เปิดเองได้ผ่าน aria-label "ตั้งค่า" (ยืนยันสด: เปิดได้ กดได้ วาร์ปออกได้จริง)
+  //   ⚠️ async — ต้องรอแผงเรนเดอร์ · ผู้เรียกที่เป็น sync (popupWatchdog) ยังใช้ tryMapRescue ตัวเดิม
+  let lastDeepRescueAt = NEVER;
+  async function tryMapRescueDeep(why) {
+    if (tryMapRescue(why)) return true;                       // ปุ่มโผล่อยู่แล้ว = ทางลัด
+    if (now() - lastDeepRescueAt < 120000) return false;      // กันเปิด/ปิดแผงรัวๆ (วาร์ปแล้วยังติด = รอ 2 นาที)
+    lastDeepRescueAt = now();
+    try { await ensureMenuOpen(); } catch {}                  // แถบเมนูถูกย่อ = ปุ่มตั้งค่าหายจาก DOM (บทเรียน v6.104)
+    const gear = qBtn('ตั้งค่า');
+    if (!gear) { logWarn('🆘 ตัวติดแมพ แต่หาเมนู "ตั้งค่า" ของเกมไม่เจอ — กู้อัตโนมัติไม่ได้'); return false; }
+    try {
+      fireClick(gear);
+      const btn = await waitFor(() => mapRescueBtn(), 3000, 250);
+      if (!btn) { gameEscape(); logWarn('🆘 เปิดแผงตั้งค่าแล้วแต่ไม่เจอปุ่ม "พาฉันออกไป!" — เกมอาจย้าย/เปลี่ยนคำ'); return false; }
+      fireClick(btn);
+      say(`🆘 ตัวละครติดแมพ — เปิดแผงตั้งค่าเกมแล้วกด "พาฉันออกไป!" ให้แล้ว (${why})`);
+      if (isOn('tgOn')) void tgSend(`🆘 <b>ตัวละครติดแมพ</b> — บอทกู้เองด้วยปุ่มของเกม (${why})`);
+      await sleep(2200);
+      gameEscape();                                            // ปิดแผงตั้งค่าคืน
+      return true;
+    } catch (e) { logErr('กู้ติดแมพผ่านแผงตั้งค่าล้มเหลว', e); gameEscape(); return false; }
+  }
   let uiBlockedSince = 0, lastPopupClear = 0, popupClearCount = 0;
   // เรียกจากสาขา idle เท่านั้น (ไม่ busy/orchestrating) — คืน true ถ้าเพิ่งเคลียร์ (ผู้เรียกควร return รอเฟรมหน้า)
   function popupWatchdog() {
@@ -8202,22 +8229,34 @@
     const cur = bossMapId();
     if (!cur || cur === home || isBossMap(cur)) return false;
     if (mythicActive() || testRunning) return false;                       // โหมดพวกนี้เลือกแมพเอง — อย่าแย่งพวงมาลัย
-    if (goHomeFails >= 3 && now() - lastGoHomeAt < 1800000) return false;  // พังซ้ำ = พักยาว
+    // 🐛 v6.337 (ผู้ใช้เจอสด 1/8 11:12 — บอทไม่ตกปลาเลย): เดิม "พังซ้ำ 3 ครั้ง" นับช้าเกินไป
+    //   หนึ่งครั้งของ goHomeMap = A* 120 วิ + bossTravelTo 10 hop → กินเวลาได้หลายนาที × 3 = ไม่ได้ตกปลาเป็นสิบนาที
+    //   หลักฐาน: ติดที่ village วน "เปลี่ยนแมพไม่สำเร็จ" ไม่จบ ทั้งที่ village (บ่อตกปลา) **ตกปลาได้อยู่แล้ว**
+    //   → พังแค่ 2 ครั้งก็พักยาว · และถ้าแมพนี้ตกปลาได้ ให้ถือว่า "อยู่ที่ไหนก็หาเงินได้" ไม่ต้องดื้อเดิน
+    const cap = bossFishingZone() ? 2 : 4;   // แมพนี้มีบ่อ = ยอมแพ้ไว · ไม่มีบ่อ (ติดเกาะ) = ต้องดื้อกว่า
+    if (goHomeFails >= cap && now() - lastGoHomeAt < 1800000) return false;
     return now() - lastGoHomeAt > 60000;
   };
   async function goHomeMap() {
     const home = homeMapId(), cur = bossMapId();
     if (!home || !cur || cur === home) return;
+    const canFishHere = !!bossFishingZone();   // แมพนี้ตกปลาได้ไหม — ตัดสินว่าจะทุ่มเวลาเดินแค่ไหน
+    const cap = canFishHere ? 2 : 4;
     orchestrating = true;
     try {
-      say(`🏠 แมพบ้านคือ ${home} แต่ตอนนี้อยู่ ${cur} — เดินไปเอง`);
-      let okGo = await bossGameNavTo(home, 120000, true);
-      if (!okGo && (isOn('bossHunt') || mythicActive())) okGo = await bossTravelTo(home);   // WASD fallback (ผูกสวิตช์บอสอยู่แล้ว)
+      say(`🏠 แมพบ้านคือ ${home} แต่ตอนนี้อยู่ ${cur} — เดินไปเอง${canFishHere ? ' (ที่นี่ตกปลาได้ ถ้าไปไม่ถึงจะฟาร์มที่นี่แทน)' : ''}`);
+      // ⏱️ v6.337: จำกัดงบเวลาให้สั้นลงเมื่อแมพปัจจุบันตกปลาได้ (60 วิ) — ไม่คุ้มจะทิ้งเวลาฟาร์มไปเดิน
+      let okGo = await bossGameNavTo(home, canFishHere ? 60000 : 120000, true);
+      // WASD fallback ใช้เฉพาะตอน "ติดเกาะจริง" (แมพนี้ตกปลาไม่ได้) — ไม่งั้นมันกินเวลายาวโดยได้ไม่คุ้มเสีย
+      if (!okGo && !canFishHere && (isOn('bossHunt') || mythicActive())) okGo = await bossTravelTo(home);
       if (bossMapId() === home) okGo = true;
       if (okGo) { goHomeFails = 0; saveFishMap(home); say(`🏠 ถึงแมพบ้าน ${home} — ฟาร์มต่อ (มีจุดตกปลาบันทึกไว้จะเดินไปจุดนั้นเอง)`); }
       else {
         goHomeFails++;
-        say(`🏠 เดินไปแมพบ้าน ${home} ไม่สำเร็จ — ${bossNavFail || 'ไม่ทราบสาเหตุ'} (ครั้งที่ ${goHomeFails}/3${goHomeFails >= 3 ? ' · พัก 30 นาที ฟาร์มที่นี่ไปก่อน' : ''})`);
+        const done = goHomeFails >= cap;
+        say(`🏠 เดินไปแมพบ้าน ${home} ไม่สำเร็จ — ${bossNavFail || 'ไม่ทราบสาเหตุ'} (ครั้งที่ ${goHomeFails}/${cap})`
+          + (done ? ` · พัก 30 นาที — ${canFishHere ? `ฟาร์มที่ ${cur} ไปก่อน` : 'จะลองใหม่รอบหน้า'}` : ''));
+        if (done && canFishHere) saveFishMap(cur);   // ยอมรับที่นี่เป็นแมพทำกินชั่วคราว (walkToPond จะพาเข้าบ่อเอง)
       }
     } catch (e) { logErr('เดินไปแมพบ้านล้มเหลว', e); goHomeFails++; }
     finally { orchestrating = false; lastCast = now(); }
@@ -8283,7 +8322,9 @@
       // แมพนี้ "มีบ่อ" แต่ตัวอยู่ไกล → เดินเข้าบ่อ (หลังรีโหลด/เก็บหีบ/กลับจากบอส)
       if (!pondWalkStart) pondWalkStart = now();
       // 🛡️ v6.220: เดินนานเกิน 45 วิ ยังไม่ถึงบ่อ (A* ไม่เจอ/ติดกำแพง) → ปล่อยตรรกะเดิม (เตือน→รีโหลด) จัดการ
-      if (now() - pondWalkStart > 45000) return false;
+      // 🆘 v6.338: ก่อนปล่อย ลองกู้ "ตัวติดแมพ" ด้วยปุ่มของเกมก่อน — เคสจริง 1/8: ติดหลังรั้วที่ village
+      //   เดินเข้าบ่อไม่ได้เลยทั้งที่บ่ออยู่ตรงหน้า · รีโหลดไม่ช่วย (ตำแหน่งยังเดิม) แต่ปุ่มวาร์ปช่วยได้ทันที
+      if (now() - pondWalkStart > 45000) { void tryMapRescueDeep('เดินเข้าบ่อไม่สำเร็จเกิน 45 วิ'); pondWalkStart = 0; return false; }
       if (now() - lastPondWalk < 4000) return true;                   // กำลังเดินอยู่ อย่าสั่ง navigate ซ้ำถี่
       // 🐛 v6.260: เช็คก่อนว่า "รอบที่แล้วสั่งไปแล้วตัวขยับไหม" — ไม่ขยับ = A* ไปจุดนั้นไม่ได้
       const _p = bossPlayerXY();
