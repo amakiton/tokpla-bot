@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.368
+// @version      6.369
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.368';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.369';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4683,6 +4683,7 @@
     let orbWasDisabled = false, orbDisabledAt = 0;   // 🎥 v6.239: วัดคูลดาวน์ปุ่มตีบอส (กด→ดับ→ติดใหม่)
     let fightT0 = 0, lastContrib = { dmg: null, pct: null };   // 📊 v6.195: จับเวลาไฟต์ (ตั้งตอนเห็นบอสครั้งแรก) + อ่านดาเมจล่าสุด
     let lastMeleeDiag = 0;   // 🔬 v6.316: throttle log วินิจฉัยโหมดประชิด (ดาเมจต่ำผิดปกติ — ต้องดูสดว่าติดตรงไหน)
+    let lastChargeFarLog = 0;   // ⚡ v6.369: throttle log "charge ไกลไป → เดินเข้าหา"
     // 📊 v6.335: บริบทล่าสุดที่ผูกกับ "ดาเมจก้อนถัดไป" — ระยะประชิดตอนนี้ · คอมโบที่เห็นล่าสุด · เวลาที่บันทึกครั้งก่อน
     let lastMeleeDist = null, lastComboSeen = null, lastAttribAt = now();
     let dodgeHits = 0, walkHits = 0;   // ⚔️ v6.336: นับการตีที่ "แทรกระหว่างหลบ/เดิน" — พิสูจน์ว่าคืน DPS ได้จริงแค่ไหน
@@ -5009,7 +5010,9 @@
           //   ⚠️ charge: ตอนหลบใช้ "แตะสั้น" เท่านั้น — กดค้าง 1.95 วิ จะขวางการหลบ = เสี่ยงตายซึ่งแพงกว่ามาก
           else if (!gd && (bossHitMode === 'melee' || bossHitMode === 'charge')) {
             const orbd = bossHitOrb();
-            const okHit = bossHitMode === 'charge' || !bossHudMeta().tooFar;
+            // ⚡ v6.369: เดิม charge ได้รับการยกเว้น "ไม่ต้องสนป้ายไกลไป" — ไม่มีหลักฐานรองรับ
+            //   ถ้าเกมบอกเองว่าไกลไป การกดก็ไม่เข้าอยู่ดี (เสียจังหวะ + เสียเวลาชาร์จ) → ให้เคารพป้ายเหมือน melee
+            const okHit = !bossHudMeta().tooFar;
             if (orbd && !orbd.disabled && okHit && !bossDisabledNow() && now() - lastPress > (bossHitMode === 'melee' ? meleeGapMs() : 220)) {
               lastPress = now(); lastBossPressAt = Date.now(); fireClick(orbd); hits++; dodgeHits++;
               gapNotePress(bossHitMode, snapBossName);   // 🔍 v6.360
@@ -5138,6 +5141,37 @@
             await sleep(120); continue;   // เดินต่อ (ตีไปแล้วถ้าอยู่ในระยะ)
           }
           bossReleaseAll();   // ถึงระยะแล้ว = หยุดเดิน (ไม่งั้นเดินทะลุเลยบอสไป)
+        }
+        // ⚡ v6.369 — **โหมด charge ไม่เคยเดินเข้าหาบอสเลย และยัง "เมิน" ป้ายไกลไปของเกมด้วย**
+        //   หลักฐาน (สถิติจริง · บอส charge ทั้งคู่ อยู่แมพเดียวกัน naga_vortex):
+        //     มังกรน้ำแข็ง  28 ชาร์จ → **596 dmg/ชาร์จ** · ฆ่าได้ 15% · เลือดต่ำสุด 32%
+        //     นางพญาบัวสาป 116 ชาร์จ → **32 dmg/ชาร์จ** · หมดเวลา 1.3% · เลือดต่ำสุด 13%
+        //     (อีกไฟต์ 55 ชาร์จ → 121/ชาร์จ · หมดเวลา 2.3% · ตาย 1) = ต่างกันได้ถึง **18 เท่า**
+        //   โครงสร้างที่ต่างจาก melee ชัดเจน: บล็อก "เดินเข้าหาบอส" ข้างบนถูก gate ด้วย `hitMode === 'melee'`
+        //   ⇒ โหมด charge **ยืนอยู่ตรงไหนก็ชาร์จตรงนั้น** ไม่เคยขยับเข้าหาบอสสักครั้ง
+        //     (ยิ่ง recenter ของ v6.162 ลากไป "กลางสนาม" ยิ่งอาจห่างจากบอส)
+        //   ⚠️ ไม่เดาว่า charge เป็นสกิลระยะไกลหรือประชิด — **เชื่อเฉพาะสิ่งที่เกมพูดเอง**:
+        //     ถ้าเกมขึ้น "ไกลไป!" = ตีจากตรงนี้ไม่เข้าแน่นอน → เดินเข้าไปก่อน อย่าเผาเวลาชาร์จ 2 วิทิ้ง
+        //     ถ้าเกมไม่ขึ้น = พฤติกรรมเดิมทุกประการ (ชาร์จอยู่กับที่) ⇒ แก้นี้ทำให้แย่ลงไม่ได้เลย
+        // 📊 v6.369: จดระยะห่างของโหมด charge **ทุกจังหวะ** (ไม่ใช่เฉพาะตอนไกลไป) — ไม่งั้นข้อมูลเอียง
+        //   ตอบคำถามที่ยังไม่มีใครตอบได้: charge เป็นสกิลระยะไกลจริงไหม หรือยิ่งใกล้ยิ่งแรงเหมือน melee
+        if (bossHitMode === 'charge' && rb && rb.x != null && _sc && _sc.player) {
+          lastMeleeDist = Math.round(Math.hypot(rb.x - _sc.player.x, rb.y - _sc.player.y));
+        }
+        if (bossHitMode === 'charge' && meta.tooFar && rb && rb.x != null && _sc && _sc.player) {
+          const dch = Math.hypot(rb.x - _sc.player.x, rb.y - _sc.player.y);
+          const dirs = [];
+          const ddx = rb.x - _sc.player.x, ddy = rb.y - _sc.player.y;
+          if (ddx > 8) dirs.push('right'); else if (ddx < -8) dirs.push('left');
+          if (ddy > 8) dirs.push('down'); else if (ddy < -8) dirs.push('up');
+          bossExitClamp(dirs, _sc.player.x, _sc.player.y);   // กันเดินเหยียบปากทางออกถ้ำ (v6.265)
+          bossMoveDirs(dirs); meleeApproaches++;
+          gapMark('เดินเข้าหา(ไกลไป)');
+          if (now() - lastChargeFarLog > 5000) {
+            lastChargeFarLog = now();
+            bossEvent(`⚡ charge: เกมว่า "ไกลไป" (ห่าง ${Math.round(dch)}px) — เดินเข้าหาก่อน ไม่ชาร์จทิ้ง 2 วิ`);
+          }
+          await sleep(120); continue;
         }
         // ⚡ charge: กดค้างจนเต็มแล้วปล่อย — ทำเป็นจังหวะของตัวเอง ไม่ผ่านลูปเกจ
         if (bossHitMode === 'charge' && orb && !orb.disabled && now() - lastPress > 300) {
