@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.342
+// @version      6.343
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.342';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.343';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -7422,6 +7422,26 @@
     const junk = clamp(cal.junkBase * (1 - (Number.isFinite(cut) ? cut : 0)), 0, 0.9);
     return junk * 4 + (1 - junk) * fish;                  // ขยะขายได้ ~4 🪙 (วัดจริง)
   }
+  // 🔒 v6.343: เพดานขั้นที่ "ยืนยันแล้วว่าซื้อได้จริง" — สำคัญเฉพาะกับโมเดล
+  //   ระบบเดิมมีประตูขนาดตัวอย่าง (n ≥ ADV.MINN) กันขั้นที่ไม่เคยใช้ไว้โดยบังเอิญ — โมเดลไม่มี
+  //   และ `baitCeil` ตั้งต้นแบบมองโลกในแง่ดีที่ MAX_BAIT_TIER (16) จนกว่าจะเปิดร้านจริง (บรรทัด 491)
+  //   ⛔ เจอสด 1/8 16:00: บูตปุ๊บโมเดลเลือก **ขั้น 16 (ต้อง Lv.175)** ทันที → หาในร้านไม่เจอ 3 ครั้ง →
+  //      พักระบบซื้อ 5 นาที → ตกด้วยเหยื่อที่เหลือในกระเป๋าแทน (ขั้น 6) = เสียเวลาเปล่าทุก 5 นาที
+  //   คุมด้วย "เลเวลผู้เล่น" ซึ่งเป็นเงื่อนไขปลดล็อกจริงของเกม · อ่านเลเวลไม่ได้ = ถอยไปใช้ขั้นสูงสุดที่เคยตกได้จริง
+  function baitCeilSafe() {
+    let ceil = baitCeil || MAX_BAIT_TIER;
+    const lv = playerLevel();
+    if (lv > 0) {
+      let byLv = 1;
+      for (const b of BAIT_TIERS) if (b.lv <= lv) byLv = b.tier;
+      ceil = Math.min(ceil, byLv);
+    } else {
+      let seen = 1;
+      for (const t in profit.recs) if ((profit.recs[t] || []).length) seen = Math.max(seen, +t);
+      ceil = Math.min(ceil, seen);
+    }
+    return clamp(ceil, 1, MAX_BAIT_TIER);
+  }
   // รูปแบบเดียวกับ advTrimStat เพื่อเสียบแทนกันได้ตรงๆ ใน advisorDecide
   function advModelStat(tier) {
     const ev = evPerCast(tier, mapIdOfName(curMap));
@@ -7434,20 +7454,18 @@
     const cal = evCalib(), mapId = mapIdOfName(curMap), out = [];
     // 🔒 v6.342: ขั้นที่ "ซื้อไม่ได้" ต้องติดป้าย ไม่งั้นตารางจะโชว์ขั้น 16 นำโด่งทั้งที่ต้อง Lv.175
     //   (baitCeil = ขั้นสูงสุดที่มีปุ่ม "ใส่ตะกร้า" ในร้าน — ยังไม่เคยเปิดร้าน = ยังไม่รู้)
-    const ceilKnown = baitCeil > 0;
+    const safeCeil = baitCeilSafe();
     const rows = [];
     for (let t = 1; t <= MAX_BAIT_TIER; t++) {
       const s = advModelStat(t);
-      if (s) rows.push({ t, locked: ceilKnown && t > baitCeil, ...s });
+      if (s) rows.push({ t, locked: t > safeCeil, ...s });
     }
     rows.sort((a, b) => b.score - a.score);
     out.push(`📐 EV ตามสูตรเกม · ตัวคูณน้ำหนัก ×${cal.wmult.toFixed(2)} (n=${cal.nW}) · โชคส่วนเกินที่ฟิตได้ +${(cal.luck || 0).toFixed(2)} · ขยะฐาน ${(cal.junkBase * 100).toFixed(1)}%`);
     out.push(mapId
       ? `🗺️ ${curMap} (${mapId}) — ใช้ตารางปลาของแมพนี้`
       : `🗺️ ${curMap || 'ยังไม่รู้แมพ'} — ⚠️ จับคู่ id แมพไม่ได้ จึงใช้ราคาปลาเฉลี่ยทั้งเกม (ตัวเลขคลาดได้ · เปิดบอทให้อ่าน HUD ก่อนแล้วดูใหม่)`);
-    out.push(ceilKnown
-      ? `🔓 ซื้อได้ถึงขั้น ${baitCeil} (ที่มี 🔒 คือยังไม่ปลดล็อก — แสดงไว้ดูว่าไต่เลเวลแล้วได้เพิ่มเท่าไร)`
-      : `⚠️ ยังไม่รู้ว่าซื้อได้ถึงขั้นไหน (บอทยังไม่ได้เปิดร้าน) — Advisor จะจำกัดตัวเองที่ขั้น 8 จนกว่าจะเปิดร้านครั้งแรก`);
+    out.push(`🔓 Advisor เลือกได้ถึงขั้น ${safeCeil}${playerLevel() > 0 ? ` (Lv.${playerLevel()})` : ' (อ่านเลเวลไม่ได้ — ใช้ขั้นสูงสุดที่เคยตกได้จริงแทน)'} · ที่มี 🔒 คือยังไม่ปลดล็อก แสดงไว้ดูว่าไต่เลเวลแล้วได้เพิ่มเท่าไร`);
     for (const r of rows.slice(0, limit || rows.length)) {
       out.push(`  ${r.locked ? '🔒' : '  '} ขั้น ${String(r.t).padStart(2)} · ต้นทุน ${String(baitUnit(r.t)).padStart(3)} · รายได้/ครั้ง ${Math.round(r.revCast).toLocaleString().padStart(5)} · สุทธิ ${signed(Math.round(r.score))}/ครั้ง (~${Math.round(r.score * 420).toLocaleString()}/ชม.)`);
     }
@@ -7557,7 +7575,9 @@
     // 📐 v6.341: มี config เกม = ใช้ EV ตามสูตร (แม่นกว่าและไม่ต้องรอตัวอย่าง) · ไม่มี = ถอยไปใช้สถิติที่วัดเองแบบเดิม
     const useModel = isOn('advModel') && evReady();
     const stats = {};
-    for (let t = 1; t <= (baitCeil || 8); t++) {
+    // โมเดลต้องใช้เพดาน "ที่ยืนยันแล้ว" (baitCeilSafe) — ไม่งั้นมันเลือกขั้นที่ยังไม่ปลดล็อก ดูคอมเมนต์ที่ baitCeilSafe
+    const topTier = useModel ? baitCeilSafe() : (baitCeil || 8);
+    for (let t = 1; t <= topTier; t++) {
       if (!advTierOk(t)) continue;
       const s = useModel ? advModelStat(t) : advTrimStat(t, cfg.statWin || 200);
       if (s && (useModel || s.n >= ADV.MINN)) stats[t] = s;
