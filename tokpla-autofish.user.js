@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.346
+// @version      6.347
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.346';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.347';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -146,6 +146,8 @@
   let SERVER_BOSS_TIMES = null;          // ['10:30','13:30',…] จาก raidSpawnMinutes
   let SERVER_RAID_WINDOW_MIN = 60;       // 🪟 v6.344: รอบบอสเปิดยาวกี่นาที (raidWindowMinutes) — ป้าย "ถึงรอบบอสแล้ว" ขึ้นทั้งช่วงนี้
   let BOSS_META = new Map();             // 👹 v6.346: ชื่อบอส (ไทย/อังกฤษ) → {id, hitMode, mapId, respawn} จาก raidBossMeta
+  // 🛡️ v6.347: แมพที่ "ตกปลาได้" จากเซิร์ฟเวอร์ (fishableMaps) — ห้ามเรียนเป็นถ้ำบอสเด็ดขาด (ดูเหตุผลที่ learnBossMap)
+  let SERVER_FISHABLE = new Set(['village', 'river_bank', 'sea_dock', 'ice_village', 'lotus_marsh', 'factory_canal', 'cooling_pond', 'temple_landing']);
   // จับชื่อบอสจาก HUD เข้าตาราง — เทียบตรงก่อน ไม่เจอค่อยเทียบแบบ "ชื่อในตารางอยู่ในข้อความ" (HUD มีอีโมจิ/ช่องว่างปน)
   const bossMetaByName = (name) => {
     if (!name || !BOSS_META.size) return null;
@@ -187,6 +189,8 @@
         if (m.size) { if (m.size !== FISH_BY_NAME.size) changed.push(`ตารางปลา ${FISH_BY_NAME.size || 0}→${m.size} ชนิด`); FISH_BY_NAME = m; }
       }
       if (c.mapPools && typeof c.mapPools === 'object') MAP_POOLS = c.mapPools;
+      // 🛡️ v6.347: "แมพไหนตกปลาได้" จากเซิร์ฟเวอร์ — ใช้วีโต้การเรียนถ้ำบอสทับแมพทำมาหากิน (ดู raidBossMeta ล่าง)
+      if (Array.isArray(c.fishableMaps) && c.fishableMaps.length) SERVER_FISHABLE = new Set(c.fishableMaps.filter((m) => typeof m === 'string'));
       // 🕐 ตารางบอสจากเซิร์ฟเวอร์ (นาทีตั้งแต่เที่ยงคืน) — ของจริง 29/7/69 มี 6 รอบ (บอทฝังไว้แค่ 5 รอบ ตกหล่น 20:00)
       if (Array.isArray(c.raidSpawnMinutes) && c.raidSpawnMinutes.length) {
         const times = [...new Set(c.raidSpawnMinutes.filter((x) => Number.isFinite(x)))].sort((a, b) => a - b).map(mmToHHMM);
@@ -215,7 +219,15 @@
           if (b.nameTh) m.set(String(b.nameTh).trim(), rec);
           if (b.nameEn) m.set(String(b.nameEn).trim(), rec);
           // 🗺️ ถ้ำบอสจากเซิร์ฟเวอร์ = หลักฐานชั้นดีที่สุด → เรียนได้เลย (force ข้ามบัญชีดำ v6.249 ที่มีไว้กันการ "เดา")
-          if (rec.mapId) { try { learnBossMap(rec.mapId, true); } catch {} }
+          // 🛡️ v6.347 — **แต่ห้าม force ทับแมพที่ตกปลาได้เด็ดขาด**: `isBossMap()` เป็นจริงเมื่อไร
+          //   `walkToPondIfNeeded`/`recoveryWatch`/`saveFishMap` จะ return ทันที = **บอทยืนค้างในแมพนั้นเงียบๆ ตลอดไป**
+          //   (กับดักเดิมที่ v6.247 ไล่แก้ 12 เวอร์ชัน · พิษอยู่ถาวรใน localStorage) — v6.346 เผลอเปิดช่องนี้กลับมา
+          //   เซิร์ฟเวอร์บอกเองว่าแมพไหนตกปลาได้ (`fishableMaps`) → ใช้เป็นตัววีโต้ ดีกว่าบัญชีดำที่ฝังชื่อไว้เอง
+          if (rec.mapId) {
+            if (SERVER_FISHABLE.has(rec.mapId)) {
+              logWarn(`🛡️ ไม่เรียน "${rec.mapId}" เป็นถ้ำบอส ทั้งที่ตารางบอสระบุไว้ — เพราะเซิร์ฟเวอร์บอกว่าแมพนี้ "ตกปลาได้" (เรียนเข้าไปจะทำบอทยืนค้างไม่ตกปลา) · ถ้าเกมย้ายบอสมาแมพตกปลาจริง สั่งเองด้วย /bosscaves add ${rec.mapId}`);
+            } else { try { learnBossMap(rec.mapId, true); } catch {} }
+          }
         }
         if (m.size !== BOSS_META.size) changed.push(`ตารางบอส ${m.size / 2} ตัว (โหมดตี/ถ้ำ/เวลาเกิดใหม่)`);
         BOSS_META = m;
@@ -12679,6 +12691,46 @@ ${esc(reason)}
     }
   }
 
+  // 🩺 v6.347 — **"ทำไมบอทไม่ตกปลา" ต้องตอบได้เองในบรรทัดเดียว**
+  //   ช่องโหว่ที่เจอตอนผู้ใช้แจ้ง "บอทไม่ตกปลา": บอท **เงียบสนิท** ระหว่างที่ไม่ได้ตก —
+  //   `recoveryWatch` รีโหลดให้ก็จริง แต่ **ไม่ทำงานเลยถ้า `busy/orchestrating/paused/energyResting` ค้าง** (ตัวแปร `held`)
+  //   ซึ่งคือกรณีที่เกิดบ่อยที่สุดพอดี → ไม่มีใครบอกสาเหตุ ต้องมานั่งเดากันทีหลังทุกครั้ง
+  //   ตัวนี้ไม่แก้อะไร ไม่แตะพฤติกรรม — **แค่พูดว่าติดตรงไหน** (ค่าที่ต้องใช้วินิจฉัยครบในบรรทัดเดียว)
+  let stallSaidAt = NEVER;
+  function fishStallWatch() {
+    try {
+      if (!enabled || cfg.fishMode === 'off') return;
+      if (!lastProgressAt) return;                       // ยังไม่เคยตกได้เลยตั้งแต่เปิด (เพิ่งบูต)
+      const idleMs = now() - lastProgressAt;
+      // ล่าบอยู่ = ไม่ตกปลาเป็นเรื่องปกติ → ใช้เกณฑ์ยาวกว่า (ทริปเต็มๆ ~12-15 นาที)
+      const onTrip = orchestrating || bossPhase !== 'idle';
+      if (idleMs < (onTrip ? 900000 : 180000)) return;
+      if (now() - stallSaidAt < 300000) return;          // พูดทุก 5 นาที ไม่ถี่กว่านี้
+      stallSaidAt = now();
+      const S = (f, d = '?') => { try { const v = f(); return v == null ? d : v; } catch { return 'ERR'; } };
+      const orb = S(() => { const b = qBtn('ตกปลา (F)'); return !b ? 'ไม่มีปุ่ม' : (b.disabled ? 'กดไม่ได้' : 'พร้อม'); });
+      const inCave = S(() => isBossMap(bossMapId()), false) === true;
+      const why = paused ? 'พักชั่วคราวอยู่ (กด Alt+P หรือ /resume เพื่อเล่นต่อ)'
+        : energyResting ? 'นั่งพักรอพลังฟื้น'
+        : testRunning ? 'กำลังทดสอบเหยื่อ'
+        : bossPhase !== 'idle' ? `ค้างอยู่ในเฟสล่าบอส "${bossPhase}" นานผิดปกติ`
+        : orchestrating ? 'มีงานยึดอยู่ (orchestrating) แต่ไม่ใช่เฟสบอส — น่าจะทริปเมือง/ลุงหยัด/หีบค้าง'
+        : busy ? 'busy ค้าง (เปิดร้าน/กระเป๋า/สลับของ)'
+        : S(() => bossSoloMode(), false) === true ? 'โหมด "ล่าบอสอย่างเดียว" เปิดอยู่ (ปุ่มม่วง)'
+        : inCave ? 'ยืนอยู่ในถ้ำบอส (แมพนี้ตกปลาไม่ได้)'
+        : orb !== 'พร้อม' ? `ปุ่มตกปลา${orb} (เหยื่อหมด/กระเป๋าเต็ม/ยืนนอกบ่อ?)`
+        : 'ยังไม่ทราบ — ดูค่าประกอบด้านล่าง';
+      const detail = `เกม=${S(gameState)} · แมพ=${S(bossMapId)}${inCave ? '(ถ้ำบอส)' : ''} · เฟสบอส=${bossPhase}`
+        + ` · orchestrating=${orchestrating} · busy=${busy} · paused=${paused} · พักพลัง=${energyResting} · ทดสอบ=${testRunning}`
+        + ` · พลัง=${S(energyPct)}% · เหยื่อขั้น=${S(() => currentBait()?.tier)} เหลือ=${S(() => currentBait()?.stock)}`
+        + ` · ปุ่มตก=${orb} · autoเกม=${S(gameAutoRunning)} · รอบบอส=${S(bossRoundDone) || 'เปิดอยู่'}`
+        + ` · เหตุผลบล็อกล่าสุดของระบบบอส=${lastBossBlockWhy || '-'}`;
+      logWarn(`🩺 ไม่ได้เหวี่ยงเบ็ดเลย ${Math.round(idleMs / 60000)} นาที — สาเหตุที่น่าจะเป็น: ${why}`);
+      logInfo(`🩺 ค่าประกอบ: ${detail}`);
+      if (isOn('tgOn') && isOn('tgWarn')) void tgSend(`🩺 <b>บอทไม่ได้ตกปลา ${Math.round(idleMs / 60000)} นาที</b>\n${esc(why)}\n<code>${esc(detail)}</code>`);
+    } catch {}
+  }
+
   // กลับเข้าเกมหลังรีโหลด: เปิดบอทต่อเมื่อเกมพร้อม
   // resume ได้ 2 ทาง: (1) flag จากบอทสั่งรีโหลดเอง · (2) เกมรีเฟรชเอง แต่บอทยังเปิดอยู่เมื่อกี้ (สด < 5 นาที)
   function autoResumeAfterReload() {
@@ -12740,6 +12792,7 @@ ${esc(reason)}
   setInterval(mountUI, 2000);
   setInterval(maybeHeartbeat, 30000);   // เช็คส่งรายงานสถานะทุก 30 วิ
   setInterval(recoveryWatch, 5000);     // เฝ้าเด้งออก/ค้าง ทุก 5 วิ
+  setInterval(fishStallWatch, 20000);   // 🩺 v6.347: เฝ้า "ไม่ได้เหวี่ยงเลย" แล้วบอกสาเหตุ (ไม่แก้อะไร แค่พูด)
   // 🧹 v6.154: กัน popup ผลตกปลา "ตกต่อ!" ค้างบังจอ (ตอนหยุดบอท/เดินทาง/ทำ NPC — ลูปตกปลาไม่ได้ปิดให้ = บัง input เดิน/คลิก)
   //   หยุด(!enabled)/orchestrate/busy → ปิดทันที · ระหว่างตกปกติ → ปิดเฉพาะถ้าค้าง >1.5วิ (เผื่อลูปหลักปิดเอง + กันชนการอ่านผลปลา readGameCatchArr)
   let catchPopupSince = 0;
