@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.349
+// @version      6.350
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.349';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.350';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -7778,10 +7778,25 @@
       const ok = byTier[t].filter((x) => x >= 0.5 && x <= 3);
       if (ok.length >= 50) wTier[t] = mean(ok);
     }
+    // 🔒 v6.350 — **กันอคติ "ล็อกตัวเองที่ขั้นที่วัดแล้ว" ที่ v6.349 สร้างขึ้นเอง**
+    //   บริบทที่ทำให้มันอันตราย: ระบบสำรวจขั้นเหยื่ออัตโนมัติ (`advExplore`) **ถูกปิดตั้งแต่ v6.341**
+    //   (มีโมเดลแล้วไม่ต้องจ่ายค่าสำรวจ) ⇒ ขั้นที่บอทไม่ได้ใช้จะ **ไม่มีวันมีตัวอย่าง** ตลอดไป
+    //   ผลถ้าปล่อยให้ขั้นไม่มีข้อมูลใช้ "ค่าเฉลี่ยรวม" เฉยๆ:
+    //     ขั้นที่ใช้อยู่ (วัดแล้ว ×1.60) vs ขั้นที่เพิ่งปลดล็อก (ไม่มีข้อมูล → ×1.40)
+    //     → ขั้นใหม่ถูกหักค่า 12% ทั้งที่ `baitSizeBonus` การันตีว่ามัน **ต้องดีกว่า** → โมเดลไม่ยอมขึ้นขั้นใหม่เลย
+    //   กติกาที่ปลอดภัย: `baitSizeBonus` โตตามขั้นเสมอ ⇒ ตัวคูณของขั้นสูงต้อง **ไม่ต่ำกว่า** ขั้นที่ต่ำกว่าซึ่งวัดแล้ว
+    //   (ให้ "เท่ากัน" ไม่ใช่ "มากกว่า" — ไม่โม้แทนขั้นที่ยังไม่มีหลักฐาน แค่ไม่ลงโทษมัน)
+    const wmultOf = (tier) => {
+      const t = +tier || 0;
+      if (wTier[t]) return wTier[t];
+      let best = wmult;
+      for (const k in wTier) if (+k <= t && wTier[k] > best) best = wTier[k];
+      return best;
+    };
     _evCalib = {
       wmult,
       wTier,
-      wmultOf: (tier) => wTier[tier] || wmult,
+      wmultOf,
       junkBase: junkBases.length >= 3 ? med(junkBases) : EV_FALLBACK_JUNK,
       luck: evFitLuck(),
       nW: okRatios.length, nJ: junkBases.length, nT: Object.keys(wTier).length,
