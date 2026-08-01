@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.351
+// @version      6.352
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.351';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.352';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -146,6 +146,39 @@
   let SERVER_BOSS_TIMES = null;          // ['10:30','13:30',…] จาก raidSpawnMinutes
   let SERVER_RAID_WINDOW_MIN = 60;       // 🪟 v6.344: รอบบอสเปิดยาวกี่นาที (raidWindowMinutes) — ป้าย "ถึงรอบบอสแล้ว" ขึ้นทั้งช่วงนี้
   let BOSS_META = new Map();             // 👹 v6.346: ชื่อบอส (ไทย/อังกฤษ) → {id, hitMode, mapId, respawn} จาก raidBossMeta
+  let SERVER_CONTESTS = null;            // 🏆 v6.352: รอบแข่งจากเซิร์ฟเวอร์ [{id,start,dur,days,modes}]
+  // กำลังอยู่ในรอบแข่งไหม — คืน {id, leftMin, modes} · null = ไม่ได้แข่ง
+  //   `days` ว่าง = ทุกวัน (ตามที่เซิร์ฟเวอร์ใช้: rounds[].days = [] แปลว่าไม่จำกัดวัน)
+  function contestNow() {
+    try {
+      if (!SERVER_CONTESTS || !SERVER_CONTESTS.length) return null;
+      const d = new Date(), m = d.getHours() * 60 + d.getMinutes(), dow = d.getDay();
+      for (const r of SERVER_CONTESTS) {
+        if (r.days.length && !r.days.includes(dow)) continue;
+        if (m >= r.start && m < r.start + r.dur) return { id: r.id, leftMin: r.start + r.dur - m, modes: r.modes };
+      }
+      return null;
+    } catch { return null; }
+  }
+  // รอบแข่งถัดไป (ms) — ใช้เตือนล่วงหน้า/โชว์สถานะ · 0 = ไม่รู้
+  function contestNextMs() {
+    try {
+      if (!SERVER_CONTESTS || !SERVER_CONTESTS.length) return 0;
+      const d = new Date(), mid = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(), m = d.getHours() * 60 + d.getMinutes();
+      let best = 0;
+      for (let day = 0; day < 8; day++) {
+        const dow = (d.getDay() + day) % 7;
+        for (const r of SERVER_CONTESTS) {
+          if (r.days.length && !r.days.includes(dow)) continue;
+          if (day === 0 && r.start <= m) continue;
+          const t = mid + day * 86400000 + r.start * 60000;
+          if (!best || t < best) best = t;
+        }
+        if (best) break;
+      }
+      return best;
+    } catch { return 0; }
+  }
   // 🛡️ v6.347: แมพที่ "ตกปลาได้" จากเซิร์ฟเวอร์ (fishableMaps) — ห้ามเรียนเป็นถ้ำบอสเด็ดขาด (ดูเหตุผลที่ learnBossMap)
   let SERVER_FISHABLE = new Set(['village', 'river_bank', 'sea_dock', 'ice_village', 'lotus_marsh', 'factory_canal', 'cooling_pond', 'temple_landing']);
   // จับชื่อบอสจาก HUD เข้าตาราง — เทียบตรงก่อน ไม่เจอค่อยเทียบแบบ "ชื่อในตารางอยู่ในข้อความ" (HUD มีอีโมจิ/ช่องว่างปน)
@@ -208,6 +241,18 @@
         SERVER_RAID_WINDOW_MIN = c.raidWindowMinutes;
       }
       if (c.flags && typeof c.flags === 'object') GAME_FLAGS = c.flags;
+      // 🏆 v6.352: ตารางแข่งจากเซิร์ฟเวอร์ (`contestSchedule`) — ของจริง 1/8/69:
+      //   ทุกวัน 19:00-20:00 · เสาร์+อาทิตย์เพิ่มรอบ 13:00-14:00 · เข้าร่วมฟรี (joinCoins 0)
+      //   รางวัลอันดับ 1 = 5,000 🪙 + ของ · อันดับ 2 = 3,000 🪙 (dailyContest)
+      //   บอทไม่เคยรู้เรื่องนี้เลย → เผลอ "พักแบบมนุษย์" หรือออกไปล่าบอสกลางรอบแข่งได้
+      if (c.contestSchedule && c.contestSchedule.enabled !== false && Array.isArray(c.contestSchedule.rounds)) {
+        const dur0 = +c.contestSchedule.durationMin || 60;
+        const rs = c.contestSchedule.rounds
+          .filter((r) => r && r.enabled !== false && Number.isFinite(r.startMin))
+          .map((r) => ({ id: r.id || '?', start: r.startMin, dur: +r.durationMin || dur0, days: Array.isArray(r.days) ? r.days : [], modes: Array.isArray(r.modes) ? r.modes : [] }));
+        if (rs.length !== (SERVER_CONTESTS || []).length) changed.push(`ตารางแข่ง ${rs.length} รอบ`);
+        SERVER_CONTESTS = rs;
+      }
       // 👹 v6.346: **ตารางบอสจากเซิร์ฟเวอร์** (`raidBossMeta`) — ของจริง 1/8/69 มี 6 ตัว
       //   ให้ 3 อย่างที่บอทเคยต้องเดา/เรียนเอง: (1) โหมดตี (cast/melee/charge) (2) ถ้ำของบอสตัวนั้น (3) เวลาเกิดใหม่
       //   ผูกด้วย "ชื่อ" เพราะ HUD ให้ชื่อ ไม่ให้ id · เก็บทั้งไทย/อังกฤษ (เกมมี i18n แล้ว — v6.312)
@@ -1106,6 +1151,8 @@
     out.push(`บัฟ: 🐋${bf.weight ? '✓' : '✗'} 🍀${bf.luck ? '✓' : '✗'} · ปิดชั่วคราว: ${sessionOff.size ? [...sessionOff].join(',') : '-'}`);
     // ⚡ v6.346: ยาล่าเกล็ดเงิน — โชว์เหตุผลที่ยังไม่ใช้ตรงๆ (เดิมระบบยาเงียบมาก วินิจฉัยไม่ได้ว่าติดตรงไหน)
     out.push(`⚡ ยาล่าเกล็ดเงิน: ${safe(() => rushActive() ? `กำลังออกฤทธิ์ (เหลือ ~${Math.max(0, Math.round((rushState().until - Date.now()) / 60000))} นาที)` : (rushPotionBlock() || 'พร้อมใช้ — รอจังหวะซื้อรอบถัดไป'))}`);
+    // 🏆 v6.352: รอบแข่ง (ตารางจากเซิร์ฟเวอร์) — ชั่วโมงที่มีเงินก้อนวางอยู่
+    out.push(`🏆 รอบแข่ง: ${safe(() => { const ct = contestNow(); if (ct) return `กำลังแข่ง (เหลือ ${ct.leftMin} นาที · โหมด ${ct.modes.join('/')})`; const nx = contestNextMs(); return nx ? `รอบถัดไป ${new Date(nx).toLocaleString('th-TH', { weekday: 'short', hour: '2-digit', minute: '2-digit' })}` : 'ไม่มีตาราง'; })}`);
     out.push(`เซสชันนี้: เหวี่ยง ${casts} · ติดปลา ${sessCatches} · กำไร ${signed(sessNet())} 🪙`);
     out.push(`Advisor: ${cfg.advisor ? (cfg.advisorAuto ? 'ลงมือเอง' : 'แนะนำ') : 'ปิด'}${lastAdvice ? ` · ล่าสุด: ขั้น ${lastAdvice.bestTier}${lastAdvice.urgent ? ' (ด่วน)' : ''}` : ''}`);
     out.push(`สะสม: เหวี่ยง ${L.casts} · ติดปลา ${L.catches || 0} · รายได้ ${L.revenue} · เหยื่อ ${L.baitCost} · กำไรสุทธิ ${signed(lifeNet())} 🪙`);
@@ -1280,6 +1327,7 @@
     '🧠 /advisor - ดูคำแนะนำเหยื่อ+ยาจากสถิติจริง',
     '🧪 /testbait - ทดสอบเหยื่อใหม่ · /testcont - ทำต่อ · /teststop - หยุด · /testprog - ความคืบหน้า',
     '👹 /boss - สถานะบอส · /bosshunt - ออกล่าเดี๋ยวนี้ · /bosslog - log สู้บอส',
+    '🔎 /probe &lt;ชื่อปุ่ม&gt; - เปิดแผงในเกมแล้วอ่านโครงให้ดู (เช่น /probe แลกเศษบอส)',
     '🌈 /mythic - สถานะล่าปลาเทพ · /mythic on|off · /mythic map ชื่อแมพ|auto - ล็อกแมพล่า',
     '🌍 /chat - เปิด/ปิดคุยแชทโลกผ่าน TG (พิมพ์ข้อความมาได้เลย)',
     '🌍 /w ข้อความ - ส่งเข้าแชทโลกครั้งเดียว',
@@ -1442,6 +1490,32 @@
       }
       case 'reloads': {   // 📉 v6.241: หน้าโหลดใหม่บ่อยแค่ไหน + ใครสั่ง
         reply(`<code>${esc(reloadReport())}</code>`);
+        break;
+      }
+      // 🔎 v6.352 — **เครื่องมือส่องแผงเกม** (`/probe <ชื่อปุ่ม>`) — เปิดแผง → ดัมป์โครง DOM → ปิด
+      //   ทำไมต้องมี: ยังมีระบบทำเงินอีกหลายอันที่บอทแตะไม่ได้เพราะ "ไม่รู้โครงแผง" —
+      //     🦴 ตู้แลกเศษบอส (ยาโชค 8 เศษ = ของที่ร้านขาย 2,500 🪙) · 🎁 ของขวัญล็อกอิน 7 วัน (มี +10 ช่องกระเป๋า!)
+      //     · 🎫 ตู้แลกเหรียญเลเวล (20 เหรียญ = +10 ช่อง ทำได้ 5 ครั้ง) · 🏆 ห้องแข่ง
+      //   บทเรียน v6.288/6.289 (เดาโครงแผงลุงหยัดผิด 2 รอบติด): **อ่านของจริงก่อนเขียนโค้ด** —
+      //   ตัวนี้คือทางอ่านของจริงโดยไม่ต้องให้ผู้ใช้ไปนั่ง inspect เอง (เกม single-session เปิดแท็บ 2 ไม่ได้)
+      case 'probe': {
+        const label = args.slice(1).join(' ').trim();
+        if (!label) { reply('🔎 ใช้: <code>/probe ชื่อปุ่ม</code> เช่น <code>/probe แลกเศษบอส</code> · <code>/probe กระเป๋า</code>\nบอทจะเปิดแผงนั้น อ่านโครงข้างใน แล้วปิดให้'); break; }
+        if (busy || orchestrating) { reply('🔎 บอทติดงานอยู่ ลองใหม่อีกครั้ง'); break; }
+        reply(`🔎 กำลังเปิดแผง "${esc(label)}" เพื่ออ่านโครง...`);
+        void (async () => {
+          busy = true;
+          try {
+            const btn = qBtn(label) || btnByText(label);
+            if (!btn) { reply(`🔎 หาปุ่ม "${esc(label)}" ไม่เจอบนจอ (ต้องกางเมนูก่อนไหม? ลอง <code>/probe กางแผงเมนู</code> ก่อน)`); return; }
+            fireClick(btn); await sleep(1200);
+            const out = domOutline(90);
+            reply(`🔎 <b>โครงแผง "${esc(label)}"</b>\n<code>${esc(out)}</code>`);
+            logInfo(`🔎 probe "${label}":\n${out}`);
+            gameEscape(); await sleep(300);
+          } catch (e) { reply('🔎 ส่องแผงล้มเหลว: ' + esc(String(e && e.message || e))); }
+          finally { busy = false; }
+        })();
         break;
       }
       case 'bossgate': {   // 🚪 v6.242: ข้อความหน้าประตูถ้ำ (หา mechanic เวลาเปิด)
@@ -6388,6 +6462,30 @@
   }
   let notReadySince = 0;
 
+  // 🔎 v6.352: ดัมป์ "โครงที่ใช้เขียนโค้ดได้จริง" ของแผงที่เปิดอยู่ — เอาเฉพาะของที่ selector ใช้ต่อได้
+  //   (aria-label · ปุ่ม · class ที่บอทใช้เป็นหมุด เช่น tk-inner/tk-card/tk-chip · ข้อความสั้น)
+  //   ข้าม UI ของบอทเอง (กฎเหล็ก #7) + ข้ามของที่มองไม่เห็น + ตัดข้อความยาว (กัน Telegram ล้น)
+  function domOutline(maxLines) {
+    const out = [];
+    try {
+      const seen = new Set();
+      for (const e of document.querySelectorAll('button,[aria-label],div[class*="tk-"],h1,h2,h3,label,input,select')) {
+        if (out.length >= (maxLines || 90)) break;
+        if (isBotUI(e) || e.offsetParent === null) continue;
+        const aria = e.getAttribute('aria-label') || '';
+        const cls = (e.className && typeof e.className === 'string')
+          ? (e.className.match(/tk-[a-z-]+/g) || []).slice(0, 3).join('.') : '';
+        const txt = (e.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+        if (!aria && !cls && !txt) continue;
+        const key = `${e.tagName}|${aria}|${cls}|${txt}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(`${e.tagName.toLowerCase()}${cls ? '.' + cls : ''}${aria ? ` [aria="${aria}"]` : ''}${e.disabled ? ' (disabled)' : ''}${txt ? ` "${txt}"` : ''}`);
+      }
+    } catch (e) { out.push('อ่านไม่สำเร็จ: ' + (e && e.message)); }
+    return out.join('\n') || '(ไม่เจอ element ที่ใช้ได้)';
+  }
+
   function warnText() {
     for (const d of document.querySelectorAll('div[class*="bottom-24"]')) {
       const t = d.textContent.trim();
@@ -10512,7 +10610,10 @@ ${esc(reason)}
         //   `rainBiteFactor 0.55` · `feverBiteFactor 0.45` = เวลารอปลากินเหลือ 55%/45% (ของเดิม 1.6-4.2 วิ)
         //   ⇒ ช่วงนี้ตกได้ถี่ขึ้น ~25-45% แต่สั้นมาก (ฝน 75 วิ · ปลาชุก 45 วิ) — ไปพักตอนนี้ = ทิ้งช่วงที่ดีที่สุดทิ้ง
         //   บอทตรวจเจอสภาพอากาศอยู่แล้วตั้งแต่ v6.x (แจ้ง Telegram) แต่ **ไม่เคยเอามาใช้ตัดสินใจ** — ใช้กติกาเดียวกับยาบัฟ
-        const restBlocked = (cfg.energyManage || hOn('hSession') || hOn('hBreak')) && isOn('noRestOnBuff') && (buffActive() || lastWeather != null);
+        // 🏆 v6.352: ช่วง "แข่งรายวัน" (ทุกวัน 19:00-20:00 · เสาร์-อาทิตย์เพิ่ม 13:00-14:00 · อันดับ 1 = 5,000 🪙)
+        //   ไปพักกลางรอบแข่ง = ยกอันดับให้คนอื่นฟรี ๆ → เข้ากติกาเดียวกับยาบัฟ/สภาพอากาศ
+        const restBlocked = (cfg.energyManage || hOn('hSession') || hOn('hBreak')) && isOn('noRestOnBuff')
+          && (buffActive() || lastWeather != null || !!contestNow());
 
         // จัดการพลังงานเชิงรุก (hysteresis): พักเมื่อถึงเกณฑ์ล่าง กลับมาตกเมื่อฟื้นถึงเกณฑ์บน
         // พลังฟื้นเองตอนไม่ตก (~100%/3ชม.) — แค่หยุดตกก็พอ · "นั่งพัก" เป็นท่าทางเสริม
@@ -10807,7 +10908,7 @@ ${esc(reason)}
   // ================= เฝ้าเหตุการณ์เกม -> แจ้ง Telegram =================
   // อ่านชิพบน HUD (tk-chip-dark) หา: เลเวลอัพ (chip ม่วง 4.2 วิ) · สภาพอากาศ ฝนตก/ปลาชุก
   // dedup: เลเวล = ตามเลข Lv · อากาศ = ตามชนิดที่เปลี่ยน
-  let lastWeather = null, lastLevelUp = 0;
+  let lastWeather = null, lastLevelUp = 0, lastContestId = null;   // 🏆 v6.352: รอบแข่งที่ประกาศไปแล้ว (กันประกาศซ้ำ)
   function gameEventWatch() {
     if (!enabled) return;
     const chipEls = [...document.querySelectorAll('[class*="tk-chip-dark"]')];   // สแกนครั้งเดียว ใช้ทั้งแมพ+เลเวล+อากาศ
@@ -10827,6 +10928,23 @@ ${esc(reason)}
         lastLevelUp = lv;
         say(`🎉 เลเวลอัพ! Lv.${lv}`);
         if (isOn('tgOn') && isOn('tgLevel')) void tgSend(`🎉 <b>เลเวลอัพ! Lv.${lv}</b> — มีเบ็ด/เหยื่อขั้นใหม่ปลดล็อกที่ร้าน 🏪`);
+      }
+    }
+    // 🏆 v6.352: ประกาศรอบแข่ง (จากตารางเซิร์ฟเวอร์ — ไม่ต้องอ่าน DOM)
+    //   จุดประสงค์: ให้ผู้ใช้รู้ว่า "ชั่วโมงนี้มีของ 5,000 🪙 วางอยู่" + เตือนกรณีชนรอบบอส
+    {
+      const ct = contestNow();
+      const cid = ct ? ct.id : null;
+      if (cid !== lastContestId) {
+        lastContestId = cid;
+        if (ct) {
+          let bt = null; try { bt = bossTimerMin(); } catch {}
+          const clash = isOn('bossHunt') && bt != null && bt <= ct.leftMin;   // รอบบอสจะแทรกกลางรอบแข่ง
+          say(`🏆 เริ่มรอบแข่งรายวัน (อีก ${ct.leftMin} นาที) — อันดับ 1 ได้ 5,000 🪙 · บอทจะไม่พักช่วงนี้`);
+          if (isOn('tgOn')) void tgSend(`🏆 <b>รอบแข่งรายวันเริ่มแล้ว</b> (เหลือ ${ct.leftMin} นาที)\nอันดับ 1 = 5,000 🪙 · อันดับ 2 = 3,000 🪙 · เข้าร่วมฟรี`
+            + (clash ? `\n⚠️ รอบบอสจะมาในอีก ${bt} นาที — บอทจะออกไปล่าบอส (หายไปจากการแข่ง ~15-25 นาที) · ถ้าอยากเน้นแข่ง ให้ปิดระบบล่าบอสชั่วคราว` : ''));
+          if (clash) logWarn(`🏆 รอบแข่งชนรอบบอส (บอสอีก ${bt} นาที) — บอทจะเลือกไปล่าบอสตามระบบ · อยากเน้นแข่งให้ปิดล่าบอสชั่วคราว`);
+        }
       }
     }
     // สภาพอากาศ (ฝนตก/ปลาชุก = ปลากินไวขึ้น)
