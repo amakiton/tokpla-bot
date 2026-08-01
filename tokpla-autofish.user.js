@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.334
+// @version      6.335
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.334';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.335';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2375,6 +2375,46 @@
     }
     return m;
   }
+  // 📊 v6.335 — **ตัวเก็บ "ดาเมจต่อครั้ง + บริบท"** ตอบคำถาม "ทำไมไม่ติดอันดับ / จะแรงขึ้นได้ยังไง" ด้วยข้อมูลจริง
+  //   เก็บทุกครั้งที่เลข "⚔️ ของเรา" ขยับ พร้อมบริบทที่ควบคุมได้: โหมด · ระยะประชิด · ขั้นเหยื่อ · ตรงจุดอ่อนไหม · คอมโบ · เฟส
+  //   ⚠️ ไม่ใช่ "ดาเมจของการกด 1 ครั้ง" — HUD เด้งทุก ~1.35 วิ ช้ากว่าจังหวะกด (บทเรียน v6.229)
+  //      จึงเทียบเป็น "ดาเมจต่อวินาที" ในแต่ละบริบทแทน · ต้องมีตัวอย่างพอ (n) ถึงจะเชื่อ
+  const DMGATTR_KEY = 'tokpla_dmg_attrib';
+  let dmgAttrRing = [];
+  try { const a = JSON.parse(W.localStorage.getItem(DMGATTR_KEY) || '[]'); if (Array.isArray(a)) dmgAttrRing = a.slice(-900); } catch {}
+  function dmgAttribPush(o) {
+    try {
+      dmgAttrRing.push({ t: Date.now(), ...o });
+      if (dmgAttrRing.length > 900) dmgAttrRing.splice(0, dmgAttrRing.length - 900);
+      W.localStorage.setItem(DMGATTR_KEY, JSON.stringify(dmgAttrRing));
+    } catch {}
+  }
+  // สรุปเป็นตาราง "ดาเมจ/วินาที" แยกตามบริบท — บอกตรงๆ ว่าอันไหนตัวอย่างน้อยเกินจะเชื่อ
+  function dmgAttribReport() {
+    if (!dmgAttrRing.length) return '📊 ยังไม่มีข้อมูลดาเมจต่อครั้ง — จะเก็บเองตอนตีบอสรอบถัดไป (ไม่ต้องเปิดอะไร)';
+    const grp = (keyFn, title) => {
+      const map = new Map();
+      for (const r of dmgAttrRing) {
+        const k = keyFn(r); if (k == null) continue;
+        const g = map.get(k) || { n: 0, d: 0, ms: 0 }; g.n++; g.d += r.d || 0; g.ms += Math.min(r.gap || 0, 8000); map.set(k, g);
+      }
+      const rows = [...map.entries()].filter(([, g]) => g.n >= 3)
+        .map(([k, g]) => ({ k, n: g.n, dps: g.ms ? g.d / (g.ms / 1000) : 0, avg: g.d / g.n }))
+        .sort((a, b) => b.dps - a.dps);
+      if (!rows.length) return `${title}\n  (ตัวอย่างยังน้อยเกินไป — ต้องมีอย่างน้อย 3 ครั้งต่อกลุ่ม)`;
+      return `${title}\n` + rows.map((r) => `  ${String(r.k).padEnd(14)} ${r.dps.toFixed(0).padStart(5)} dmg/วิ · เฉลี่ยก้อนละ ${Math.round(r.avg).toLocaleString().padStart(6)} · n=${r.n}`).join('\n');
+    };
+    const distBucket = (r) => (r.dist == null ? null : r.dist <= 40 ? 'ระยะ 0-40px' : r.dist <= 80 ? 'ระยะ 41-80' : r.dist <= 120 ? 'ระยะ 81-120' : r.dist <= 200 ? 'ระยะ 121-200' : 'ระยะ 200+');
+    const tot = dmgAttrRing.reduce((s, r) => s + (r.d || 0), 0);
+    return `📊 ดาเมจต่อครั้ง + บริบท (${dmgAttrRing.length} ก้อน · รวม ${tot.toLocaleString()})\n`
+      + 'อ่านยังไง: เทียบ "dmg/วิ" ในกลุ่มเดียวกัน · ตัวอย่างน้อย (n<3) ถูกตัดทิ้งเพราะหลอกง่าย\n\n'
+      + grp((r) => r.m, '⚔️ ตามโหมดตี') + '\n\n'
+      + grp(distBucket, '📏 ตามระยะประชิด (เฉพาะ melee)') + '\n\n'
+      + grp((r) => (r.weak ? '✅ ตรงจุดอ่อน' : '❌ ไม่ตรงจุดอ่อน'), '🎯 เหยื่อจุดอ่อน (x1.5)') + '\n\n'
+      + grp((r) => (r.combo == null ? null : `คอมโบ ×${r.combo}`), '🔥 ตามคอมโบ (+5%/ขั้น เพดาน +30%)') + '\n\n'
+      + grp((r) => (r.bait == null ? null : `เหยื่อขั้น ${r.bait}`), '🪱 ตามขั้นเหยื่อ') + '\n\n'
+      + grp((r) => (r.boss || null), '👹 ตามตัวบอส');
+  }
   // ⚡ v6.329: A/B วัดโหมด charge — "ชาร์จเต็ม (x2 แต่ ~2 วิ/ครั้ง)" vs "แตะสั้น (ถี่กว่า ~4 เท่า)"
   //   ผู้ใช้ถาม "กดเกจเร็วกว่านี้ได้ไหม" — ห้ามเดา (กฎ: วัดก่อนล็อก) · ไม่รู้ว่าปล่อยก่อนเต็มเกมให้ดาเมจตามสัดส่วนหรือไม่ให้เลย
   //   เหตุที่แตะสั้นอาจชนะ: ดาเมจต่อครั้งมีเพดาน (raidHitDamageCap 6000) → x2 ของชาร์จเต็มอาจโดนตัดทิ้ง แต่ความถี่ไม่โดน
@@ -3564,6 +3604,8 @@
     let orbWasDisabled = false, orbDisabledAt = 0;   // 🎥 v6.239: วัดคูลดาวน์ปุ่มตีบอส (กด→ดับ→ติดใหม่)
     let fightT0 = 0, lastContrib = { dmg: null, pct: null };   // 📊 v6.195: จับเวลาไฟต์ (ตั้งตอนเห็นบอสครั้งแรก) + อ่านดาเมจล่าสุด
     let lastMeleeDiag = 0;   // 🔬 v6.316: throttle log วินิจฉัยโหมดประชิด (ดาเมจต่ำผิดปกติ — ต้องดูสดว่าติดตรงไหน)
+    // 📊 v6.335: บริบทล่าสุดที่ผูกกับ "ดาเมจก้อนถัดไป" — ระยะประชิดตอนนี้ · คอมโบที่เห็นล่าสุด · เวลาที่บันทึกครั้งก่อน
+    let lastMeleeDist = null, lastComboSeen = null, lastAttribAt = now();
     let fightMap = '';   // 🧭 v6.247: ถ้ำที่สู้อยู่จริง (จำตอนเห็นบอส) — ใช้พากลับเข้าถ้ำ "ใบเดิม" หลังตาย
     // 👊 v6.252: โหมดตีของบอสรอบนี้ + ตัวนับไว้พิสูจน์ว่าระบบใหม่ทำงาน (ไฟต์ 19:29 ได้ 0.1% เพราะไม่รู้ว่าต้องเข้าประชิด)
     let bossHitMode = null, meleeApproaches = 0, chargeShots = 0, meleeSaid = false;
@@ -3706,7 +3748,34 @@
         lastHpChk = now(); const _h = bossPlayerHpPct();
         if (_h != null) { if (hpStart == null) hpStart = _h; if (_h < hpMin) hpMin = _h; }
         // อ่านดาเมจ/ส่วนร่วมล่าสุดไว้ (HUD หายหลังบอสตาย — ต้องเก็บระหว่างยังเห็น)
-        const _c = readBossContribution(); if (_c.dmg != null) lastContrib = _c;
+        const _c = readBossContribution();
+        // 📊 v6.335 — **ระบบวัด "ดาเมจจริงต่อการตี" พร้อมบริบท** (ผู้ใช้: "ทำไมไม่เคยติดอันดับ · อยากได้ที่ 1")
+        //   ปัญหาเดิม: เรารู้แค่ยอดรวมท้ายไฟต์ → เทียบไม่ได้ว่าอะไรทำให้แรงขึ้น (ระยะ? เหยื่อ? คอมโบ? โหมด?)
+        //   หลักฐานที่ทำให้ต้องมี: ดาเมจ/ครั้งแกว่ง 9→596 ข้ามไฟต์ โดยไม่รู้สาเหตุ — เดาต่อไม่ได้ ต้องวัด
+        //   ตัวเลข "⚔️ ของเรา" เด้งทุก ~1.35 วิ (ช้ากว่าจังหวะกด) → **ผูกกับ "ช่วงเวลา" ไม่ใช่ "การกดครั้งเดียว"**
+        //   (บทเรียน v6.229/tokpla-measurement-design — เคยพลาดตรงนี้มาแล้ว)
+        if (_c.dmg != null) {
+          if (lastContrib.dmg != null && _c.dmg > lastContrib.dmg) {
+            const _dd = _c.dmg - lastContrib.dmg;
+            if (_dd > 0 && _dd < 100000) {
+              dmgAttribPush({
+                d: _dd, m: bossHitMode || '?', dist: lastMeleeDist,
+                bait: snapBait, weak: (snapWeak || []).includes(snapBait) ? 1 : 0,
+                combo: lastComboSeen, ph: (rb && rb.phase) || null,
+                gap: Math.round(now() - lastAttribAt), boss: snapBossName || '',
+              });
+              lastAttribAt = now();
+            }
+          }
+          lastContrib = _c;
+        }
+        // 🥁 v6.335: อ่านคอมโบ "ทุกโหมด" — เดิมอ่านผ่าน beatSettle ที่ตั้ง tapWait เฉพาะสาย cast
+        //   → melee/charge จึงบันทึก comboMax = 0 ทุกไฟต์ (ไม่ใช่ว่าไม่มีคอมโบ แต่ไม่เคยวัด)
+        //   คอมโบเพิ่ม 5%/ขั้น เพดาน +30% (raidComboStepPct/MaxPct) = ตัวคูณที่ทิ้งไปเปล่าถ้าไม่รู้ว่ามีไหม
+        try {
+          const _cb = readTapFeedback().combo;
+          if (_cb != null) { lastComboSeen = _cb; if (_cb > comboMax) comboMax = _cb; }
+        } catch {}
       }
       if (rb && rb.dead) { killed = true; break; }
       // 💀 v6.149: ตายถูกส่งออกจากถ้ำ (บ่อน้ำหมู่บ้าน · เลือดหมดจากโดน AoE) → รอ respawn ~10 วิ แล้วกลับเข้าถ้ำสู้ต่อ (เดิมหลุดออก = จบเลย เสีย reward)
@@ -3932,6 +4001,7 @@
           //   ⚠️ "ไกลไป!" มี lag (เคยค้างโชว์ตอน 9px) — ใช้เป็นตัวเร่งเข้าใกล้ได้ แต่ห้ามใช้อนุญาตให้หยุดเดิน
           const reachPx = BOSS_MELEE_RANGE + 40;
           const needCloser = meta.tooFar || d > reachPx;
+          lastMeleeDist = Math.round(d);   // 📊 v6.335: ผูกระยะนี้กับดาเมจก้อนถัดไป (ตอบ "ยิ่งใกล้ยิ่งแรงไหม")
           // 🔬 v6.316 วินิจฉัยสด (throttle 3วิ): melee ทำดาเมจ ~22/hit ผิดปกติ (505 hits = 2.3%) — จับให้ได้ว่าติดที่ระยะ/ปุ่ม/กลไก
           if (now() - lastMeleeDiag > 3000) {
             lastMeleeDiag = now();
@@ -10740,6 +10810,14 @@ ${esc(reason)}
       dt.style.cssText = 'padding:5px 10px;border-radius:7px;border:1px solid #4a5568;background:#2d3748;color:#e2e8f0;font-size:11px;cursor:pointer;margin:2px 3px 6px 0;';
       dt.addEventListener('click', () => showTextModal('🎥 ข้อมูลดักดาเมจต่อครั้ง', dmgTapReport()));
       panel.appendChild(dt);
+      // 📊 v6.335: รายงาน "ดาเมจ/วินาที แยกตามบริบท" — ตัวชี้ขาดว่าจะแรงขึ้นได้ยังไง (ระยะ/เหยื่อ/คอมโบ/โหมด)
+      const da = document.createElement('button');
+      da.setAttribute('data-tkbot', '1');
+      da.textContent = '📊 ดาเมจแยกตามบริบท';
+      da.style.cssText = dt.style.cssText;
+      da.title = 'เทียบดาเมจ/วินาที ตามระยะประชิด · เหยื่อจุดอ่อน · คอมโบ · โหมดตี — ใช้ตัดสินว่าปรับอะไรแล้วแรงขึ้นจริง';
+      da.addEventListener('click', () => showTextModal('📊 ดาเมจแยกตามบริบท', dmgAttribReport()));
+      panel.appendChild(da);
     }
     // 🔬 v6.238: ถอด "โหมดวัดเกจ" ออก เหลือแค่ปุ่มดูผลที่วัดไว้แล้ว (ถ้ามีข้อมูลเก่า)
     if (gProbeRing.length) {
