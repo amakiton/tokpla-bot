@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.345
+// @version      6.346
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.345';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.346';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -145,6 +145,15 @@
   let MAP_POOLS = {};                    // mapId → [ชื่อปลาที่ออกในแมพนั้น]
   let SERVER_BOSS_TIMES = null;          // ['10:30','13:30',…] จาก raidSpawnMinutes
   let SERVER_RAID_WINDOW_MIN = 60;       // 🪟 v6.344: รอบบอสเปิดยาวกี่นาที (raidWindowMinutes) — ป้าย "ถึงรอบบอสแล้ว" ขึ้นทั้งช่วงนี้
+  let BOSS_META = new Map();             // 👹 v6.346: ชื่อบอส (ไทย/อังกฤษ) → {id, hitMode, mapId, respawn} จาก raidBossMeta
+  // จับชื่อบอสจาก HUD เข้าตาราง — เทียบตรงก่อน ไม่เจอค่อยเทียบแบบ "ชื่อในตารางอยู่ในข้อความ" (HUD มีอีโมจิ/ช่องว่างปน)
+  const bossMetaByName = (name) => {
+    if (!name || !BOSS_META.size) return null;
+    const n = String(name).trim();
+    if (BOSS_META.has(n)) return BOSS_META.get(n);
+    for (const [k, v] of BOSS_META) if (k.length >= 4 && (n.includes(k) || k.includes(n))) return v;
+    return null;
+  };
   let GAME_FLAGS = {};
   // 🎣 v6.326: ข้อเสนอแลกปลาลุงหยัด จาก /api/config exchanges — [{species, qty, reward, coffee}]
   //   ใช้ (ก) seed "กันขายปลาที่ลุงต้องการ" ตั้งแต่บูต (ข) รู้ว่าดีลไหนให้กาแฟ (แก้ปัญหาพลังงาน)
@@ -195,6 +204,22 @@
         SERVER_RAID_WINDOW_MIN = c.raidWindowMinutes;
       }
       if (c.flags && typeof c.flags === 'object') GAME_FLAGS = c.flags;
+      // 👹 v6.346: **ตารางบอสจากเซิร์ฟเวอร์** (`raidBossMeta`) — ของจริง 1/8/69 มี 6 ตัว
+      //   ให้ 3 อย่างที่บอทเคยต้องเดา/เรียนเอง: (1) โหมดตี (cast/melee/charge) (2) ถ้ำของบอสตัวนั้น (3) เวลาเกิดใหม่
+      //   ผูกด้วย "ชื่อ" เพราะ HUD ให้ชื่อ ไม่ให้ id · เก็บทั้งไทย/อังกฤษ (เกมมี i18n แล้ว — v6.312)
+      if (c.raidBossMeta && typeof c.raidBossMeta === 'object') {
+        const m = new Map();
+        for (const [id, b] of Object.entries(c.raidBossMeta)) {
+          if (!b || typeof b !== 'object' || b.active === false) continue;
+          const rec = { id, hitMode: b.hitMode || null, mapId: b.mapId || null, respawn: +b.respawnSeconds || null, nameTh: b.nameTh || '' };
+          if (b.nameTh) m.set(String(b.nameTh).trim(), rec);
+          if (b.nameEn) m.set(String(b.nameEn).trim(), rec);
+          // 🗺️ ถ้ำบอสจากเซิร์ฟเวอร์ = หลักฐานชั้นดีที่สุด → เรียนได้เลย (force ข้ามบัญชีดำ v6.249 ที่มีไว้กันการ "เดา")
+          if (rec.mapId) { try { learnBossMap(rec.mapId, true); } catch {} }
+        }
+        if (m.size !== BOSS_META.size) changed.push(`ตารางบอส ${m.size / 2} ตัว (โหมดตี/ถ้ำ/เวลาเกิดใหม่)`);
+        BOSS_META = m;
+      }
       // ⚔️ v6.316: ค่าตีบอสจากเซิร์ฟเวอร์ (เปลี่ยนได้ทุกแพตช์ — เคยเดาผิดมาแล้ว)
       const T = c.tuning || {};
       if (Number.isFinite(T.raidMeleeRange)) BOSS_MELEE_RANGE = T.raidMeleeRange;
@@ -398,6 +423,14 @@
     potionWeight: true,          // 🐋 ยาปลาตัวใหญ่ (+15% น้ำหนัก=ราคาขาย 30 นาที · 2,000 🪙)
     potionLuck: false,           // 🍀 ยาโชคปลาแรร์ (+8% โอกาสแรร์ 30 นาที · 2,500 🪙)
     potionMinCph: 25000,         // ซื้อยาเฉพาะเมื่อรายได้ ≥ กี่ 🪙/ชม. (ต่ำกว่านี้ไม่คุ้มต้นทุนยา)
+    // ⚡ v6.346: ยา "ล่าเกล็ดเงิน" (potion_rush_rare) — คูณน้ำหนักสุ่มของระดับ หายาก+สุดยอด ×2 นาน 30 นาที
+    //   คำนวณจากค่าจริงเซิร์ฟเวอร์ (ท่าเรือทะเล · โชคที่ฟิตได้ +0.315): +63/เหวี่ยง ที่ขั้น 8-10
+    //   ⇒ คุ้มทุน (10,000 🪙) เมื่อเหวี่ยงได้ **≥ 160 ครั้งใน 30 นาที** · บอทเต็มสปีด ~210 ครั้ง = กำไรจริง ~+3,100/วัน
+    //   ⇒ ขั้นต่ำกว่า 8 บางมาก (ขั้น 5 = +1,100) · โดนขัดจังหวะ (พักพลัง/ไปล่าบอส/ธุระเมือง) = **ติดลบทันที**
+    //   ดีฟอลต์ปิด — เปิดแล้วบอทจะซื้อ+ใช้วันละ 1 ครั้ง เฉพาะตอนเงื่อนไขครบ (ดู rushPotionReady)
+    rushPotion: false,
+    rushMinTier: 8,              // ⚡ ใช้ยาล่าเกล็ดเงินเฉพาะตอนใส่เหยื่อขั้น ≥ นี้ (ต่ำกว่านี้กำไรบางเกินเสี่ยง)
+    rushMinEnergy: 45,           // ⚡ พลังต้อง ≥ กี่ % (ต้องตกต่อเนื่องได้ครบ 30 นาที ไม่งั้นยาหมดอายุคาที่พัก)
     potionMinEnergy: 20,         // 🧪 ห้ามใช้ยาเมื่อพลังเหลือ < กี่ % (ยาอยู่ 30 นาที — พลังต่ำแล้วเปิดยา = พักกลางบัฟ ทิ้งยาเปล่า) · 0 = ปิดเกณฑ์นี้
     potionRequireBoth: false,    // 🧪 ต้องเปิดยาครบทั้งคู่ (🐋+🍀) เท่านั้น — เปิดได้ไม่ครบ = ไม่เปิดเลย (สถิติรอบยาเทียบง่าย · เปลืองน้อยกว่าเปิดตัวเดียวแล้วไม่คุ้ม)
     potionBaitTiers: '',         // 🧪 อนุญาตให้ "ใช้ยา" เฉพาะตอนใส่เหยื่อขั้นเหล่านี้ (คั่นด้วย , เช่น "5,6,7") · ว่าง = ทุกขั้น · ขั้นนอกรายการจะไม่ต่อยา (บัฟที่ค้างอยู่ยังใช้ต่อจนหมด)
@@ -1054,6 +1087,8 @@
     if (b?.tier == null) { const bb = safe(() => baitButton(), null); if (bb) out.push('⚠️ ปุ่มเหยื่อ HTML: ' + String(bb.outerHTML || '').replace(/\s+/g, ' ').slice(0, 300)); }
     const bf = safe(() => readBuffs(), {});
     out.push(`บัฟ: 🐋${bf.weight ? '✓' : '✗'} 🍀${bf.luck ? '✓' : '✗'} · ปิดชั่วคราว: ${sessionOff.size ? [...sessionOff].join(',') : '-'}`);
+    // ⚡ v6.346: ยาล่าเกล็ดเงิน — โชว์เหตุผลที่ยังไม่ใช้ตรงๆ (เดิมระบบยาเงียบมาก วินิจฉัยไม่ได้ว่าติดตรงไหน)
+    out.push(`⚡ ยาล่าเกล็ดเงิน: ${safe(() => rushActive() ? `กำลังออกฤทธิ์ (เหลือ ~${Math.max(0, Math.round((rushState().until - Date.now()) / 60000))} นาที)` : (rushPotionBlock() || 'พร้อมใช้ — รอจังหวะซื้อรอบถัดไป'))}`);
     out.push(`เซสชันนี้: เหวี่ยง ${casts} · ติดปลา ${sessCatches} · กำไร ${signed(sessNet())} 🪙`);
     out.push(`Advisor: ${cfg.advisor ? (cfg.advisorAuto ? 'ลงมือเอง' : 'แนะนำ') : 'ปิด'}${lastAdvice ? ` · ล่าสุด: ขั้น ${lastAdvice.bestTier}${lastAdvice.urgent ? ' (ด่วน)' : ''}` : ''}`);
     out.push(`สะสม: เหวี่ยง ${L.casts} · ติดปลา ${L.catches || 0} · รายได้ ${L.revenue} · เหยื่อ ${L.baitCost} · กำไรสุทธิ ${signed(lifeNet())} 🪙`);
@@ -2007,6 +2042,7 @@
   }
   let bossHudCache = null, bossHudCacheAt = 0;
   let weakParseWarned = false, rodPinWarned = false, hpStockNullSaid = false;
+  let hitModeCfgSaid = false, hitModeMismatchSaid = false;   // 👊 v6.346: เตือนเรื่องโหมดตีครั้งเดียวต่อเซสชัน
   let lastYadChk = 0, yadPanelWarned = false;   // v6.286: ตัวเฝ้าดูแผงลุงหยัด
   // 🎯 v6.283: **ตารางจุดอ่อนที่เรียนรู้เอง** — ปมสำคัญคือ "รู้จุดอ่อนตอนอยู่ในถ้ำ แต่ซื้อได้ตอนอยู่นอกถ้ำเท่านั้น"
   //   ⇒ รอบแรกที่เจอบอสตัวหนึ่ง = จดไว้ · รอบต่อ ๆ ไปของบอสตัวนั้น = ซื้อเหยื่อจุดอ่อนได้ "ก่อน" ออกเดินทาง
@@ -2164,6 +2200,25 @@
         if (cand.length >= 2 && cand.length <= 24 && !/\d{2,}|บอท|โหมด/.test(cand)) out.name = cand;
       }
       const hm = txt.match(/([\d,]{2,12})\s*\/\s*([\d,]{2,12})/); if (hm) { out.hp = +hm[1].replace(/,/g, ''); out.hpMax = +hm[2].replace(/,/g, ''); }
+      // 👊 v6.346 — **โหมดตีต้องมาจากตารางเซิร์ฟเวอร์ ไม่ใช่ regex ข้อความ**
+      //   ทำไมสำคัญ: ถ้าอ่านชิปไม่ออก `hitMode` = null → ลูปไฟต์ตกไปสาขา cast (กด orb เฉยๆ)
+      //   แต่ถ้าบอสตัวนั้นเป็น **melee** จริง บอทจะ **ไม่เดินเข้าไปประชิดเลย** = ยืนกดลมทั้งไฟต์
+      //   ตรงกับอาการที่ค้างมาตั้งแต่ v6.316 เป๊ะ (505 hits ได้ 2.3% ≈ 22 ดาเมจ/ครั้ง)
+      //   ตอนนี้ `/api/config → raidBossMeta` ให้ hitMode ต่อบอสมาตรงๆ (ผูกกับชื่อไทย/อังกฤษ) = ไม่ต้องเดาจากข้อความอีก
+      //   ชิปยังเป็นตัวหลักเมื่ออ่านได้ (สดกว่า) · ขัดกันเมื่อไร = เตือน 1 ครั้ง แล้ว **เชื่อชิป** (เกมอาจแก้โหมดกลางแพตช์)
+      if (out.name) {
+        const bm = bossMetaByName(out.name);
+        if (bm) {
+          out.bossId = bm.id;
+          if (!out.hitMode && bm.hitMode) {
+            out.hitMode = bm.hitMode; out.hitModeSrc = 'config';
+            if (!hitModeCfgSaid) { hitModeCfgSaid = true; logInfo(`👊 อ่านชิปโหมดตีไม่ได้ → ใช้ตารางเซิร์ฟเวอร์: "${out.name}" = ${bm.hitMode}`); }
+          } else if (out.hitMode && bm.hitMode && out.hitMode !== bm.hitMode && !hitModeMismatchSaid) {
+            hitModeMismatchSaid = true;
+            logWarn(`👊 โหมดตีไม่ตรงกัน: ชิปบนจอว่า "${out.hitMode}" แต่ตารางเซิร์ฟเวอร์ว่า "${bm.hitMode}" (${out.name}) — เชื่อชิป · ถ้าดาเมจตกผิดปกติ ให้เช็คว่าเกมเปลี่ยนโหมดบอสตัวนี้หรือยัง`);
+          }
+        }
+      }
     } catch {}
     bossHudCache = out; bossHudCacheAt = now();
     return out;
@@ -2647,6 +2702,8 @@
       { h: 'sec', w: 4, g: (r) => r.durMs ? Math.round(r.durMs / 1000) : '-' },
       // ⏱️ v6.345: t2f = วินาทีจาก "บอสโผล่" ถึง "กดตีครั้งแรก" (ยิ่งต่ำยิ่งดี) · ก่อน v6.345 ไม่มีข้อมูล = '-'
       { h: 't2f', w: 4, g: (r) => r.t2first != null ? (r.t2first / 1000).toFixed(1) : '-' },
+      // 📊 v6.346: wait = รอในถ้ำกี่วิกว่าบอสจะโผล่ (ใช้ตรวจว่าเกณฑ์ตัดรอ 90 วิ ตัดบอสที่มาช้าทิ้งหรือเปล่า)
+      { h: 'wait', w: 4, g: (r) => r.waitSec != null ? r.waitSec : '-' },
       { h: 'coin', w: 8, g: (r) => r.reward && r.reward.coins ? r.reward.coins.toLocaleString() : '-' },   // 🎁 v6.206
     ];
     const rows = arr.slice().reverse();   // ใหม่สุดอยู่บน
@@ -2665,7 +2722,7 @@
     const totCoin = arr.reduce((s, r) => s + ((r.reward && r.reward.coins) || 0), 0);
     return `📊 เทียบรายไฟต์ล่าบอส (${arr.length} ครั้ง · ใหม่→เก่า) · ฆ่า ${kills}/${arr.length}`
       + (totCoin ? ` · รางวัลรวม ${totCoin.toLocaleString()} 🪙` : '') + '\n'
-      + `res: k=ฆ่า t=หมดเวลา m=ไม่มา · gg=กดเกจ dg=หลบAoE di=ตาย hp=HPต่ำสุด sec=วินาที t2f=วิกว่าจะตีนัดแรกหลังบอสโผล่ coin=เหรียญรางวัล\n\n`
+      + `res: k=ฆ่า t=หมดเวลา m=ไม่มา · gg=กดเกจ dg=หลบAoE di=ตาย hp=HPต่ำสุด sec=วินาที t2f=วิกว่าจะตีนัดแรกหลังบอสโผล่ wait=วิที่รอในถ้ำกว่าบอสจะโผล่ coin=เหรียญรางวัล\n\n`
       + header + '\n' + sep + '\n' + body
       + (rw.length ? `\n\n🎁 รางวัลที่ได้รับรายไฟต์\n${rw.join('\n')}` : '\n\n🎁 (ยังไม่มีข้อมูลรางวัล — จะเก็บตั้งแต่ไฟต์ถัดไป)');
   }
@@ -3709,7 +3766,7 @@
       }
     };
     // ⏱️ v6.345: จับเวลา "บอสโผล่ → กดตีครั้งแรก" — ตัวเลขที่ต้องกดให้ต่ำ (เดิมไม่เคยวัด จึงไม่รู้ว่าช้าเพราะอะไร)
-    let spawnSeenAt = 0, spawnSeenWall = 0, firstPressAt = 0;
+    let spawnSeenAt = 0, spawnSeenWall = 0, firstPressAt = 0, spawnWaitMs = null;
     // 🆕 v6.310 (ผู้ใช้สั่ง): "ใช้ยา/สลับของ" ต้องทำ **หลังเข้าถ้ำ + เจอบอสจริง (ยังไม่ตาย)** เท่านั้น
     //   กันเปลืองของ (ต้ม 3,000🪙/2 ครั้งต่อวัน · เหยื่อจุดอ่อน) ตอนบอสไม่มา/ตายแล้ว/ป้ายค้าง/รีโหลดตัดรอบ
     //   รอบอสโผล่ก่อน (มี wrong-round guard ข้างบนแล้ว) · เห็นตาย = ออกทันที · หมดเวลา = ไม่ใช้ยา กลับไปฟาร์ม
@@ -3755,6 +3812,10 @@
         bossWrongRound = true; return false;
       }
       spawnSeenAt = now(); spawnSeenWall = Date.now();   // ⏱️ v6.345: นาฬิกาเริ่มเดินตรงนี้ = "บอสโผล่"
+      // 📊 v6.346: "รอในถ้ำกี่วินาทีกว่าจะเห็นบอส" — ตัวเลขที่ใช้พิสูจน์เกณฑ์ตัดรอ 90 วิ ของ v6.344
+      //   คำถามที่ยังค้าง: `raidBossMeta.respawnSeconds` = 120-200 วิ แปลว่าบอสเกิดใหม่ในรอบเดียวกันหรือเปล่า?
+      //   ถ้าเคยมีไฟต์ไหน "รอเกิน 90 วิแล้วบอสค่อยโผล่" ตัวเลขนี้จะฟ้องทันที → ค่อยขยับเกณฑ์ตามหลักฐาน (ไม่ใช่เดา)
+      spawnWaitMs = now() - waitT0;
       bossEvent(`✅ เจอบอสจริงในถ้ำ (ยังไม่ตาย) — ${gearPrepped ? 'เบ็ด/ทุ่นจัดไว้ตั้งแต่ตอนรอแล้ว เหลือแค่เหยื่อ+ต้ม' : 'เริ่มจัดของ'} + เข้าตี`);
     }
     const fz = bossFishingZone();
@@ -4475,6 +4536,7 @@
       // ⏱️ v6.345: "บอสโผล่ → กดตีครั้งแรก" (ms) + จัดเบ็ด/ทุ่นไว้ก่อนไหม — เทียบไฟต์ก่อน/หลังได้ตรงๆ
       t2first: (firstPressAt && spawnSeenAt) ? Math.round(firstPressAt - spawnSeenAt) : null,
       gearPre: gearPrepEarly ? 1 : 0,   // 1 = จัดเบ็ด/ทุ่นเสร็จก่อนบอสโผล่ (ทางที่ v6.345 ตั้งใจให้เป็น)
+      waitSec: spawnWaitMs != null ? Math.round(spawnWaitMs / 1000) : null,   // 📊 v6.346: รอในถ้ำกี่วิกว่าบอสจะโผล่
       // 👊 v6.252: จดโหมดตี + จุดอ่อนที่เกมประกาศ + เหยื่อที่ใช้จริง → ไฟต์หน้าเทียบได้ว่าโหมดไหน/เหยื่อไหนคุ้ม
       // v6.264: ใช้ค่าที่ "จับภาพตอนกำลังสู้" — อ่านตอนนี้ไม่ได้แล้ว (HUD หาย + สลับเหยื่อคืนไปแล้ว)
       hitMode: bossHitMode, approaches: meleeApproaches, charges: chargeShots,
@@ -7375,6 +7437,39 @@
     const mins = activeMins(list);
     return mins > 0 ? rev / (mins / 60) : null;
   }
+  // ⚡ v6.346 — **ยาล่าเกล็ดเงิน (potion_rush_rare)**: ตัวเดียวในกลุ่ม rush ที่คำนวณแล้วคุ้ม
+  //   กลไกจริง (tuning): `rarityPotionGroups.potion_rush_rare = [rare, epic]` → คูณ **น้ำหนักสุ่มของระดับ** ด้วย
+  //   `rarityPotionMult = 2` (ไม่ใช่บวกโอกาสแบบ 🍀) · นาน 30 นาที · `consumableDailyLimits` = **1/วัน** · 10,000 🪙
+  //   ตัวเลขที่คำนวณจากสูตรจริง (ท่าเรือทะเล · โชคฟิตได้ +0.315): ขั้น 5 = +1,104 · ขั้น 8 = +3,267 · ขั้น 10 = +3,153
+  //   อีก 2 ตัวติดลบชัด (ปลุกตำนาน −5,000 ถึง −21,000 · น้ำตาเทพสมุทร −25,000) → **ไม่รองรับโดยตั้งใจ**
+  //   ⚠️ ไม่มี chip บัฟใน HUD ให้ตรวจ (i18n มีแค่ luck/weight/stew/boss) → ต้องจำเวลาที่กินเอง
+  const RUSH_KEY = 'tokpla_rush_potion';
+  const RUSH_RE = /ยาล่าเกล็ดเงิน|Silverscale/i;
+  const rushState = () => { try { return JSON.parse(W.localStorage.getItem(RUSH_KEY) || '{}') || {}; } catch { return {}; } };
+  const rushActive = () => { const s = rushState(); return !!(s.until && s.until > Date.now()); };
+  const rushUsedToday = () => { const s = rushState(); return s.day === new Date().toDateString(); };
+  function rushMark() {
+    try { W.localStorage.setItem(RUSH_KEY, JSON.stringify({ day: new Date().toDateString(), until: Date.now() + 30 * 60000, at: Date.now() })); } catch {}
+  }
+  // เงื่อนไขที่ต้องครบก่อนยอมจ่าย 10,000 — ทุกข้อมาจากเหตุผลเชิงกำไร ไม่ใช่ความระมัดระวังลอยๆ
+  //   คืน '' = พร้อมใช้ · คืนข้อความ = เหตุผลที่ยังไม่ใช้ (เอาไปโชว์ได้)
+  function rushPotionBlock() {
+    if (!isOn('rushPotion')) return 'ปิดสวิตช์ไว้';
+    if (rushUsedToday()) return 'ใช้ไปแล้ววันนี้ (เกมจำกัด 1/วัน)';
+    if (rushActive()) return 'บัฟยังอยู่';
+    if (testRunning || paused || energyResting) return 'บอทไม่ได้ตกอยู่';
+    if (mythicActive()) return 'อยู่โหมดล่าปลาเทพ (ใช้ยาของโหมดนั้นแทน)';
+    const t = currentBait()?.tier || lastKnownBaitTier || cfg.baitTier;
+    if (t < clamp(cfg.rushMinTier || 8, 1, MAX_BAIT_TIER)) return `เหยื่อขั้น ${t} < เกณฑ์ ${cfg.rushMinTier} (กำไรบางเกินเสี่ยง)`;
+    const e = energyPct();
+    if (e != null && e < clamp(cfg.rushMinEnergy || 45, 0, 100)) return `พลัง ${Math.round(e)}% < ${cfg.rushMinEnergy}% (ตกไม่ครบ 30 นาที = ยาสูญเปล่า)`;
+    // 👹 รอบบอสกินเวลาทั้งเดินทาง+สู้+เดินกลับ ≈ 15-25 นาที → ยาที่เปิดค้างไว้จะหมดอายุระหว่างนั้น
+    if (isOn('bossHunt') && !bossRoundDone()) {
+      const bt = bossTimerMin();
+      if (bt != null && bt < 35) return `อีก ${bt} นาทีถึงรอบบอส (ยาอยู่ 30 นาที — จะหมดคาถ้ำ)`;
+    }
+    return '';
+  }
   async function buyPotions() {
     if (busy) return;
     // 🌈 v6.129: แยกยา "โหมดล่าปลาเทพ" กับ "ยาหลัก" ขาดจากกัน —
@@ -7391,6 +7486,8 @@
     let want = [];
     if (wWeight && !buffs.weight) want.push({ re: /ยาปลาตัวใหญ่/, name: '🐋 ยาปลาตัวใหญ่', price: 2000, kind: 'weight' });
     if (wLuck   && !buffs.luck)   want.push({ re: /ยาโชคปลาแรร์/, name: '🍀 ยาโชคปลาแรร์', price: 2500, kind: 'luck' });
+    // ⚡ v6.346: ยาล่าเกล็ดเงิน (1/วัน · 10,000 🪙) — เข้าคิวเฉพาะตอนเงื่อนไขกำไรครบทุกข้อ
+    if (!myt && !rushPotionBlock()) want.push({ re: RUSH_RE, name: '⚡ ยาล่าเกล็ดเงิน', price: 10000, kind: 'rush' });
     if (!want.length) return;                                  // บัฟที่เปิดไว้ยังอยู่ครบ
     // 🧪 เช็ค "ขั้นเหยื่อที่อนุญาตให้ใช้ยา": ขั้นที่ใส่อยู่ไม่อยู่ในรายการ → ไม่ต่อยา (return)
     //   กรณีพิเศษที่ผู้ใช้ต้องการรองรับเอง: ถ้ามีบัฟค้างจากตอนอยู่ขั้นที่อนุญาต แล้วเหยื่อขั้นนั้นหมด สลับมาขั้นต้องห้าม
@@ -7428,8 +7525,10 @@
       if (isOn('useBagConsumables') || myt || isOn('buyPotion')) {
         const still = [];
         for (const w of want) {
-          if (await useConsumable(w.re)) { ok = true; say(`🧪 ใช้ ${w.name} จากกระเป๋า (ฟรี · ไม่เสียเงิน)`); }
-          else still.push(w);
+          if (await useConsumable(w.re)) {
+            ok = true; say(`🧪 ใช้ ${w.name} จากกระเป๋า (ฟรี · ไม่เสียเงิน)`);
+            if (w.kind === 'rush') rushMark();   // ⚡ v6.346: จำเวลา+วันที่ (ไม่มี chip บัฟใน HUD ให้ตรวจ)
+          } else still.push(w);
         }
         want = still;
       }
@@ -7448,14 +7547,16 @@
       }
       // Advisor Auto: อนุมัติราย "ตัวยา" แยกกัน — กรอง want เหลือเฉพาะที่ advisor ว่าคุ้มซื้อ
       if (!myt && advisorPotionVerdict) {
-        want = want.filter((w) => advisorPotionVerdict[w.kind]);
+        // ⚡ v6.346: ยาล่าเกล็ดเงินไม่ผ่าน Advisor — Advisor ตัดสินจาก "ตัวอย่างที่วัดได้" ซึ่งวัดยาตัวนี้ไม่ได้
+        //   (บัฟไม่โผล่ใน HUD chip → recBuffStat แยกช่วงมี/ไม่มีบัฟไม่ออก) · ตัวมันมี gate กำไรของตัวเองแล้ว
+        want = want.filter((w) => w.kind === 'rush' || advisorPotionVerdict[w.kind]);
         if (!want.length) return;
       }
       // 🧪 v6.102: "ต้องครบทั้งคู่" — re-read buffs เผื่อกระเป๋าเพิ่งเปิดบัฟไปตัวนึง (buffs ตัวบนอ่านก่อนใช้กระเป๋า)
       if (isOn('potionRequireBoth') && isOn('potionWeight') && isOn('potionLuck')) {
         const nb = readBuffs();
         const missing = (nb.weight ? 0 : 1) + (nb.luck ? 0 : 1);
-        if (want.length < missing) {
+        if (want.filter((w) => w.kind !== 'rush').length < missing) {   // ⚡ v6.346: กฎ "ครบทั้งคู่" นับเฉพาะ 🐋+🍀
           if (now() - lastPotionCphSayAt > 600000) { lastPotionCphSayAt = now(); say('🧪 ไม่ซื้อยา — "ต้องครบทั้งคู่" เปิดอยู่ แต่ซื้อได้ไม่ครบ 🐋+🍀'); }
           return;
         }
@@ -7488,7 +7589,7 @@
         await sleep(300); await closeShop();
         // เกมล่าสุด: ยาเข้ากระเป๋า ต้อง "กดใช้" ทีละตัวถึงได้บัฟ
         let used = 0;
-        for (const w of addedItems) { if (await useConsumable(w.re)) used++; }
+        for (const w of addedItems) { if (await useConsumable(w.re)) { used++; if (w.kind === 'rush') rushMark(); } }
         ok = used > 0;
         const names = addedItems.map((w) => w.name).join(' + ');
         if (ok) {
@@ -11649,6 +11750,17 @@ ${esc(reason)}
       labeled('ต้องครบทั้งคู่', checkbox('potionRequireBoth')),
       labeled('ซื้อเมื่อรายได้ ≥/ชม.', numInput('potionMinCph', 0, 999999, 72)),
       labeled('ห้ามใช้เมื่อพลัง <%', numInput('potionMinEnergy', 0, 95, 48)),
+    ));
+
+    panel.appendChild(row(
+      '⚡ ยาล่าเกล็ดเงิน (วันละ 1 · 10,000 🪙)',
+      'ยาตัวใหม่ของเกม (potion_rush_rare): คูณ "น้ำหนักสุ่ม" ของปลาระดับ 💙หายาก + 💜สุดยอด ×2 นาน 30 นาที — ไม่ใช่บวกโอกาสแบบ 🍀 · เกมจำกัด 1 ครั้ง/วัน · '
+      + 'คำนวณจากสูตรจริงในเกม (ท่าเรือทะเล · โชคที่ฟิตได้ +0.315): ได้เพิ่ม ~63 🪙/เหวี่ยง ที่ขั้น 8-10 ⇒ **คุ้มทุนเมื่อเหวี่ยงครบ ~160 ครั้งใน 30 นาที** (บอทเต็มสปีด ~210 ครั้ง = กำไรจริง ~+3,100/วัน) · '
+      + 'ขั้น 5 ได้แค่ +1,100 และถ้าโดนขัดจังหวะ (พักพลัง/ไปล่าบอส) จะ **ติดลบทันที** → บอทจะใช้ก็ต่อเมื่อ: เหยื่อขั้น ≥ เกณฑ์ · พลัง ≥ เกณฑ์ · ไม่มีรอบบอสใน 35 นาที · ไม่ได้พัก/ทดสอบ/ล่าปลาเทพ · '
+      + '⚠️ อีก 2 ตัวในกลุ่มเดียวกัน (ยาปลุกตำนาน 28,000 · น้ำตาเทพสมุทร 30,000) คำนวณแล้ว **ติดลบชัด** (−5,000 ถึง −26,000) จึงไม่รองรับโดยตั้งใจ',
+      labeled('เปิด', checkbox('rushPotion')),
+      labeled('เหยื่อขั้น ≥', numInput('rushMinTier', 1, 16, 48)),
+      labeled('พลัง ≥ %', numInput('rushMinEnergy', 0, 95, 48)),
     ));
 
     panel.appendChild(row(
