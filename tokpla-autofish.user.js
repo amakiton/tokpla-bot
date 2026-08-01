@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.333
+// @version      6.334
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.333';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.334';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3093,6 +3093,7 @@
       say('👹 A* เกมไปไม่ถึง — สลับไปเดินเอง');
     }
     let mapChangeFails = 0, mapChangeFailAt = '';   // 🆘 v6.328: นับ "เปลี่ยนแมพไม่สำเร็จ" ติดกันในแมพเดิม → เข้าเกณฑ์ตัวติด
+    let lastGateWaitSay = NEVER;                    // 🚪 v6.334: throttle ข้อความ "ประตูยังไม่เปิด — รอเงียบๆ"
     for (let hop = 0; hop < 10 && enabled && (isOn('bossHunt') || mythicActive()); hop++) {   // v6.132: ล่าปลาเทพใช้ bossTravelTo ด้วย — เดิม bossHunt ปิด = เดินไม่ออกเงียบๆ
       // 🚨 v6.328: ผู้ใช้กด "ล่าบอสด่วน" ตอนบอทกำลังเดินกลับบ้าน → ทิ้งขากลับทันที (runBossHunt จะจบ แล้ว tick ยิงล่าใหม่)
       if (bossAbortTravel) { bossNavFail = 'ถูกสั่งล่าบอสด่วน — ยกเลิกการเดินทางเดิม'; return false; }
@@ -3178,6 +3179,15 @@
         if (mapChangeFails >= 2 && tryMapRescue(`เปลี่ยนแมพไม่สำเร็จที่ ${cur} ติดกัน ${mapChangeFails} ครั้ง`)) {
           mapChangeFails = 0; await sleep(2500); continue;   // วาร์ปแล้วตำแหน่งเปลี่ยน — เริ่ม hop ใหม่จากจุดเริ่มแมพ
         }
+        // 🚪 v6.334: ถ้าเกมประกาศว่า "ประตูบอสยังไม่เปิด" การเปลี่ยนแมพไม่สำเร็จ = **เรื่องปกติ ไม่ใช่ความล้มเหลว**
+        //   รีทรายทุก 800 มิลลิวินาที = เดินชนประตูรัวๆ (ต้นเหตุที่ 2 ของอาการในวิดีโอ) → รอเงียบๆ ตามตัวนับแทน
+        const _gs = bossGateState();
+        if (_gs.locked) {
+          mapChangeFails = 0;                                   // ประตูล็อกไม่นับเป็น "ตัวติด" (กันเรียกปุ่มกู้แมพผิดจังหวะ)
+          if (now() - lastGateWaitSay > 30000) { lastGateWaitSay = now(); say(`🚪 ประตูยังไม่เปิด${_gs.sec != null ? ` (อีก ${_gs.sec} วิ)` : ''} — รอเงียบๆ ไม่ดันประตู`); }
+          await sleep(_gs.sec != null && _gs.sec > 5 ? 2500 : 900);
+          continue;
+        }
         say(`👹 เปลี่ยนแมพไม่สำเร็จที่ ${cur} — ลองใหม่`); await sleep(800);
       } else { mapChangeFails = 0; mapChangeFailAt = ''; }
     }
@@ -3198,16 +3208,69 @@
   //       ตัวจะไม่ขยับเลย และไม่มีตัวตรวจว่า "สั่งแล้วขยับไหม" (บั๊กตระกูลเดียวกับ v6.260/v6.262 ที่แก้ไปแล้ว 3 จุด)
   //     แก้: สลับ 2 วิธีทุกรอบ — (1) navigate ข้ามแมพแบบเดิม (2) **เดินชนปากประตูตรงๆ ด้วย WASD** (วิธีที่ใช้ได้แน่ตอนประตูเปิด)
   //       + ตรวจ "ตัวขยับไหม" ถ้านิ่ง 2 รอบติดให้สลับวิธีทันที · ผู้เรียกส่งพิกัดประตู (exit) มาให้แล้ว
+  // 🚪 v6.334 — **สถานะประตูถ้ำ "จากที่เกมประกาศเอง"** (ผู้ใช้ส่งวิดีโอ 10:29: บอทเดินชนกำแพงรัวๆ คนอื่นเห็นว่าเป็นบอท)
+  //   หลักฐานจาก bossGateProbe ที่เก็บไว้ตั้งแต่ v6.242 **แต่ไม่เคยเอามาใช้ตัดสินใจเลย — แค่จดไว้ดู**:
+  //     10:27:37 "ประตูบอสยังไม่เปิด | รอบต่อไปเปิดในอีก | 2 นาที 22 วิ" … 10:29:55 "0 นาที 05 วิ"
+  //   คือเกม **บอกวินาทีที่ประตูจะเปิดเป๊ะๆ** อยู่บนจอตลอด → ไม่ต้องเดา ไม่ต้อง "ลองดัน" สักครั้ง
+  //   ของเดิมทำตรงข้าม: ก้าวถอย→ก้าวเข้าทุก 3.5 วิ ตลอด 2.5 นาที ≈ **40 ครั้ง** = ลายเซ็นบอทเต็มๆ
+  //   ⚠️ นับถอยหลัง = ตัว "พิสูจน์ความสด" ในตัว (เลขลดทุกวินาที) → เชื่อได้เต็มที่ · มีแต่ป้ายไม่มีตัวนับ = เชื่อแต่แตะเช็คทุก 45 วิ
+  const GATE_LOCK_RE = /ประตูบอสยังไม่เปิด|Boss gate is not open|gate is locked/i;
+  let gateStCache = null, gateStAt = NEVER;
+  function bossGateState() {
+    if (gateStCache && now() - gateStAt < 700) return gateStCache;   // สแกน DOM แพง — cache สั้นๆ (ลูปเรียกถี่)
+    gateStAt = now();
+    let locked = false, sec = null;
+    try {
+      // ⚠️ ป้าย/ตัวเลขอยู่คนละ element ("ประตูบอสยังไม่เปิด" · "รอบต่อไปเปิดในอีก" · "2 นาที 22 วิ" — เห็นจาก probe จริง)
+      //   ห้ามใช้ gameTextMatch ตรงๆ: มันคืน **ตัวแรกที่ match** ซึ่งอาจเป็นก้อน "รอบต่อไปเปิดในอีก" ที่ไม่มีตัวเลข
+      //   (กลุ่มใน regex เป็น optional ทั้งคู่ → match ได้แต่ไม่มีค่า) → สแกนทั้งหน้าแล้วเก็บอันที่ "มีตัวเลขจริง"
+      for (const e of document.querySelectorAll('h1,h2,h3,h4,div,span,p')) {
+        if (isBotUI(e) || e.offsetParent === null || e.children.length > 3) continue;
+        const t = e.textContent || '';
+        if (!locked && GATE_LOCK_RE.test(t)) locked = true;
+        if (sec == null) {
+          const m = /รอบต่อไปเปิดในอีก\s*(?:(\d+)\s*นาที)?\s*(?:(\d+)\s*วิ)?/.exec(t);
+          if (m && (m[1] || m[2])) sec = (+(m[1] || 0)) * 60 + (+(m[2] || 0));
+        }
+        if (locked && sec != null) break;
+      }
+    } catch {}
+    gateStCache = { known: locked || sec != null, locked: locked || (sec != null && sec > 0), sec };
+    return gateStCache;
+  }
+  // 🧍 v6.334: ท่า "ยืนรอแบบคน" — นิ่งเป็นหลัก นานๆ ครั้งขยับเล็กน้อยแบบคนยืนรอ (ไม่ใช่ดันประตู)
+  //   คนจริงที่รอประตูเปิด = ยืนเฉยๆ ไม่ได้ชนกำแพงทุก 3 วินาที · ขยับสุ่มห่างๆ ดูเป็นธรรมชาติกว่านิ่งสนิทเป๊ะ
+  let gateIdleNextAt = 0;
+  async function bossGateIdle() {
+    if (!gateIdleNextAt) gateIdleNextAt = now() + randInt(25000, 70000);
+    if (now() < gateIdleNextAt) { await sleep(randInt(600, 1100)); return; }
+    gateIdleNextAt = now() + randInt(25000, 70000);
+    const dirs = ['left', 'right', 'up', 'down'];
+    const d = dirs[randInt(0, 3)];
+    bossHold(d); await sleep(randInt(120, 260)); bossReleaseAll();
+    if (randInt(0, 1)) {                                   // ครึ่งหนึ่งของครั้ง เดินกลับที่เดิม (เหมือนคนขยับเท้า)
+      await sleep(randInt(250, 600));
+      bossHold({ left: 'right', right: 'left', up: 'down', down: 'up' }[d]);
+      await sleep(randInt(120, 260)); bossReleaseAll();
+    }
+  }
   async function bossWaitGate(cur, toMap, exitZone) {
     const dest = toMap || bossActiveCave();
     const target = BOSS_NAV_TARGET[dest] || BOSS_NAV_TARGET[BOSS_MAP] || { x: 841, y: 445 };
     const t0 = now(); let said = false, lastProbe = 0, lastNav = 0;
     let useWalk = false, stuckN = 0, lastPos = null;
+    let lastWaitSay = NEVER, sawLock = false;   // v6.334: throttle log ยืนรอ · เคยเห็นป้าย "ยังไม่เปิด" หรือยัง
+    gateIdleNextAt = 0;                          // เริ่มจังหวะขยับใหม่ทุกครั้งที่มารอ (ไม่ค้างจากรอบก่อน)
     // เพดานรอ: lead + maxWait + เผื่อ 2 นาที (แต่ไม่เกิน 12 นาที) — ครอบเวลาบอสจริงได้ ไม่ยืนเปล่าทั้งวัน
     const maxMs = clamp((clamp(cfg.bossLeadMin, 1, 60) + clamp(cfg.bossMaxWaitMin, 1, 30) + 2), 5, 12) * 60000;
     while (enabled && (isOn('bossHunt') || mythicActive()) && now() - t0 < maxMs) {
       if (bossMapId() !== cur) return true;                     // ประตูเปิด + เข้าได้แล้ว 🎉
-      if (!said) { said = true; say('🚪 ถึงปากถ้ำบอสแล้ว — ประตูล็อกจนถึงเวลา · จะพุ่งเข้าทันทีที่เปิด (บอสอยู่แค่ 1-3 นาที)'); bossEvent('🚪 รอหน้าประตูถ้ำ — เข้าถ้ำไม่ได้ก่อนเวลา (mechanic ใหม่)'); }
+      if (!said) {
+        said = true;
+        const _g0 = bossGateState();
+        say(`🚪 ถึงปากถ้ำบอสแล้ว — ${_g0.sec != null ? `เกมบอกว่าประตูเปิดอีก ${_g0.sec} วิ · ยืนรอเฉยๆ แล้วเข้าทันทีที่เปิด` : 'ประตูล็อกจนถึงเวลา · จะพุ่งเข้าทันทีที่เปิด'} (บอสอยู่แค่ 1-3 นาที)`);
+        bossEvent(`🚪 รอหน้าประตูถ้ำ${_g0.sec != null ? ` (อ่านตัวนับได้: อีก ${_g0.sec} วิ)` : ''} — เข้าถ้ำไม่ได้ก่อนเวลา`);
+      }
       if (now() - lastProbe > 8000) { lastProbe = now(); bossGateProbe(now() - t0); }   // เก็บ mechanic (ข้อความ/countdown) ไว้ดูรอบหน้า
       // 🐛 v6.263: ตรวจว่า "สั่งไปแล้วตัวขยับไหม" — นิ่ง 2 รอบติด = วิธีนี้ใช้ไม่ได้ ให้สลับไปอีกวิธี
       const _p = bossPlayerXY();
@@ -3223,7 +3286,22 @@
       if (_atGate) {
         bossReleaseAll();                                  // ยืนนิ่ง — เลิกกดปุ่มเดินชนประตู
         stuckN = 0; lastPos = _p ? { x: _p.x, y: _p.y } : null;
-        if (now() - lastNav > 3500) {
+        // 🚪 v6.334: เกมประกาศเองว่าประตูล็อก + เหลืออีกกี่วินาที → **ยืนรอเฉยๆ ไม่แตะประตูเลย**
+        //   ได้ 2 อย่างพร้อมกัน: (1) ไม่มีการเดินชนกำแพงให้คนอื่นเห็น (2) เข้าเร็วกว่าเดิม —
+        //   รู้วินาทีที่เปิดเป๊ะ จึงพุ่งเข้าทันทีที่นับถึง 0 แทนที่จะรอ probe รอบถัดไป (เดิมพลาดได้ถึง 3.5 วิ)
+        const gs = bossGateState();
+        if (gs.locked) sawLock = true;                      // ป้ายใช้ได้บนแมพนี้ — ต่อไปป้ายหาย = ประตูเพิ่งเปิดจริง
+        // (ก) มีนับถอยหลังสดและยังเหลือเวลา = **แน่นอน 100%** → ยืนรอ ไม่แตะประตูสักครั้ง
+        if (gs.sec != null && gs.sec > 2) {
+          if (now() - lastWaitSay > 30000) { lastWaitSay = now(); logInfo(`🚪 ประตูยังไม่เปิด — เกมบอกเองว่าอีก ${gs.sec} วิ · ยืนรอเฉยๆ (ไม่ดันประตู) แล้วเข้าทันทีที่เปิด`); }
+          await bossGateIdle();                             // ยืนรอแบบคน (นิ่งเป็นหลัก ขยับห่างๆ)
+          continue;
+        }
+        // (ข) มีป้าย "ยังไม่เปิด" แต่อ่านตัวนับไม่ได้ → ยังเชื่อป้าย แต่แตะเบาๆ ทุก 45 วิ (กันป้ายค้างแล้วรอเก้อทั้งรอบ)
+        // (ค) ป้ายหายหลังเคยเห็น = เพิ่งเปิด → พุ่งเข้าทันที · (ง) อ่านอะไรไม่ได้เลย (เกมเปลี่ยนคำ/i18n) → สำรอง 5-8 วิ สุ่ม
+        const pushGap = gs.locked ? 45000 : (sawLock ? 0 : randInt(5000, 8000));
+        if (gs.locked && now() - lastWaitSay > 30000) { lastWaitSay = now(); logInfo('🚪 ประตูยังไม่เปิด (ป้ายบอก แต่อ่านตัวนับไม่ได้) — ยืนรอ แตะประตูห่างๆ ทุก 45 วิ'); }
+        if (now() - lastNav > pushGap) {
           lastNav = now();
           // 🔴 v6.325 — **regression ของ v6.319: ยืนทับกลางโซนประตูแล้ว "แตะประตู" ไม่มีผลเลย**
           //   `bossWalkTo` คืน 'arrived' ทันทีถ้าอยู่ในระยะ thresh อยู่แล้ว = **ไม่มีการเดิน** →
@@ -3240,11 +3318,16 @@
         await sleep(500);
         continue;
       }
+      // 🚶 v6.334: ยังไม่ถึงปากประตู (เดินเข้าไปหาอยู่) — ถ้าเกมบอกว่าประตูยังล็อก **ไม่ต้องรีบ**
+      //   ล็อกอยู่ = ห้ามสลับ WASD↔A* (การไม่ขยับตอนล็อกเป็นเรื่องปกติ ไม่ใช่ stuck — ต้นตอ log สแปม v6.319)
+      //   และยืดจังหวะสั่งเดินเป็น 3.5 วิ (เดิม 1.2 วิ = ดันรัวให้คนเห็น) · ประตูเปิดแล้วค่อยกลับมาไวเหมือนเดิม
+      const _lockedNow = bossGateState().locked;
       if (_p && lastPos && Math.abs(_p.x - lastPos.x) < 4 && Math.abs(_p.y - lastPos.y) < 4) {
-        if (++stuckN >= 2) { stuckN = 0; useWalk = !useWalk; logInfo(`🚪 หน้าประตู: ${useWalk ? 'สลับไปเดินชนปากประตูเอง (WASD)' : 'สลับกลับไปใช้ A* ข้ามแมพ'}`); }
+        if (++stuckN >= 2 && !_lockedNow) { stuckN = 0; useWalk = !useWalk; logInfo(`🚪 หน้าประตู: ${useWalk ? 'สลับไปเดินชนปากประตูเอง (WASD)' : 'สลับกลับไปใช้ A* ข้ามแมพ'}`); }
+        else if (stuckN >= 2) stuckN = 0;
       } else stuckN = 0;
       lastPos = _p ? { x: _p.x, y: _p.y } : null;
-      if (now() - lastNav > 1200) {
+      if (now() - lastNav > (_lockedNow ? 3500 : 1200)) {
         lastNav = now();
         if (useWalk && exitZone && exitZone.x != null) {
           // เดินชนปากประตูตรงๆ — วิธีที่ได้ผลแน่เมื่อประตูเปิดแล้ว (ไม่พึ่ง A* ข้ามแมพ)
