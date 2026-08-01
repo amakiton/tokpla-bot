@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.369
+// @version      6.370
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.369';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.370';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1357,6 +1357,7 @@
     '🔍 /gap - เวลาที่หายไประหว่างตีบอส ไปอยู่กับอะไร (หลบ/เดิน/คูลดาวน์/สตัน)',
     '⏱️ /bosstime - นาฬิกาบอส: ยึดเวลาจากอะไร · ตารางที่วัดเอง · คลาดจากจริงกี่วินาที',
     '🪱 /baitbtn - ส่องแถวปุ่มเหยื่อ (ในถ้ำบอสเกมโชว์ 2 ปุ่ม = จุดอ่อนสองขั้น)',
+    '🎓 /xp - XP ต่อครั้ง/ชม. ของเหยื่อทุกขั้น (เลเวลคือคอขวดของการอัปเกรดของ)',
     '🔎 /probe &lt;ชื่อปุ่ม&gt; - เปิดแผงในเกมแล้วอ่านโครงให้ดู (เช่น /probe แลกเศษบอส)',
     '🌈 /mythic - สถานะล่าปลาเทพ · /mythic on|off · /mythic map ชื่อแมพ|auto - ล็อกแมพล่า',
     '🌍 /chat - เปิด/ปิดคุยแชทโลกผ่าน TG (พิมพ์ข้อความมาได้เลย)',
@@ -1427,6 +1428,8 @@
         reply(`<pre>${esc(hitGapReport())}</pre>`); break;
       case 'bosstime': case 'เวลาบอส':   // ⏱️ v6.362: นาฬิกาบอส — ยึดจากอะไร · ตารางที่วัดเอง · ความแม่นจริง
         reply(`<pre>${esc(bossTimeReport())}</pre>`); break;
+      case 'xp': case 'เลเวล':   // 🎓 v6.370: XP/ครั้ง · XP/ชม. ทุกขั้นเหยื่อ เทียบกับกำไร
+        reply('<pre>' + esc(xpReport()) + '</pre>'); break;
       case 'baitbtn': case 'ปุ่มเหยื่อ':   // 🪱 v6.367: ส่องแถวปุ่มเหยื่อตอนนี้ (ในถ้ำบอสมี 2 ปุ่ม)
         reply(`<pre>${esc(baitButtonsDiag())}</pre>`); break;
       case 'on': if (!enabled) toggle(); reply('▶️ เปิดบอทแล้ว'); break;
@@ -8779,6 +8782,68 @@
     const cut = (T.baitJunkCut || [])[i];
     const junk = clamp(cal.junkBase * (1 - (Number.isFinite(cut) ? cut : 0)), 0, 0.9);
     return junk * 4 + (1 - junk) * fish;                  // ขยะขายได้ ~4 🪙 (วัดจริง)
+  }
+  // 🎓 v6.370 — **XP ต่อการตก 1 ครั้ง** (เป้าหมายใหม่: เลเวลคือคอขวดของการอัปเกรดของ)
+  //   ค่าจริงจาก `/api/config` → `level`:
+  //     rarityXp = [1, 1, 3, 8, 20, 45, 100, 250, 600]   ← ตามระดับความหายาก (index เดียวกับ RARITY)
+  //     firstCatchXp = 30 (ตกปลาชนิดใหม่ครั้งแรก) · bossKillXp = 100 (ฆ่าบอส)
+  //   ⇒ **XP ผูกกับ "ความหายาก" ล้วน ๆ ไม่เกี่ยวน้ำหนักหรือราคา** — คนละแกนกับที่บอทจูนมาตลอด
+  //     ปลาบรรพกาล 1 ตัว = 600 XP = ปลาทั่วไป 600 ตัว ⇒ ขั้นเหยื่อที่เปิดหางยาวได้มีค่ามหาศาลกับ XP
+  //   ใช้การแจกแจงตัวเดียวกับโมเดลกำไร (สอบเทียบกับของจริง 3,107 ตัวอย่างแล้ว) — ไม่สร้างสมมติฐานใหม่
+  //   ⚠️ สิ่งที่ยังไม่รู้และไม่เดา: **ขยะให้ XP หรือไม่** → คิดเป็น 0 และแสดง %ขยะ ในรายงานให้เห็นผลกระทบ
+  //      (ถ้าภายหลังพบว่าขยะให้ XP ด้วย ตัวเลขจะสูงกว่าที่รายงาน ไม่ใช่ต่ำกว่า = ปลอดภัยฝั่งประเมินต่ำ)
+  function xpPerCast(tier) {
+    if (!evReady() || !gameCfg.level || !Array.isArray(gameCfg.level.rarityXp)) return null;
+    const T = gameCfg.tuning, XP = gameCfg.level.rarityXp;
+    // การ์ดเดียวกับ evPerCast — ขั้นนอกตาราง `evRarityP` จะคืนค่ามั่ว ๆ แทนที่จะ null (เทสต์จับได้)
+    const i0 = (tier | 0) - 1;
+    if (i0 < 0 || i0 >= (T.baitTailMult || []).length) return null;
+    const p = evRarityP(tier, (evCalib().luck || 0));
+    if (!p) return null;
+    let xp = 0;
+    for (let r = 0; r < p.length; r++) xp += p[r] * (XP[r] || 0);
+    const cut = (T.baitJunkCut || [])[(tier | 0) - 1];
+    const junk = clamp(evCalib().junkBase * (1 - (Number.isFinite(cut) ? cut : 0)), 0, 0.9);
+    // 🎈 โบนัส XP จากทุ่นขั้น 10+ (floatXpBonus — v6.359 เก็บตารางไว้แล้ว)
+    const fb = gearPerk('floatXpBonus', gearTierOf('float') || 0);
+    return { xp: (1 - junk) * xp * (1 + fb), junk, floatBonus: fb, p };
+  }
+  // ตารางเทียบ "XP/ครั้ง · XP/ชม." ทุกขั้น คู่กับกำไร — ให้เห็นว่าจะแลกอะไรกับอะไร
+  function xpReport(castsPerHour) {
+    if (!evReady() || !gameCfg.level) return '🎓 ยังไม่มี config เกม — คำนวณ XP ไม่ได้ (รอโหลด /api/config)';
+    const cph = castsPerHour || 420;   // ~420 ครั้ง/ชม. (ค่าที่ใช้เทียบในตารางกำไรเดิม)
+    const safeCeil = baitCeilSafe();
+    const rows = [];
+    for (let t = 1; t <= MAX_BAIT_TIER; t++) {
+      const x = xpPerCast(t);
+      if (!x) continue;
+      const money = evPerCast(t, mapIdOfName(curMap));
+      rows.push({ t, xp: x.xp, xph: x.xp * cph, junk: x.junk, locked: t > safeCeil,
+        net: money == null ? null : (money - baitUnit(t)), netH: money == null ? null : (money - baitUnit(t)) * cph });
+    }
+    if (!rows.length) return '🎓 คำนวณ XP ไม่ได้';
+    const best = rows.filter((r) => !r.locked).sort((a, b) => b.xph - a.xph)[0];
+    const bestMoney = rows.filter((r) => !r.locked && r.netH != null).sort((a, b) => b.netH - a.netH)[0];
+    const cur = rows.find((r) => r.t === cfg.baitTier);
+    const fb = gearPerk('floatXpBonus', gearTierOf('float') || 0);
+    const out = [`🎓 XP ต่อการตก (rarityXp จากเซิร์ฟเวอร์ · ${cph} ครั้ง/ชม.)${fb ? ` · ทุ่นขั้น ${gearTierOf('float')} +${gpc(fb)} XP` : ''}`];
+    out.push('ขั้น | XP/ครั้ง |  XP/ชม. | กำไรสุทธิ/ชม.');
+    for (const r of rows) {
+      out.push(`${r.locked ? '🔒' : '  '}${String(r.t).padStart(2)} | ${r.xp.toFixed(2).padStart(7)} | ${Math.round(r.xph).toLocaleString().padStart(7)} | `
+        + (r.netH == null ? '—' : Math.round(r.netH).toLocaleString().padStart(9)));
+    }
+    out.push('');
+    if (cur) out.push(`ตอนนี้ใช้ขั้น ${cur.t}: ${Math.round(cur.xph).toLocaleString()} XP/ชม.`);
+    if (best) out.push(`🎓 XP สูงสุด: ขั้น ${best.t} = ${Math.round(best.xph).toLocaleString()} XP/ชม.`
+      + (cur && best.t !== cur.t ? ` (มากกว่าที่ใช้อยู่ ${Math.round((best.xph / Math.max(cur.xph, 0.001) - 1) * 100)}%)` : ' ← ใช้อยู่แล้ว'));
+    if (bestMoney) out.push(`💰 กำไรสูงสุด: ขั้น ${bestMoney.t} = ${Math.round(bestMoney.netH).toLocaleString()} 🪙/ชม.`);
+    if (best && bestMoney && best.t !== bestMoney.t && cur) {
+      const loss = (bestMoney.netH || 0) - (best.netH || 0);
+      out.push(`⚖️ เลือกขั้น ${best.t} เพื่อ XP = ยอมเสียกำไร ~${Math.round(loss).toLocaleString()} 🪙/ชม.`);
+    }
+    out.push(`ℹ️ ขยะไม่นับ XP (ยังไม่ยืนยัน — ถ้าเกมให้ XP ขยะด้วย ตัวเลขจริงจะสูงกว่านี้)`);
+    out.push('ℹ️ ยังไม่รวม: ตกปลาชนิดใหม่ครั้งแรก +30 · ฆ่าบอส +100');
+    return out.join('\n');
   }
   // 🔒 v6.343: เพดานขั้นที่ "ยืนยันแล้วว่าซื้อได้จริง" — สำคัญเฉพาะกับโมเดล
   //   ระบบเดิมมีประตูขนาดตัวอย่าง (n ≥ ADV.MINN) กันขั้นที่ไม่เคยใช้ไว้โดยบังเอิญ — โมเดลไม่มี
