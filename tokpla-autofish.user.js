@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.341
+// @version      6.342
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.341';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.342';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -7432,15 +7432,24 @@
   function evTableLines(limit) {
     if (!evReady()) return ['📐 ยังไม่มี config เกม — โมเดล EV ยังใช้ไม่ได้ (บอทจะใช้สถิติที่วัดเองแทน)'];
     const cal = evCalib(), mapId = mapIdOfName(curMap), out = [];
+    // 🔒 v6.342: ขั้นที่ "ซื้อไม่ได้" ต้องติดป้าย ไม่งั้นตารางจะโชว์ขั้น 16 นำโด่งทั้งที่ต้อง Lv.175
+    //   (baitCeil = ขั้นสูงสุดที่มีปุ่ม "ใส่ตะกร้า" ในร้าน — ยังไม่เคยเปิดร้าน = ยังไม่รู้)
+    const ceilKnown = baitCeil > 0;
     const rows = [];
-    for (let t = 1; t <= (baitCeil || MAX_BAIT_TIER); t++) {
+    for (let t = 1; t <= MAX_BAIT_TIER; t++) {
       const s = advModelStat(t);
-      if (s) rows.push({ t, ...s });
+      if (s) rows.push({ t, locked: ceilKnown && t > baitCeil, ...s });
     }
     rows.sort((a, b) => b.score - a.score);
-    out.push(`📐 EV ตามสูตรเกม · 🗺️ ${curMap || '?'}${mapId ? ` (${mapId})` : ''} · ตัวคูณน้ำหนัก ×${cal.wmult.toFixed(2)} (n=${cal.nW}) · โชคส่วนเกินที่ฟิตได้ +${(cal.luck || 0).toFixed(2)} · ขยะฐาน ${(cal.junkBase * 100).toFixed(1)}%`);
+    out.push(`📐 EV ตามสูตรเกม · ตัวคูณน้ำหนัก ×${cal.wmult.toFixed(2)} (n=${cal.nW}) · โชคส่วนเกินที่ฟิตได้ +${(cal.luck || 0).toFixed(2)} · ขยะฐาน ${(cal.junkBase * 100).toFixed(1)}%`);
+    out.push(mapId
+      ? `🗺️ ${curMap} (${mapId}) — ใช้ตารางปลาของแมพนี้`
+      : `🗺️ ${curMap || 'ยังไม่รู้แมพ'} — ⚠️ จับคู่ id แมพไม่ได้ จึงใช้ราคาปลาเฉลี่ยทั้งเกม (ตัวเลขคลาดได้ · เปิดบอทให้อ่าน HUD ก่อนแล้วดูใหม่)`);
+    out.push(ceilKnown
+      ? `🔓 ซื้อได้ถึงขั้น ${baitCeil} (ที่มี 🔒 คือยังไม่ปลดล็อก — แสดงไว้ดูว่าไต่เลเวลแล้วได้เพิ่มเท่าไร)`
+      : `⚠️ ยังไม่รู้ว่าซื้อได้ถึงขั้นไหน (บอทยังไม่ได้เปิดร้าน) — Advisor จะจำกัดตัวเองที่ขั้น 8 จนกว่าจะเปิดร้านครั้งแรก`);
     for (const r of rows.slice(0, limit || rows.length)) {
-      out.push(`  ขั้น ${String(r.t).padStart(2)} · ต้นทุน ${String(baitUnit(r.t)).padStart(3)} · รายได้/ครั้ง ${Math.round(r.revCast).toLocaleString().padStart(5)} · สุทธิ ${signed(Math.round(r.score))}/ครั้ง (~${Math.round(r.score * 420).toLocaleString()}/ชม.)`);
+      out.push(`  ${r.locked ? '🔒' : '  '} ขั้น ${String(r.t).padStart(2)} · ต้นทุน ${String(baitUnit(r.t)).padStart(3)} · รายได้/ครั้ง ${Math.round(r.revCast).toLocaleString().padStart(5)} · สุทธิ ${signed(Math.round(r.score))}/ครั้ง (~${Math.round(r.score * 420).toLocaleString()}/ชม.)`);
     }
     return out;
   }
