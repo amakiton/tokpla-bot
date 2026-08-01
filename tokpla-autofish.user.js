@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.364
+// @version      6.365
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.364';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.365';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4195,8 +4195,21 @@
     const dest = toMap || bossActiveCave();
     const target = BOSS_NAV_TARGET[dest] || BOSS_NAV_TARGET[BOSS_MAP] || { x: 841, y: 445 };
     const t0 = now(); let said = false, lastProbe = 0, lastNav = 0;
-    let useWalk = false, stuckN = 0, lastPos = null;
+    let useWalk = false, lastPos = null;   // v6.365: ทิ้ง stuckN (นับรอบลูป) → ใช้ stuckSince ที่วัดเป็นเวลาแทน
     let lastWaitSay = NEVER, sawLock = false;   // v6.334: throttle log ยืนรอ · เคยเห็นป้าย "ยังไม่เปิด" หรือยัง
+    // 🔁 v6.365 — **ตัวสลับกลยุทธ์หน้าประตูวิ่งเร็วกว่าคำสั่งที่มันกำลังตัดสิน** (ผู้ใช้เห็นเป็น "เดินแปลก ๆ")
+    //   หลักฐานสด 1/8/69 — สลับ 3 ครั้งใน ~1.5 วินาที:
+    //     22:30:01 สลับไปเดินชนปากประตูเอง (WASD) → 22:30:02 สลับกลับไปใช้ A* → 22:30:02 สลับไปเดินเองอีก
+    //   เลขที่ชนกันเอง: ลูปวน `sleep(400)` · `stuckN >= 2` = **800ms** ก็สลับ
+    //   แต่คำสั่งเดินถูก throttle ด้วย `lastNav` = **1,200ms** ⇒ สลับกลยุทธ์ *ก่อน* จะได้ยิงคำสั่งซ้ำด้วยซ้ำ
+    //   ⇒ ไม่มีวิธีไหนได้ลองสองครั้งติดกันเลย + `void bossWalkTo` (ไม่ await, ยาวได้ถึง 1,100ms)
+    //     ยังทำงานค้างอยู่ตอนที่อีกวิธีถูกยิงทับ = WASD กับ A* แย่งคุมตัวละครพร้อมกัน
+    //   แก้ 4 ชั้น: ① วัดจาก "เวลา" ไม่ใช่จำนวนรอบลูป ② ตัดสินหลังคำสั่งได้ทำงานจริงแล้วเท่านั้น
+    //     ③ เว้นระยะระหว่างการสลับ ④ จำกัดจำนวนครั้ง (สลับไม่จบ = ไม่เคยช่วย มีแต่ทำให้ดูเป็นบอท)
+    const SWITCH_MIN_GAP_MS = 4000;     // ห่างกันอย่างน้อยเท่านี้ต่อการสลับ 1 ครั้ง
+    const STUCK_JUDGE_MS = 1600;        // ต้องนิ่งนานเท่านี้หลังคำสั่ง ถึงจะนับว่า "วิธีนี้ไม่เวิร์ก"
+    const SWITCH_MAX = 4;               // เกินนี้ = เลิกสลับ ใช้วิธีที่ถืออยู่ยาว
+    let lastSwitchAt = 0, switchN = 0, walkInFlight = false, stuckSince = 0;
     gateIdleNextAt = 0;                          // เริ่มจังหวะขยับใหม่ทุกครั้งที่มารอ (ไม่ค้างจากรอบก่อน)
     // เพดานรอ: lead + maxWait + เผื่อ 2 นาที (แต่ไม่เกิน 12 นาที) — ครอบเวลาบอสจริงได้ ไม่ยืนเปล่าทั้งวัน
     const maxMs = bossGateWaitBudgetMs();   // v6.344: ย้ายสูตรไปไว้ที่เดียว (จุดตัดสิน "รอไหวไหม" ต้องใช้งบเดียวกันหมด)
@@ -4236,7 +4249,7 @@
       const _atGate = !!(_p && _gcx != null && Math.hypot(_p.x - _gcx, _p.y - _gcy) < 80);
       if (_atGate) {
         bossReleaseAll();                                  // ยืนนิ่ง — เลิกกดปุ่มเดินชนประตู
-        stuckN = 0; lastPos = _p ? { x: _p.x, y: _p.y } : null;
+        stuckSince = 0; lastPos = _p ? { x: _p.x, y: _p.y } : null;   // v6.365: ถึงปากประตูแล้ว = ล้างตัวจับ "นิ่ง"
         // 🚪 v6.334: เกมประกาศเองว่าประตูล็อก + เหลืออีกกี่วินาที → **ยืนรอเฉยๆ ไม่แตะประตูเลย**
         //   ได้ 2 อย่างพร้อมกัน: (1) ไม่มีการเดินชนกำแพงให้คนอื่นเห็น (2) เข้าเร็วกว่าเดิม —
         //   รู้วินาทีที่เปิดเป๊ะ จึงพุ่งเข้าทันทีที่นับถึง 0 แทนที่จะรอ probe รอบถัดไป (เดิมพลาดได้ถึง 3.5 วิ)
@@ -4273,17 +4286,35 @@
       //   ล็อกอยู่ = ห้ามสลับ WASD↔A* (การไม่ขยับตอนล็อกเป็นเรื่องปกติ ไม่ใช่ stuck — ต้นตอ log สแปม v6.319)
       //   และยืดจังหวะสั่งเดินเป็น 3.5 วิ (เดิม 1.2 วิ = ดันรัวให้คนเห็น) · ประตูเปิดแล้วค่อยกลับมาไวเหมือนเดิม
       const _lockedNow = bossGateState().locked;
-      if (_p && lastPos && Math.abs(_p.x - lastPos.x) < 4 && Math.abs(_p.y - lastPos.y) < 4) {
-        if (++stuckN >= 2 && !_lockedNow) { stuckN = 0; useWalk = !useWalk; logInfo(`🚪 หน้าประตู: ${useWalk ? 'สลับไปเดินชนปากประตูเอง (WASD)' : 'สลับกลับไปใช้ A* ข้ามแมพ'}`); }
-        else if (stuckN >= 2) stuckN = 0;
-      } else stuckN = 0;
+      // 🔁 v6.365: นับ "นิ่งมานานเท่าไร" เป็นเวลาจริง แทนการนับรอบลูป (ลูป 400ms → เดิมสลับที่ 800ms)
+      const _moved = !(_p && lastPos && Math.abs(_p.x - lastPos.x) < 4 && Math.abs(_p.y - lastPos.y) < 4);
+      if (_moved) stuckSince = 0; else if (!stuckSince) stuckSince = now();
+      const _stuckMs = stuckSince ? now() - stuckSince : 0;
+      // เงื่อนไขสลับ — ต้องครบทุกข้อ ไม่งั้นคือการตัดสินก่อนคำสั่งได้ทำงาน
+      if (!_lockedNow                                   // ประตูล็อก = การไม่ขยับเป็นเรื่องปกติ ไม่ใช่ stuck (v6.334)
+        && !walkInFlight                                // ยังมีคำสั่งเดินค้างอยู่ = ยังไม่รู้ผล ห้ามตัดสิน
+        && _stuckMs >= STUCK_JUDGE_MS                   // นิ่งจริงนานพอ (ไม่ใช่ 800ms)
+        && now() - lastNav >= STUCK_JUDGE_MS            // คำสั่งล่าสุดได้เวลาทำงานแล้ว
+        && now() - lastSwitchAt >= SWITCH_MIN_GAP_MS    // ไม่สลับรัว
+        && switchN < SWITCH_MAX) {                      // สลับไปเรื่อย ๆ ไม่เคยช่วย
+        stuckSince = 0; lastSwitchAt = now(); switchN++;
+        useWalk = !useWalk;
+        logInfo(`🚪 หน้าประตู: ${useWalk ? 'สลับไปเดินชนปากประตูเอง (WASD)' : 'สลับกลับไปใช้ A* ข้ามแมพ'} (นิ่งมา ${Math.round(_stuckMs / 100) / 10} วิ · ครั้งที่ ${switchN}/${SWITCH_MAX})`);
+      } else if (switchN >= SWITCH_MAX && _stuckMs >= STUCK_JUDGE_MS && now() - lastWaitSay > 30000) {
+        lastWaitSay = now();
+        logInfo(`🚪 หน้าประตู: สลับครบ ${SWITCH_MAX} ครั้งแล้วยังไม่เข้า — คงวิธี "${useWalk ? 'เดินเอง' : 'A*'}" ไว้ยาว (สลับต่อไม่เคยช่วย)`);
+      }
       lastPos = _p ? { x: _p.x, y: _p.y } : null;
-      if (now() - lastNav > (_lockedNow ? 3500 : 1200)) {
+      if (!walkInFlight && now() - lastNav > (_lockedNow ? 3500 : 1200)) {
         lastNav = now();
         if (useWalk && exitZone && exitZone.x != null) {
           // เดินชนปากประตูตรงๆ — วิธีที่ได้ผลแน่เมื่อประตูเปิดแล้ว (ไม่พึ่ง A* ข้ามแมพ)
           // 🎯 v6.296: เดินไป "กลางโซนประตู" (ไม่ใช่ขอบซ้าย x ที่อาจอยู่ในกำแพง) — ยืนยันสด: WASD ชนกลางโซน = เข้าได้
-          void bossWalkTo(exitZone.x + (exitZone.width || 0) / 2, exitZone.y + (exitZone.height || 0) / 2, { thresh: 12, maxMs: 1100 });
+          // 🔁 v6.365: เดิมยิงแบบ `void` ไม่รอผล — ตัวมันกิน WASD ได้ถึง 1,100ms ระหว่างที่ลูปวนต่อและอาจยิง A* ทับ
+          //   = สองวิธีแย่งคุมตัวละครพร้อมกัน · ตอนนี้ตั้งธง walkInFlight กันยิงซ้อน (ยังไม่ await เพื่อไม่ให้ลูปหยุดตอบสนอง)
+          walkInFlight = true;
+          void bossWalkTo(exitZone.x + (exitZone.width || 0) / 2, exitZone.y + (exitZone.height || 0) / 2, { thresh: 12, maxMs: 1100 })
+            .catch(() => {}).finally(() => { walkInFlight = false; });
         } else if (exitZone && exitZone.x != null) {
           // 🎯 v6.296 (ยืนยันสด 23:20 — ผู้ใช้เจอบั๊ก "ตายแล้วเข้าถ้ำไม่ถูกตำแหน่ง"):
           //   A* ไป "พิกัดในถ้ำ" (target ข้ามแมพ) → ข้ามประตูไม่ได้ → snap ไปมุมแมพ (เช่น 27,20) → WASD จากมุมเข้าประตูไม่ได้ (กำแพงกั้น)
