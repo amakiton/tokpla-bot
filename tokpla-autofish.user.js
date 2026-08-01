@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.355
+// @version      6.356
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.355';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.356';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -13344,6 +13344,10 @@ ${esc(reason)}
   //   ทำก่อนบอทเริ่มทำงาน → ราคาเหยื่อ/ตารางบอส/ตารางปลา เป็นของจริงตั้งแต่รอบแรก
   if (gameCfg) applyGameConfig(gameCfg, { log: false });   // ใช้ cache ก่อน (ไม่ต้องรอเน็ต)
   void loadGameConfig(false);
+  // 🌱 v6.356: seed ตาราง "รอบไหนบอสตัวไหน" ตั้งแต่บูต — เดิมทำตอนยืนรอในถ้ำเท่านั้น
+  //   ผลคือกว่าจะรู้ว่าตารางถูกหรือเปล่าต้องรอถึงรอบบอสจริง = ตรวจล่วงหน้าไม่ได้ ถ้าพังก็เสียไปทั้งรอบ
+  //   ทำตรงนี้ปลอดภัย: idempotent (มีธง _seeded) · อ่าน stats ครั้งเดียว · ต้องอยู่หลัง applyGameConfig (ใช้ตารางบอสจากเซิร์ฟเวอร์)
+  try { seedBossRotaOnce(); } catch {}
 
   autoResumeAfterReload();
 
