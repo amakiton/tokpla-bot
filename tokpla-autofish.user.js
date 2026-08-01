@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.371
+// @version      6.372
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.371';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.372';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1359,6 +1359,7 @@
     '⏱️ /bosstime - นาฬิกาบอส: ยึดเวลาจากอะไร · ตารางที่วัดเอง · คลาดจากจริงกี่วินาที',
     '🪱 /baitbtn - ส่องแถวปุ่มเหยื่อ (ในถ้ำบอสเกมโชว์ 2 ปุ่ม = จุดอ่อนสองขั้น)',
     '🎓 /xp - XP ต่อครั้ง/ชม. ของเหยื่อทุกขั้น (เลเวลคือคอขวดของการอัปเกรดของ)',
+    '🔎 /xpprobe - ส่องว่าแถบ XP อยู่ตรงไหนบนจอ (เปิดแผงโปรไฟล์แล้วพิมพ์)',
     '🔎 /probe &lt;ชื่อปุ่ม&gt; - เปิดแผงในเกมแล้วอ่านโครงให้ดู (เช่น /probe แลกเศษบอส)',
     '🌈 /mythic - สถานะล่าปลาเทพ · /mythic on|off · /mythic map ชื่อแมพ|auto - ล็อกแมพล่า',
     '🌍 /chat - เปิด/ปิดคุยแชทโลกผ่าน TG (พิมพ์ข้อความมาได้เลย)',
@@ -1431,6 +1432,8 @@
         reply(`<pre>${esc(bossTimeReport())}</pre>`); break;
       case 'xp': case 'เลเวล':   // 🎓 v6.370: XP/ครั้ง · XP/ชม. ทุกขั้นเหยื่อ เทียบกับกำไร
         reply('<pre>' + esc(xpReport()) + '</pre>'); break;
+      case 'xpprobe': case 'ส่องxp':   // 🔎 v6.372: ส่องว่าข้อความ XP/เลเวลอยู่ตรงไหนบนจอ
+        reply('<pre>' + esc(xpProbeDiag()) + '</pre>'); break;
       case 'baitbtn': case 'ปุ่มเหยื่อ':   // 🪱 v6.367: ส่องแถวปุ่มเหยื่อตอนนี้ (ในถ้ำบอสมี 2 ปุ่ม)
         reply(`<pre>${esc(baitButtonsDiag())}</pre>`); break;
       case 'on': if (!enabled) toggle(); reply('▶️ เปิดบอทแล้ว'); break;
@@ -8047,6 +8050,9 @@
 
   function shopRows() {
     const plv = playerLevel();   // อ่านครั้งเดียวต่อการสแกน (ร้านเปิดอยู่ = อ่านได้)
+    // 🎓 v6.372: ร้านเปิดอยู่ = จังหวะที่ข้อมูลเลเวล/XP โผล่มากที่สุด → ลองจดแถบ XP ตรงนี้ด้วย
+    //   ฟรี ไม่ต้องเปิดแผงเพิ่ม (v6.371 จดตอนฟาร์มอย่างเดียว แล้วอ่านไม่เจอเลยสักครั้ง — ตรวจสดยืนยันแล้ว)
+    try { xpSampleTick(); } catch {}
     return [...document.querySelectorAll('div[class*="tk-inner"]')].map((row) => {
       const text = row.innerText || row.textContent || '';
       const tier = /ขั้น\s*(\d+)/.exec(text);
@@ -8823,6 +8829,28 @@
       if (rm) { out.remain = +rm[1].replace(/,/g, ''); out.next = +rm[2]; }
       return (out.lv != null || out.cur != null || out.remain != null) ? out : null;
     } catch { return null; }
+  }
+  // 🔎 v6.372 — ส่องว่า "ข้อความเกี่ยวกับ XP/เลเวล" ที่มองเห็นตอนนี้มีอะไรบ้าง และอยู่ใน element แบบไหน
+  //   ทำไมต้องมี: v6.371 ต่อสายตัวจดครบแล้ว แต่ **ตรวจสดพบ `tokpla_xp_hist` ว่างเปล่า** ทั้งที่ตัวจดได้ทำงาน
+  //   (มีช่วง 318 วิ และ 283 วิ ระหว่างรีโหลด = เกินคูลดาวน์ 3 นาที) ⇒ `readXpBar()` อ่านไม่เจอจริง
+  //   ⇒ **แถบ XP ไม่ได้อยู่บนจอตอนฟาร์มปกติ** — ต้องรู้ก่อนว่ามันอยู่ที่ไหน ถึงจะไปเปิดถูกที่ (ห้ามเดา)
+  function xpProbeDiag() {
+    try {
+      const hits = [];
+      const RE = /Lv\.?\s*\d+|\d[\d,]*\s*\/\s*[\d,]+\s*XP|อีก\s*[\d,]+\s*XP|เลเวลนักตกปลา|นักตกปลา|XP/;
+      for (const el of document.querySelectorAll('div,span,p,h1,h2,h3,h4,button')) {
+        if (isBotUI(el) || el.offsetParent === null || el.children.length > 2) continue;
+        const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!t || t.length > 60 || !RE.test(t)) continue;
+        hits.push(`  <${el.tagName.toLowerCase()}> "${t}"`);
+        if (hits.length >= 25) break;
+      }
+      const bar = readXpBar();
+      return `🔎 ข้อความ XP/เลเวลที่เห็นตอนนี้ (${hits.length} ชิ้น)\n`
+        + (hits.length ? hits.join('\n') : '  (ไม่เจอเลย — แถบ XP น่าจะอยู่ในแผงที่ยังไม่ได้เปิด)')
+        + `\n\nreadXpBar() → ${bar ? JSON.stringify(bar) : 'null'}`
+        + `\nประวัติที่จดได้: ${loadXpHist().length} รายการ`;
+    } catch (e) { return '🔎 ส่อง XP ไม่สำเร็จ: ' + e; }
   }
   // ประวัติ XP — ไว้วัด "อัตราจริง" (XP/ชม.) ของบัญชีนี้ แทนการพึ่งโมเดลอย่างเดียว
   const XP_HIST_KEY = 'tokpla_xp_hist';
