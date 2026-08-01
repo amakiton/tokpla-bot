@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.370
+// @version      6.371
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.370';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.371';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -681,6 +681,7 @@
   let curMap = null;           // ชื่อแมพปัจจุบัน (อ่านจาก HUD chip "📍 ...") — ใช้ tag catch + แยกสถิติตามแมพ
   let lastIdleWork = 0;        // throttle งานเบื้องหลังใน idle branch (ไม่ต้องเช็คทุกเฟรม)
   let lastAnchorChk = 0;       // ⏱️ v6.362: คูลดาวน์การอ่านตัวนับบอสระหว่างฟาร์ม (30 วิ)
+  let lastXpSample = 0;        // 🎓 v6.371: คูลดาวน์การจดแถบ XP (3 นาที)
   let barCache = null;         // ผล findBar() ของเฟรมนี้ (gameState หาไว้ → branch ดึงปลาใช้ต่อ ไม่ scan ซ้ำ)
   let biteAt = 0;         // เห็นปุ่มตวัดครั้งแรกเมื่อไร (โหมดมนุษย์)
   let biteReact = 0;      // หน่วงรีแอคที่สุ่มไว้รอบนี้ (ms)
@@ -8808,6 +8809,51 @@
     const fb = gearPerk('floatXpBonus', gearTierOf('float') || 0);
     return { xp: (1 - junk) * xp * (1 + fb), junk, floatBonus: fb, p };
   }
+  // 📊 v6.371 — **อ่านแถบ XP จากจอจริง** (ตรวจจากบันเดิล: เกมวาด `{cur}/{max} XP` · `อีก {n} XP → Lv.{next}` ·
+  //   `🎖️ เลเวลนักตกปลา Lv.{lv}`) ⇒ ไม่ต้องเดาสูตรเส้นโค้ง — ground truth อยู่บนจออยู่แล้ว
+  //   คืน null เมื่อป้ายไม่อยู่บนจอ (เช่นแผงถูกปิด) — ไม่เดา ไม่จำค่าเก่ามามั่ว
+  function readXpBar() {
+    try {
+      const out = {};
+      const lv = gameTextMatch(/เลเวลนักตกปลา\s*Lv\.?\s*(\d+)/) || gameTextMatch(/นักตกปลา\s*Lv\.?\s*(\d+)/);
+      if (lv) out.lv = +lv[1];
+      const cm = gameTextMatch(/([\d,]+)\s*\/\s*([\d,]+)\s*XP/);
+      if (cm) { out.cur = +cm[1].replace(/,/g, ''); out.max = +cm[2].replace(/,/g, ''); }
+      const rm = gameTextMatch(/อีก\s*([\d,]+)\s*XP\s*(?:→|->)?\s*(?:Lv\.?|เลเวล)\s*(\d+)/);
+      if (rm) { out.remain = +rm[1].replace(/,/g, ''); out.next = +rm[2]; }
+      return (out.lv != null || out.cur != null || out.remain != null) ? out : null;
+    } catch { return null; }
+  }
+  // ประวัติ XP — ไว้วัด "อัตราจริง" (XP/ชม.) ของบัญชีนี้ แทนการพึ่งโมเดลอย่างเดียว
+  const XP_HIST_KEY = 'tokpla_xp_hist';
+  const loadXpHist = () => { try { const a = JSON.parse(W.localStorage.getItem(XP_HIST_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch { return []; } };
+  function xpSampleTick() {
+    const r = readXpBar();
+    if (!r || r.cur == null || r.lv == null) return;        // อ่านไม่ครบ = ไม่จด (ครึ่ง ๆ กลาง ๆ ทำสถิติเพี้ยน)
+    try {
+      const h = loadXpHist();
+      const last = h[h.length - 1];
+      if (last && last.lv === r.lv && last.cur === r.cur) return;   // ไม่ขยับ ไม่จดซ้ำ
+      h.push({ t: Date.now(), lv: r.lv, cur: r.cur, max: r.max || null });
+      while (h.length > 200) h.shift();
+      W.localStorage.setItem(XP_HIST_KEY, JSON.stringify(h));
+      if (last && r.lv > last.lv) logInfo(`🎓 เลเวลอัพเป็น Lv.${r.lv} — จดลงประวัติ XP แล้ว`);
+    } catch {}
+  }
+  // อัตรา XP/ชม. ที่วัดได้จริงจากประวัติ — คืน null ถ้าข้อมูลไม่พอ (ไม่เดา)
+  function xpMeasuredRate() {
+    const h = loadXpHist();
+    let gain = 0, ms = 0;
+    for (let i = 1; i < h.length; i++) {
+      const a = h[i - 1], b = h[i];
+      const dt = b.t - a.t;
+      if (!(dt > 0) || dt > 45 * 60000) continue;           // ช่องว่างยาว (บอทปิด/รีโหลดนาน) = ตัดทิ้ง
+      if (b.lv === a.lv && b.cur > a.cur) { gain += b.cur - a.cur; ms += dt; }
+      else if (b.lv === a.lv + 1 && a.max > 0) { gain += (a.max - a.cur) + b.cur; ms += dt; }   // ข้ามเลเวลพอดี
+    }
+    if (ms < 10 * 60000 || !(gain > 0)) return null;        // วัดมาน้อยกว่า 10 นาที = ยังไม่น่าเชื่อ
+    return { perHour: gain / (ms / 3600000), gain, minutes: Math.round(ms / 60000) };
+  }
   // ตารางเทียบ "XP/ครั้ง · XP/ชม." ทุกขั้น คู่กับกำไร — ให้เห็นว่าจะแลกอะไรกับอะไร
   function xpReport(castsPerHour) {
     if (!evReady() || !gameCfg.level) return '🎓 ยังไม่มี config เกม — คำนวณ XP ไม่ได้ (รอโหลด /api/config)';
@@ -8843,6 +8889,22 @@
     }
     out.push(`ℹ️ ขยะไม่นับ XP (ยังไม่ยืนยัน — ถ้าเกมให้ XP ขยะด้วย ตัวเลขจริงจะสูงกว่านี้)`);
     out.push('ℹ️ ยังไม่รวม: ตกปลาชนิดใหม่ครั้งแรก +30 · ฆ่าบอส +100');
+    // 📊 v6.371: ของจริงจากจอ + อัตราที่วัดได้ → ETA เลเวลถัดไป (ground truth ชนะโมเดลเสมอ)
+    const bar = readXpBar();
+    if (bar && (bar.lv != null || bar.remain != null)) {
+      out.push('');
+      out.push(`📊 จากจอจริง: ${bar.lv != null ? `Lv.${bar.lv}` : ''}${bar.cur != null ? ` · ${bar.cur.toLocaleString()}/${(bar.max || 0).toLocaleString()} XP` : ''}${bar.remain != null ? ` · อีก ${bar.remain.toLocaleString()} XP → Lv.${bar.next}` : ''}`);
+      const rate = xpMeasuredRate();
+      if (rate && bar.remain != null) {
+        out.push(`⏱️ อัตราที่วัดได้จริง: ${Math.round(rate.perHour).toLocaleString()} XP/ชม. (จาก ${rate.minutes} นาที)`
+          + ` ⇒ ถึง Lv.${bar.next} ในอีก ~${(bar.remain / rate.perHour).toFixed(1)} ชม.`);
+      } else if (bar.remain != null) {
+        out.push('⏱️ ยังวัดอัตราจริงไม่พอ (ต้องเห็นแถบ XP ขยับรวม ≥10 นาที) — จะสะสมเองระหว่างฟาร์ม');
+      }
+    } else {
+      out.push('');
+      out.push('📊 อ่านแถบ XP จากจอไม่ได้ตอนนี้ (ป้ายไม่อยู่บนจอ) — บอทจะลองอ่านเป็นระยะระหว่างฟาร์ม');
+    }
     return out.join('\n');
   }
   // 🔒 v6.343: เพดานขั้นที่ "ยืนยันแล้วว่าซื้อได้จริง" — สำคัญเฉพาะกับโมเดล
@@ -11374,6 +11436,12 @@ ${esc(reason)}
         if (now() - lastAnchorChk > 30000) {
           lastAnchorChk = now();
           try { const s = bossTimerSec(); if (s != null) setBossAnchor(s, 'ตัวนับระหว่างฟาร์ม'); } catch {}
+        }
+        // 🎓 v6.371: จดแถบ XP เป็นระยะ (บทเรียน v6.363 — ตัวเก็บที่ไม่มีใครเรียก = ไม่เคยทำงาน)
+        //   ทุก 3 นาทีพอ: แถบ XP ขยับช้า + ตัววัดอัตราตัดช่องว่าง >45 นาทีทิ้งอยู่แล้ว
+        if (now() - lastXpSample > 180000) {
+          lastXpSample = now();
+          try { xpSampleTick(); } catch {}
         }
 
         // 🛡️ v6.218: ยามเฝ้าป๊อบอัพค้างทั่วไป — "ควรตกได้แต่ตกไม่ได้เพราะมี dialog ค้าง ≥3 วิ" → เคลียร์อัตโนมัติ
