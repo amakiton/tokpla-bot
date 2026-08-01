@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.359
+// @version      6.360
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.359';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.360';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1353,6 +1353,7 @@
     '🧪 /testbait - ทดสอบเหยื่อใหม่ · /testcont - ทำต่อ · /teststop - หยุด · /testprog - ความคืบหน้า',
     '👹 /boss - สถานะบอส · /bosshunt - ออกล่าเดี๋ยวนี้ · /bosslog - log สู้บอส',
     '🎣 /gear - คัน/ทุ่นที่ใส่อยู่ให้โบนัสอะไร + ขั้นถัดไปติดเลเวลเท่าไร',
+    '🔍 /gap - เวลาที่หายไประหว่างตีบอส ไปอยู่กับอะไร (หลบ/เดิน/คูลดาวน์/สตัน)',
     '🔎 /probe &lt;ชื่อปุ่ม&gt; - เปิดแผงในเกมแล้วอ่านโครงให้ดู (เช่น /probe แลกเศษบอส)',
     '🌈 /mythic - สถานะล่าปลาเทพ · /mythic on|off · /mythic map ชื่อแมพ|auto - ล็อกแมพล่า',
     '🌍 /chat - เปิด/ปิดคุยแชทโลกผ่าน TG (พิมพ์ข้อความมาได้เลย)',
@@ -1419,6 +1420,8 @@
       }
       case 'gear': case 'อุปกรณ์':   // 🎣 v6.359: ของที่ใส่อยู่ให้อะไร + ขั้นถัดไปติดอะไร (เลเวล/เหรียญ/เศษ)
         reply(`<pre>${esc(gearReport())}</pre>`); break;
+      case 'gap': case 'ช่องว่าง':   // 🔍 v6.360: เวลาที่หายไประหว่างการตีบอส ไปอยู่กับอะไร
+        reply(`<pre>${esc(hitGapReport())}</pre>`); break;
       case 'on': if (!enabled) toggle(); reply('▶️ เปิดบอทแล้ว'); break;
       case 'off': case 'stop':
         if (!enabled) { reply('บอทปิดอยู่แล้ว'); break; }
@@ -2669,11 +2672,69 @@
   //   สอดคล้องกับ `tuning.raidAdvanceMinMs = 900` (น่าจะเป็น "ช่วงห่างขั้นต่ำระหว่างการตีที่นับจริง")
   //   ถ้าจริง = คลิกเกิน ~1.1 ครั้ง/วิ ทิ้งเปล่า → ตี 900ms ได้ดาเมจเท่ากันแต่คลิกน้อยลง 4 เท่า = **ดูเป็นบอทน้อยลงมาก**
   //   ⚠️ ยังไม่ล็อกทันที — สลับวัดในไฟต์เดียวกัน (บล็อกละ 15 วิ) แล้วอ่านผลจากรายงานก่อนตัดสิน
-  let meleeGapArm = 'fast';
-  function meleeGapMs(fightT0) {
-    const idx = Math.floor((now() - (fightT0 || now())) / 15000);
-    meleeGapArm = (idx % 2) ? 'slow' : 'fast';
-    return meleeGapArm === 'slow' ? 900 : 220;
+  // ✅ v6.360 — **ปิดการทดลอง: ล็อก 900ms** · ผลจริงจาก 170 ก้อนดาเมจ (อ่านสดจาก VPS 1/8/69):
+  //     220ms (ถี่): n=99 · 246 dmg/ครั้ง · **ช่องว่างจริง 1,421ms** · 173 dmg/วิ
+  //     900ms (ช้า): n=71 · 251 dmg/ครั้ง · **ช่องว่างจริง 1,501ms** · 167 dmg/วิ
+  //   ต่าง 3.6% = อยู่ในความคลาดเคลื่อน · **และที่สำคัญกว่า: ตั้ง 220ms แต่ตีได้จริงทุก ~1.4 วิ**
+  //   ⇒ ค่านี้ไม่เคยเป็นตัวคุมอัตราตีเลย (ตัวคุมจริงคือการหลบ/เดิน/คูลดาวน์ — ดู `gapWhy` ข้างล่าง)
+  //   เลือก 900ms เพราะได้ผลเท่ากันแต่คลิกน้อยลง ~4 เท่า (ดูเป็นบอทน้อยลง + โหลด CPU น้อยลง)
+  const MELEE_GAP_MS = 900;
+  let meleeGapArm = null;   // เดิมคือแขน A/B — ตอนนี้ null เสมอ (คงฟิลด์ไว้ให้รายงานเก่าอ่านข้อมูลย้อนหลังได้)
+  function meleeGapMs() { return MELEE_GAP_MS; }
+  // 🔍 v6.360 — **"เวลาที่หายไประหว่างการตี" ไปไหนหมด** (คำถามที่ข้อมูลเดิมตอบไม่ได้)
+  //   วัดสด 250 ครั้ง/519 วิ: พื้นเร็วสุด 903ms (= `raidAdvanceMinMs` เป๊ะ ✓) แต่มัธยฐาน 1,444ms
+  //   63 ครั้งห่างเกิน 2 วิ · 15 ครั้งเกิน 5 วิ · มากสุด 21 วิ ⇒ **รวมเวลาที่เกินพื้น 295 วิ = 57% ของไฟต์**
+  //   (≈ ตีเพิ่มได้อีก 328 ครั้ง มากกว่าที่ตีจริงทั้งไฟต์เสียอีก)
+  //   ที่ตัดออกไปแล้ว: **ไม่ใช่เพราะเดินไกล** — ก้อนที่ห่างมากกลับมีระยะใกล้กว่า (24-29px vs 54px)
+  //   ⇒ ต้องรู้ให้ได้ว่าเวลาไปอยู่กับอะไร ก่อนจะแก้ถูกจุด · จับเวลาสะสมแยกตามสาเหตุระหว่างสองการตี
+  const HITGAP_KEY = 'tokpla_hit_gap';
+  // ⚠️ "พื้น" ของแต่ละโหมดไม่เท่ากัน — charge กดค้าง 1.95 วิ + เว้น 0.3 วิ = พื้น ~2.25 วิ โดยธรรมชาติ
+  //   ถ้าใช้เกณฑ์เดียวกันหมด ทุกชาร์จจะถูกนับเป็น "ช่องว่างยาว" ทั้งที่เป็นการทำงานปกติ = ข้อมูลขยะ
+  const gapFloorMs = (mode) => (mode === 'charge' ? 2250 : 900);
+  const gapLongMs = (mode) => gapFloorMs(mode) * 2;   // เกินสองเท่าของพื้น = ผิดปกติจริง ควรรู้สาเหตุ
+  const GAP_LONG_MS = 2000;              // (เกณฑ์ melee/cast — คงชื่อไว้ให้รายงานอ่านง่าย)
+  let gapWhy = null, gapWhyAt = 0, gapPrevPress = 0;
+  let hitGapRing = [];
+  try { const a = JSON.parse(W.localStorage.getItem(HITGAP_KEY) || '[]'); if (Array.isArray(a)) hitGapRing = a.slice(-400); } catch {}
+  // เรียกทุกครั้งที่ลูปเข้าสาขาที่ "ตีไม่ได้" — บวกเวลาที่ผ่านไปตั้งแต่ mark ครั้งก่อนเข้าถังของสาเหตุนั้น
+  //   ต้องถูกมาก (ลูปนี้วิ่งทุก 30-120ms) → ทำแค่บวกเลขในออบเจกต์
+  function gapMark(why) {
+    const t = now();
+    if (gapWhyAt) { const dt = t - gapWhyAt; if (dt > 0 && dt < 8000) { (gapWhy || (gapWhy = {}))[why] = ((gapWhy && gapWhy[why]) || 0) + dt; } }
+    gapWhyAt = t;
+  }
+  // เรียกทุกครั้งที่ "ตีได้จริง" — ปิดยอดช่องว่างก่อนหน้า แล้วเริ่มนับใหม่
+  function gapNotePress(mode, boss) {
+    const t = now();
+    const gap = gapPrevPress ? t - gapPrevPress : 0;
+    if (gap > gapLongMs(mode) && gap < 60000) {
+      const w = gapWhy || {};
+      const top = Object.keys(w).sort((a, b) => w[b] - w[a]).slice(0, 3).map((k) => k + ':' + Math.round(w[k]));
+      hitGapRing.push({ t: Date.now(), gap: Math.round(gap), m: mode || null, b: boss || null, w: top, f: gapFloorMs(mode) });
+      if (hitGapRing.length > 400) hitGapRing.splice(0, hitGapRing.length - 400);
+      try { W.localStorage.setItem(HITGAP_KEY, JSON.stringify(hitGapRing)); } catch {}
+    }
+    gapPrevPress = t; gapWhy = null; gapWhyAt = t;
+  }
+  function hitGapReport() {
+    if (!hitGapRing.length) return '🔍 ยังไม่มีข้อมูล "ช่องว่างยาวระหว่างการตี" — เก็บเองตอนสู้บอสรอบถัดไป';
+    const tot = {}, cnt = {};
+    let lost = 0;
+    for (const r of hitGapRing) {
+      lost += Math.max(0, r.gap - (r.f || 900));
+      for (const s of (r.w || [])) {
+        const i = s.lastIndexOf(':'); if (i < 0) continue;
+        const k = s.slice(0, i), ms = +s.slice(i + 1);
+        if (!(ms > 0)) continue;
+        tot[k] = (tot[k] || 0) + ms; cnt[k] = (cnt[k] || 0) + 1;
+      }
+    }
+    const rows = Object.keys(tot).sort((a, b) => tot[b] - tot[a])
+      .map((k) => `  ${k.padEnd(16)} ${(tot[k] / 1000).toFixed(0).padStart(5)} วิ · ${cnt[k]} ครั้ง`);
+    const gaps = hitGapRing.map((r) => r.gap).sort((a, b) => a - b);
+    return `🔍 ช่องว่างยาวระหว่างการตี (เกิน ${GAP_LONG_MS / 1000} วิ) — ${hitGapRing.length} ครั้ง\n`
+      + `   กลาง ${gaps[gaps.length >> 1]}ms · ยาวสุด ${gaps[gaps.length - 1]}ms · เวลาที่เสียไปรวม ~${Math.round(lost / 1000)} วิ (≈ ตีได้อีก ${Math.round(lost / 900)} ครั้ง)\n`
+      + '   เวลาไปอยู่กับอะไร:\n' + (rows.length ? rows.join('\n') : '  (ยังไม่มีสาเหตุที่จับได้)');
   }
   const DMGATTR_KEY = 'tokpla_dmg_attrib';
   let dmgAttrRing = [];
@@ -2707,7 +2768,7 @@
       + grp((r) => r.m, '⚔️ ตามโหมดตี') + '\n\n'
       + grp(distBucket, '📏 ตามระยะประชิด (เฉพาะ melee)') + '\n\n'
       + grp((r) => (r.weak ? '✅ ตรงจุดอ่อน' : '❌ ไม่ตรงจุดอ่อน'), '🎯 เหยื่อจุดอ่อน (x1.5)') + '\n\n'
-      + grp((r) => (r.arm == null ? null : (r.arm === 'slow' ? 'ตี 900ms (ช้า)' : 'ตี 220ms (ถี่)')), '⏱️ ตามจังหวะตี melee — ถ้าเท่ากัน แปลว่าคลิกถี่ไม่ช่วย (ควรใช้ 900ms = ดูเป็นบอทน้อยลง)') + '\n\n'
+      + grp((r) => (r.arm == null ? null : (r.arm === 'slow' ? 'ตี 900ms (ช้า)' : 'ตี 220ms (ถี่)')), '⏱️ ตามจังหวะตี melee — ✅ v6.360 ปิดการทดลองแล้ว (ล็อก 900ms) · ข้อมูลนี้คือของเก่าที่ใช้ตัดสิน') + '\n\n'
       + grp((r) => (r.combo == null ? null : `คอมโบ ×${r.combo}`), '🔥 ตามคอมโบ (+5%/ขั้น เพดาน +30%)') + '\n\n'
       + grp((r) => (r.bait == null ? null : `เหยื่อขั้น ${r.bait}`), '🪱 ตามขั้นเหยื่อ') + '\n\n'
       + grp((r) => (r.boss || null), '👹 ตามตัวบอส');
@@ -2724,18 +2785,36 @@
   try { if (chabRing.length) chabFightNo = Math.max(...chabRing.map((b) => b.f || 0)) + 1; } catch {}
   const chabSave = () => { try { W.localStorage.setItem(CHAB_KEY, JSON.stringify(chabRing.slice(-400))); } catch {} };
   const chabFightsDone = () => new Set(chabRing.map((b) => b.f)).size;
+  // 🐛 v6.360 — **การทดลองนี้เก็บข้อมูลได้ 0 บล็อกจาก 4 ไฟต์** (อ่านสด `tokpla_charge_ab` = ว่างเปล่า)
+  //   ตัวกรองด้านล่างตัดทิ้งหมด (ส่วนใหญ่คือ `gap > act/2` เพราะบอสโหมด charge ทำให้ต้องหลบเยอะ)
+  //   ผลที่ตามมาแย่กว่าการไม่มีข้อมูล: `chabFightsDone()` ไม่มีวันถึง 6 ⇒ **สลับแขนไปเรื่อยๆ ตลอดกาล**
+  //   = ครึ่งหนึ่งของทุกไฟต์ charge ถูกเผาไปกับแขน "แตะสั้น" ที่ไม่เคยพิสูจน์ว่าดี
+  //   หลักฐานที่เข้ากัน: นางพญาบัวสาป 116 ชาร์จ = 32 dmg/ชาร์จ · มังกรน้ำแข็ง 28 ชาร์จ = 596 dmg/ชาร์จ (ต่าง 18 เท่า)
+  //   แก้ 2 ชั้น: ① จดสาเหตุที่ทิ้ง (จะได้รู้ว่าเก็บไม่ได้เพราะอะไร) ② ทิ้งติดกันหลายครั้ง = **หยุดทดลอง ใช้ชาร์จเต็ม**
+  let chabDrop = {}, chabDropRun = 0;
+  const CHAB_DROP_STOP = 8;                              // ทิ้งติดกันเท่านี้ = การทดลองนี้เก็บไม่ได้จริง เลิกสลับ
+  const chabDropped = (why) => { chabDrop[why] = (chabDrop[why] || 0) + 1; chabDropRun++; };
   function chabCloseBlock() {
     if (!chabBlock) return;
     const b = chabBlock; chabBlock = null;
     const dt = now() - b.last; if (dt <= GAB_TICK_MAX) b.act += dt; else b.gap += dt;
     const d1 = readBossContribution().dmg;
-    if (b.d0 == null || d1 == null) return;              // อ่าน "⚔️ ของเรา" ไม่ได้ = ทิ้งบล็อก (ข้อมูลผิดแย่กว่าข้อมูลน้อย)
+    if (b.d0 == null || d1 == null) return chabDropped('อ่านดาเมจไม่ได้');   // ข้อมูลผิดแย่กว่าข้อมูลน้อย
     const d = d1 - b.d0;
-    if (d < 0 || d >= 200000) return;
-    if (b.act < 5000) return;                            // ตีจริงสั้นเกิน เทียบไม่แฟร์
-    if (b.gap > b.act * 0.5) return;                     // หายไปนานกว่าครึ่ง (ตาย/หลบ/บอสหาย) = ทิ้ง
+    if (d < 0 || d >= 200000) return chabDropped('ดาเมจผิดช่วง');
+    if (b.act < 5000) return chabDropped('ช่วงสั้นเกิน');                   // ตีจริงสั้นเกิน เทียบไม่แฟร์
+    if (b.gap > b.act * 0.5) return chabDropped('หลบ/หายเกินครึ่ง');        // ตาย/หลบ/บอสหาย = ทิ้ง
+    chabDropRun = 0;
     chabRing.push({ m: b.m, d, ms: Math.round(b.act), p: b.p, f: b.f });
     chabSave();
+  }
+  // การทดลองยังเก็บข้อมูลได้อยู่ไหม — ถ้าทิ้งรวดเดียวหลายบล็อก แปลว่าวิธีวัดไม่เข้ากับสนามจริง
+  const chabStalled = () => chabDropRun >= CHAB_DROP_STOP;
+  function chabDropReport() {
+    const ks = Object.keys(chabDrop);
+    if (!ks.length) return '';
+    return '\n⚠️ บล็อกที่ถูกทิ้ง: ' + ks.map((k) => `${k} ${chabDrop[k]}`).join(' · ')
+      + (chabStalled() ? `\n⛔ ทิ้งติดกัน ${chabDropRun} บล็อก → หยุดสลับแขน ใช้ "ชาร์จเต็ม" อย่างเดียว` : '');
   }
   function chabStats(m) {
     const a = chabRing.filter((b) => b.m === m);
@@ -2750,9 +2829,13 @@
   function chargeABReport() {
     const f = chabStats('full'), t = chabStats('tap');
     const line = (nm, s) => `${nm}: ${s.n} ช่วง · ดาเมจ ${Math.round(s.d).toLocaleString()} · ${Math.round(s.ms / 1000)} วิ · ${s.dps.toFixed(1)} dmg/วิ · กด ${s.p}`;
-    return `⚡ A/B ชาร์จ (${chabFightsDone()} ไฟต์)\n${line('ชาร์จเต็ม', f)}\n${line('แตะสั้น', t)}\n→ ตอนนี้นำ: ${chargeABWinner() === 'tap' ? 'แตะสั้น' : 'ชาร์จเต็ม'}`;
+    return `⚡ A/B ชาร์จ (${chabFightsDone()} ไฟต์)\n${line('ชาร์จเต็ม', f)}\n${line('แตะสั้น', t)}`
+      + `\n→ ตอนนี้ใช้: ${chabStalled() ? 'ชาร์จเต็ม (หยุดทดลองแล้ว)' : chargeABWinner() === 'tap' ? 'แตะสั้น' : 'ชาร์จเต็ม'}`
+      + chabDropReport();   // 🐛 v6.360: ถ้าเก็บไม่ได้เลย ต้องเห็นจากรายงาน ไม่ใช่เงียบจนคิดว่ายังวัดอยู่
   }
   function chargeArmNow(fightT0) {
+    // 🐛 v6.360: การทดลองที่เก็บข้อมูลไม่ได้ ต้องหยุด ไม่ใช่วนสลับตลอดกาล (ครึ่งไฟต์ตกกับแขนที่ไม่รู้ว่าดีไหม)
+    if (chabStalled()) { chabCloseBlock(); return 'full'; }
     if (chabFightsDone() >= 6) return chargeABWinner();  // เก็บครบแล้ว — ใช้ผู้ชนะถาวร ไม่สลับอีก
     const idx = Math.floor((now() - fightT0) / 15000);
     if (!chabBlock || chabBlock.idx !== idx) {
@@ -4414,6 +4497,9 @@
     let tapWait = null;               // { at, slot } — การกดที่รอผลตอบกลับ
     const tapFb = { perfect: 0, good: 0, miss: 0, none: 0 };
     let comboMax = 0, stunSkips = 0;
+    // 🔍 v6.360: เริ่มไฟต์ใหม่ = ล้างตัวจับ "เวลาที่หายไป" (ไม่งั้นช่องว่างข้ามไฟต์ถูกนับเป็นก้อนเดียวยาวเป็นนาที)
+    gapWhy = null; gapWhyAt = now(); gapPrevPress = 0;
+    const hitGapAtStart = hitGapRing.length;
     // เก็บผลของการกดครั้งก่อน แล้วให้คะแนนช่องที่กด (perfect +2 · good +1 · miss −1)
     const beatSettle = () => {
       if (!tapWait || now() - tapWait.at < 260) return;   // รอ HUD เด้งก่อน (เกมเด้งเร็วกว่านี้ไม่ทัน)
@@ -4513,7 +4599,7 @@
                 bait: snapBait, weak: (snapWeak || []).includes(snapBait) ? 1 : 0,
                 combo: lastComboSeen, ph: (rb && rb.phase) || null,
                 gap: Math.round(now() - lastAttribAt), boss: snapBossName || '',
-                arm: bossHitMode === 'melee' ? meleeGapArm : null,   // ⏱️ v6.339: จังหวะตีตอนนั้น (fast 220ms / slow 900ms)
+                arm: bossHitMode === 'melee' ? meleeGapArm : null,   // ⏱️ v6.339 (v6.360: null เสมอ — ปิดการทดลอง ล็อก 900ms แล้ว)
               });
               lastAttribAt = now();
             }
@@ -4659,7 +4745,7 @@
           // 🧪 v6.234: ช่วง 'spam'/'nogreen' ของ A/B ต้องกดตามกลยุทธ์ตรงนี้ด้วย ไม่งั้นช่วงหลบ AoE จะกลายเป็น "รอแดง" ทุกแขน = เจือจางผลวัด
           if (gd && gd.ang != null && (abMode === 'spam' || (abMode === 'nogreen' && gabNoGreenOk(gd)) || gaugeReady(gd))) {
             const orbd = bossHitOrb();
-            if (orbd && !orbd.disabled && now() - lastPress > 60) { if (gabBlock) gabBlock.p++; lastPress = now(); lastBossPressAt = Date.now(); fireClick(orbd); gaugePresses++; }
+            if (orbd && !orbd.disabled && now() - lastPress > 60) { if (gabBlock) gabBlock.p++; lastPress = now(); lastBossPressAt = Date.now(); fireClick(orbd); gaugePresses++; gapNotePress(bossHitMode, snapBossName); }
           }
           // ⚔️ v6.336 — **โหมด melee/charge ไม่เคยตีระหว่างหลบเลย** (ช่องโหว่ที่ v6.161 มองข้าม)
           //   v6.161 ผูก "ตีระหว่างหลบ" ไว้กับ `readGaugeWheel()` ซึ่งมีเฉพาะโหมด cast → melee/charge ตกหล่นทั้งหมด
@@ -4671,11 +4757,12 @@
           else if (!gd && (bossHitMode === 'melee' || bossHitMode === 'charge')) {
             const orbd = bossHitOrb();
             const okHit = bossHitMode === 'charge' || !bossHudMeta().tooFar;
-            if (orbd && !orbd.disabled && okHit && !bossDisabledNow() && now() - lastPress > (bossHitMode === 'melee' ? meleeGapMs(fightT0) : 220)) {
+            if (orbd && !orbd.disabled && okHit && !bossDisabledNow() && now() - lastPress > (bossHitMode === 'melee' ? meleeGapMs() : 220)) {
               lastPress = now(); lastBossPressAt = Date.now(); fireClick(orbd); hits++; dodgeHits++;
+              gapNotePress(bossHitMode, snapBossName);   // 🔍 v6.360
               if (gabBlock) gabBlock.p++;
-            }
-          }
+            } else gapMark(!orbd ? 'ไม่มีปุ่มตี' : orbd.disabled ? 'ปุ่มคูลดาวน์' : !okHit ? 'ไกลไป(ตอนหลบ)' : bossDisabledNow() ? 'สตัน' : 'รอจังหวะ');
+          } else gapMark('หลบ AoE');
           await sleep(80); continue;   // react ไว กว่าจังหวะตี
         }
         if (bossDodging) { bossReleaseAll(); bossDodging = false; }   // ถึงที่ปลอดภัยแล้ว → ปล่อยปุ่ม
@@ -4715,6 +4802,7 @@
         // 🦘 v6.165: Space = "กระโดด" คีย์ทางการของเกม (ตอนสู้บอสไม่ได้ตกปลา → Space จึงเป็นกระโดด ไม่ชนกับเกจ)
         //   ยิงคีย์ตรงเสถียรกว่าไล่หาปุ่มใน DOM · คงปุ่ม/tryJump ไว้เป็นสำรองซ้อน 2 ชั้น
         bossFireKey('keydown', 'Space', 32); bossFireKey('keyup', 'Space', 32); dodges++;
+        gapMark('บอสหมุน(กระโดด)');   // 🔍 v6.360
         logInfo('🦘 บอสหมุน — กระโดดหลบ (Space)');
         const jump = qBtn('กระโดด');
         if (jump && !jump.disabled) fireClick(jump);
@@ -4786,10 +4874,11 @@
             //   ทำไมต้องเชื่อป้ายเกมมากกว่าระยะที่เราคำนวณ: จาก 268 ตัวอย่างจริง เกมขึ้น "ไกลไป" ตอนห่าง 4px
             //   และเงียบตอนห่าง 141px → สูตร `ครึ่งตัว+range` ของเราไม่ตรงกับกติกาเกม (ใช้ตัดสินว่าจะเดินต่อไหมพอ)
             //   เดิม `continue` ทิ้งการตีทั้งช่วงเดิน = เสียเปล่าอีกก้อนใหญ่ (meleeApproaches หลักร้อยต่อไฟต์)
-            if (!meta.tooFar && orb && !orb.disabled && !bossDisabledNow() && now() - lastPress > meleeGapMs(fightT0)) {
+            if (!meta.tooFar && orb && !orb.disabled && !bossDisabledNow() && now() - lastPress > meleeGapMs()) {
               lastPress = now(); lastBossPressAt = Date.now(); fireClick(orb); hits++; walkHits++;
+              gapNotePress('melee', snapBossName);   // 🔍 v6.360
               if (gabBlock) gabBlock.p++;
-            }
+            } else gapMark(meta.tooFar ? 'เดินเข้าหา(ไกลไป)' : !orb ? 'ไม่มีปุ่มตี' : orb.disabled ? 'ปุ่มคูลดาวน์' : bossDisabledNow() ? 'สตัน' : 'รอจังหวะ');
             await sleep(120); continue;   // เดินต่อ (ตีไปแล้วถ้าอยู่ในระยะ)
           }
           bossReleaseAll();   // ถึงระยะแล้ว = หยุดเดิน (ไม่งั้นเดินทะลุเลยบอสไป)
@@ -4799,8 +4888,9 @@
           // 🥶 v6.330: อย่าเริ่มชาร์จตอนโดนสตัน/แช่แข็ง — เกม reject การกดช่วงนั้น (บทเรียนเกจ v6.229)
           //   ชาร์จ 1 ครั้งกิน ~2 วิ → กดตอนสตัน = ทิ้งดาเมจ 1 จังหวะเต็มๆ · หลักฐาน 16:35: 116 กดได้แค่ 3,700 (32/กด
           //   ทั้งที่ไฟต์อื่นบอสเดียวกันได้ 109-596/กด) — ส่วนหนึ่งคือกดช่วงบอสปล่อย AoE/เราสตัน
-          if (bossDisabledNow()) { stunSkips++; await sleep(150); continue; }
+          if (bossDisabledNow()) { stunSkips++; gapMark('สตัน'); await sleep(150); continue; }
           lastPress = now(); lastBossPressAt = Date.now();
+          gapNotePress('charge', snapBossName);   // 🔍 v6.360 (นับตอนเริ่มกด — ตัวชาร์จเองกินเวลาคงที่)
           // ⚡ v6.329 (ผู้ใช้: "มันกดได้เร็วกว่านี้") — วัดจริงก่อนล็อก: สลับบล็อก "ชาร์จเต็ม 1.8 วิ" vs "แตะสั้น 250ms"
           const arm = chargeArmNow(fightT0 || now());
           orbDown(orb); await sleep(arm === 'tap' ? 250 : BOSS_CHARGE_MS + 150); orbUp(orb);
@@ -4832,24 +4922,26 @@
           else {
             if (gabBlock) gabBlock.p++;
             lastPress = now(); lastBossPressAt = Date.now(); fireClick(orb); gaugePresses++;
+            gapNotePress(bossHitMode, snapBossName);   // 🔍 v6.360: โหมด cast ก็ต้องนับ ไม่งั้นไฟต์ cast ไม่มีข้อมูลเลย
             if (!tapWait) tapWait = { at: now(), slot: (beatStartedAt ? (Date.now() - beatStartedAt) : Date.now()) % BEAT_MS };
           }
         }
         await sleep(30);   // ถี่พอจับเข็ม
-      // ⏱️ v6.339: จังหวะตีหลัก (melee/ไม่มีเกจ) มาจาก A/B — สลับ 220ms ↔ 900ms ทุก 15 วิ เพื่อวัดว่าคลิกเร็วช่วยจริงไหม
-      } else if (orb && !orb.disabled && now() - lastEngage > (bossHitMode === 'melee' ? meleeGapMs(fightT0) : 220)) {
+      // ⏱️ v6.360: จังหวะตีหลัก (melee/ไม่มีเกจ) = 900ms คงที่ (ปิด A/B แล้ว — ดูเหตุผลที่ MELEE_GAP_MS)
+      } else if (orb && !orb.disabled && now() - lastEngage > (bossHitMode === 'melee' ? meleeGapMs() : 220)) {
         // 🐛 v6.277: สาขานี้ "ไม่มีเกจ + ปุ่มกดได้ = เริ่มตีครั้งใหม่" เดิม **ไม่เช็คว่าอยู่ในถ้ำหรือเปล่า**
         //   หลักฐาน: สถิติไฟต์ 16:30 บันทึก `map: village · hits: 107 · outcome: noshow` และรอบ 13:30 `hits: 498`
         //   = บอทยืนกดปุ่มนอกถ้ำหลายร้อยครั้งระหว่างรอบอส · `bossHitOrb()` นอกถ้ำไปโดนปุ่มอื่น (ปุ่มตกปลา)
         //   ผลเสีย 2 ชั้น: ① กดมั่วในเมือง ② สถิติ `hits` เฟ้อจนเทียบข้ามไฟต์ไม่ได้เลย
         //   → ตีได้เฉพาะตอนอยู่ในถ้ำบอสจริงเท่านั้น
-        if (!isBossMap(bossMapId())) { await sleep(200); continue; }
-        if (bossDisabledNow()) { stunSkips++; await sleep(120); continue; }
+        if (!isBossMap(bossMapId())) { gapMark('อยู่นอกถ้ำ'); await sleep(200); continue; }
+        if (bossDisabledNow()) { stunSkips++; gapMark('สตัน'); await sleep(120); continue; }
         lastEngage = now(); lastBossPressAt = Date.now(); fireClick(orb); hits++;   // ไม่มีเกจ + ปุ่มกดได้ = เริ่มตีครั้งใหม่ (คลิก orb ตีบอส)
+        gapNotePress(bossHitMode, snapBossName);   // 🔍 v6.360
         if (gabBlock) gabBlock.p++;                   // v6.235: นับด้วย ไม่งั้นคอลัมน์ "กด/วิ" ต่ำกว่าจริง
         if (!tapWait) tapWait = { at: now(), slot: (beatStartedAt ? (Date.now() - beatStartedAt) : Date.now()) % BEAT_MS };
         await sleep(60);
-      } else { await sleep(120); }
+      } else { gapMark(!orb ? 'ไม่มีปุ่มตี' : orb.disabled ? 'ปุ่มคูลดาวน์' : 'รอจังหวะ'); await sleep(120); }
     }
     // 🧪 v6.234: จบไฟต์ A/B → ปิดบล็อกสุดท้าย + นับไฟต์ · ครบตามที่ตั้งแล้วปิดเอง พร้อมคำตัดสิน
     if (isOn('gaugeAB')) {
@@ -4902,6 +4994,18 @@
       bossEvent(`🥁 จังหวะ: เป๊ะ ${tapFb.perfect} · ดี ${tapFb.good} · หลุด ${tapFb.miss} (${Math.round((tapFb.perfect + tapFb.good) / tot * 100)}% เข้าจังหวะ) · คอมโบสูงสุด ${comboMax} · ${beatStartedAt ? 'บีตจาก startedAt' : beatLockSlot != null ? `ล็อกเองที่ ${beatLockSlot}ms` : 'ยังล็อกไม่ได้'}${stunSkips ? ` · ข้ามตอนสตัน ${stunSkips}` : ''}`);
     } else if (bossSeen) {
       bossEvent(`🥁 ไฟต์นี้ไม่มีข้อความจังหวะเลย (กด ${gaugePresses} ครั้ง) → บอสตัวนี้น่าจะปิดบีต (beatOn=false) หรืออ่านข้อความไม่เจอ${stunSkips ? ` · ข้ามตอนสตัน ${stunSkips}` : ''}`);
+    }
+    // 🔍 v6.360: รายงาน "เวลาที่หายไป" ของไฟต์นี้ — ตัวชี้ว่าจะไปแก้ตรงไหนต่อ (หลบ? เดิน? คูลดาวน์?)
+    if (hitGapRing.length > hitGapAtStart) {
+      const mine = hitGapRing.slice(hitGapAtStart);
+      const tot = {};
+      let lost = 0;
+      for (const r of mine) {
+        lost += Math.max(0, r.gap - (r.f || 900));
+        for (const s of (r.w || [])) { const i = s.lastIndexOf(':'); if (i > 0) tot[s.slice(0, i)] = (tot[s.slice(0, i)] || 0) + (+s.slice(i + 1) || 0); }
+      }
+      const top = Object.keys(tot).sort((a, b) => tot[b] - tot[a]).slice(0, 4).map((k) => `${k} ${(tot[k] / 1000).toFixed(0)}วิ`);
+      bossEvent(`🔍 ช่องว่างยาว ${mine.length} ครั้ง · เสียเวลารวม ~${Math.round(lost / 1000)} วิ (≈ ตีได้อีก ${Math.round(lost / 900)} ครั้ง) · ${top.join(' · ') || 'ไม่รู้สาเหตุ'}`);
     }
     // ❤️ v6.270: รายงานยาฟื้นเลือด — ไฟต์แรกจะบอกเราว่ามีปุ่มใช้ด่วนไหม และมียาในกระเป๋าจริงไหม
     if (potionUses || potionFails) {
@@ -12155,7 +12259,7 @@ ${esc(reason)}
       da.textContent = '📊 ดาเมจแยกตามบริบท';
       da.style.cssText = dt.style.cssText;
       da.title = 'เทียบดาเมจ/วินาที ตามระยะประชิด · เหยื่อจุดอ่อน · คอมโบ · โหมดตี — ใช้ตัดสินว่าปรับอะไรแล้วแรงขึ้นจริง';
-      da.addEventListener('click', () => showTextModal('📊 ดาเมจแยกตามบริบท', dmgAttribReport()));
+      da.addEventListener('click', () => showTextModal('📊 ดาเมจแยกตามบริบท', dmgAttribReport() + '\n\n' + hitGapReport()));
       panel.appendChild(da);
     }
     // 🔬 v6.238: ถอด "โหมดวัดเกจ" ออก เหลือแค่ปุ่มดูผลที่วัดไว้แล้ว (ถ้ามีข้อมูลเก่า)
