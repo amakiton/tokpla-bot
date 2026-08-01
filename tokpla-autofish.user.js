@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.372
+// @version      6.373
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.372';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.373';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -8041,7 +8041,10 @@
       let n;
       while ((n = tw.nextNode())) {
         if (n.parentElement && n.parentElement.closest('[data-tkbot]')) continue;   // v6.181: กฎเหล็ก #7 — กันอ่านเลเวลจากข้อความในแผงบอทเอง
-        const m = /นักตกปลา\s*Lv\.?\s*(\d+)/.exec(n.textContent || '');
+        // 🐛 v6.373: ยอมให้มีข้อความคั่นกลางได้ — ของจริงคือ "นักตกปลาแห่ง Fishbone CastLv.78"
+        //   (regex เดิมบังคับติดกัน จึงอ่านจากแผงโปรไฟล์ไม่ออก · ยืนยันด้วย /xpprobe 2/8/69)
+        //   `[^\d]{0,40}?` = ห้ามข้ามตัวเลขอื่น + ขี้เกียจที่สุด ⇒ ได้ Lv. ตัวที่ใกล้คำว่า "นักตกปลา" ที่สุด
+        const m = /นักตกปลา[^\d]{0,40}?Lv\.?\s*(\d+)/.exec(n.textContent || '');
         if (m) return (lastKnownLevel = +m[1]);
       }
     } catch {}
@@ -8821,12 +8824,22 @@
   function readXpBar() {
     try {
       const out = {};
-      const lv = gameTextMatch(/เลเวลนักตกปลา\s*Lv\.?\s*(\d+)/) || gameTextMatch(/นักตกปลา\s*Lv\.?\s*(\d+)/);
-      if (lv) out.lv = +lv[1];
       const cm = gameTextMatch(/([\d,]+)\s*\/\s*([\d,]+)\s*XP/);
       if (cm) { out.cur = +cm[1].replace(/,/g, ''); out.max = +cm[2].replace(/,/g, ''); }
       const rm = gameTextMatch(/อีก\s*([\d,]+)\s*XP\s*(?:→|->)?\s*(?:Lv\.?|เลเวล)\s*(\d+)/);
       if (rm) { out.remain = +rm[1].replace(/,/g, ''); out.next = +rm[2]; }
+      // 🐛 v6.373 — **เลเวลอ่านไม่ออกด้วย regex เดิม** (ตรวจสดด้วย /xpprobe 2/8/69) ⇒ `xpSampleTick` ไม่เคยจดเลย
+      //   ข้อความจริงของเกมมีคำคั่นกลาง regex เดิมจึงไม่แมตช์:
+      //     "👦 หวังลิน 👑นักตกปลาแห่ง Fishbone Cast**Lv.78**"   ← เดิมบังคับ `นักตกปลา` ติดกับ `Lv.`
+      //     "เลเวลนักตกปลา**อีก 2,559 XP** → Lv.79"              ← ตามด้วย "อีก" ไม่ใช่ "Lv."
+      //   ① วิธีที่แน่นอนที่สุด: เกมบอก "→ Lv.79" อยู่แล้ว ⇒ เลเวลปัจจุบัน = 79 − 1 (ตรงกับ Lv.78 ที่เห็นบนจอ)
+      //   ② สำรอง: ยอมให้มีข้อความคั่นระหว่าง "นักตกปลา" กับ "Lv.N" ได้ไม่เกิน 40 ตัวอักษร
+      //   ⚠️ ไม่อ่านจาก `Lv.NN` ลอย ๆ — บนจอมี "Lv.80" (ขั้นถัดไป) ปนอยู่ด้วย จะหยิบผิดตัว
+      if (out.next > 1) out.lv = out.next - 1;
+      if (out.lv == null) {
+        const lv = gameTextMatch(/นักตกปลา[^\d]{0,40}?Lv\.?\s*(\d+)/);
+        if (lv) out.lv = +lv[1];
+      }
       return (out.lv != null || out.cur != null || out.remain != null) ? out : null;
     } catch { return null; }
   }
@@ -8857,6 +8870,7 @@
   const loadXpHist = () => { try { const a = JSON.parse(W.localStorage.getItem(XP_HIST_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch { return []; } };
   function xpSampleTick() {
     const r = readXpBar();
+    // v6.373: ต้องมี cur เป็นหลัก · lv มาจาก next−1 ได้เสมอเมื่ออ่านบรรทัด "อีก N XP → Lv.X" ได้
     if (!r || r.cur == null || r.lv == null) return;        // อ่านไม่ครบ = ไม่จด (ครึ่ง ๆ กลาง ๆ ทำสถิติเพี้ยน)
     try {
       const h = loadXpHist();
