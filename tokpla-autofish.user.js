@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.366
+// @version      6.367
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.366';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.367';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1356,6 +1356,7 @@
     '🎣 /gear - คัน/ทุ่นที่ใส่อยู่ให้โบนัสอะไร + ขั้นถัดไปติดเลเวลเท่าไร',
     '🔍 /gap - เวลาที่หายไประหว่างตีบอส ไปอยู่กับอะไร (หลบ/เดิน/คูลดาวน์/สตัน)',
     '⏱️ /bosstime - นาฬิกาบอส: ยึดเวลาจากอะไร · ตารางที่วัดเอง · คลาดจากจริงกี่วินาที',
+    '🪱 /baitbtn - ส่องแถวปุ่มเหยื่อ (ในถ้ำบอสเกมโชว์ 2 ปุ่ม = จุดอ่อนสองขั้น)',
     '🔎 /probe &lt;ชื่อปุ่ม&gt; - เปิดแผงในเกมแล้วอ่านโครงให้ดู (เช่น /probe แลกเศษบอส)',
     '🌈 /mythic - สถานะล่าปลาเทพ · /mythic on|off · /mythic map ชื่อแมพ|auto - ล็อกแมพล่า',
     '🌍 /chat - เปิด/ปิดคุยแชทโลกผ่าน TG (พิมพ์ข้อความมาได้เลย)',
@@ -1426,6 +1427,8 @@
         reply(`<pre>${esc(hitGapReport())}</pre>`); break;
       case 'bosstime': case 'เวลาบอส':   // ⏱️ v6.362: นาฬิกาบอส — ยึดจากอะไร · ตารางที่วัดเอง · ความแม่นจริง
         reply(`<pre>${esc(bossTimeReport())}</pre>`); break;
+      case 'baitbtn': case 'ปุ่มเหยื่อ':   // 🪱 v6.367: ส่องแถวปุ่มเหยื่อตอนนี้ (ในถ้ำบอสมี 2 ปุ่ม)
+        reply(`<pre>${esc(baitButtonsDiag())}</pre>`); break;
       case 'on': if (!enabled) toggle(); reply('▶️ เปิดบอทแล้ว'); break;
       case 'off': case 'stop':
         if (!enabled) { reply('บอทปิดอยู่แล้ว'); break; }
@@ -4435,6 +4438,7 @@
     //   อาการที่เห็นจริง: `สู้บอส(ในถ้ำ)ล้มเหลว` แล้ววน "เจอบอสในถ้ำ — เข้าตี" ใหม่ไม่จบ = **ไม่ได้ตีบอสเลยทั้งรอบ**
     //   ⚠️ `node --check` จับไม่ได้ (ถูกไวยากรณ์) และเทสต์ที่ตัดฟังก์ชันมา eval ก็ไม่เจอ เพราะไม่ได้รันลำดับจริง
     let snapWeak = [], snapWeakNames = [], snapBait = null, snapBossName = null, snapHpMax = null, snapHpMaxEnd = null;
+    let baitDiagSaid = false;   // 🔴 v6.367: ส่องแถวปุ่มเหยื่อครั้งเดียวต่อไฟต์ (ไม่สแปม)
     const prepBossGear = async () => {
       if (gearPrepped) return;
       gearPrepped = true;
@@ -5084,6 +5088,9 @@
           learnBossWeak(snapBossName || meta.name, snapWeak, snapWeakNames);
         }
         if (snapBait == null) snapBait = currentBait()?.tier ?? null;
+        // 🔴 v6.367: ส่องแถวปุ่มเหยื่อครั้งเดียวต่อไฟต์ — ต้องรู้ให้ได้ว่าเกมชี้ "อันที่ใส่อยู่" ด้วยอะไร
+        //   ก่อนจะไปแก้ currentBait() (ห้ามเดาโครง DOM — บทเรียนซ้ำ ๆ ของโปรเจกต์นี้)
+        if (!baitDiagSaid) { baitDiagSaid = true; try { bossEvent(baitButtonsDiag()); } catch {} }
         if (snapBossName == null && meta.name) snapBossName = meta.name;
         // 📊 v6.265: HP สูงสุดของบอส **ขยายตามจำนวนคนที่เข้าร่วม** (รอบ 10:30 วัดได้ 114k→152k→190k→228k→266k→304k→342k)
         //   เดิมเก็บเฟรมแรกค่าเดียว → เอาไปหารกับดาเมจได้ % ที่เทียบข้ามไฟต์ไม่ได้เลย · เก็บทั้งค่าเริ่มและค่าสูงสุด
@@ -7427,10 +7434,45 @@
     return m ? +m[1] : null;
   }
   // หาปุ่มเลือกเหยื่อ (aria-label หลัก · สำรอง: ปุ่มที่ aria-label/text มีคำว่า "เหยื่อ")
+  // 🔴 v6.367 — **ตอนสู้บอส เกมโชว์ปุ่มเหยื่อ 2 ปุ่ม ไม่ใช่ปุ่มเดียว** (ผู้ใช้ส่งภาพยืนยัน 2/8/69)
+  //   แถวปุ่มในถ้ำบอส: [เบ็ด Lv.9] [เหยื่อ ×154] [เหยื่อ ×102] [ทุ่น ขั้น9] + ยา
+  //   สองปุ่มนั้นคือ **จุดอ่อนทั้งสองขั้นของบอสตัวนั้น** (ในภาพ กุ้ง+สปินเนอร์ = ขั้น 4+7 ตรงกับนางพญาบัวสาป)
+  //   ⚠️ ของเดิม `find()` คืน **ปุ่มแรกที่เจอ** ⇒ ถ้าอันที่ใส่อยู่คือปุ่มที่สอง `currentBait()` จะรายงานขั้นผิด
+  //      ⇒ บอทอาจสรุปว่า "เหยื่อถูกแล้ว" ทั้งที่ไม่ถูก (หรือกลับกัน) — น่าจะเป็นต้นเหตุที่ซ่อนอยู่มานาน
+  //   ยังไม่แก้การเลือกปุ่มตรงนี้ เพราะ **ยังไม่รู้ว่าเกมทำเครื่องหมาย "อันที่ใส่อยู่" ยังไง**
+  //   (เดาโครง DOM = ผิดซ้ำรอยเดิม) → ใส่ตัวส่อง `baitButtonsDiag()` เก็บของจริงรอบบอสหน้าก่อน
+  function baitButtons() {
+    const out = [];
+    for (const b of document.querySelectorAll('button')) {
+      if (isBotUI(b) || !b.offsetParent) continue;
+      const a = b.getAttribute('aria-label') || '';
+      if (/เหยื่อ/.test(a)) out.push(b);
+    }
+    return out;
+  }
   function baitButton() {
-    return qBtn('เลือกเหยื่อ')
-      || [...document.querySelectorAll('button')].find((b) => /เหยื่อ/.test(b.getAttribute('aria-label') || ''))
-      || null;
+    return qBtn('เลือกเหยื่อ') || baitButtons()[0] || null;
+  }
+  // ส่องปุ่มเหยื่อทั้งหมด — เรียกครั้งเดียวต่อไฟต์ (ดูว่าเกมบอก "อันที่ใส่อยู่" ด้วยอะไร: class/ring/aria-pressed/ข้อความ)
+  function baitButtonsDiag() {
+    try {
+      const bs = baitButtons();
+      if (bs.length < 2) return `🪱 ปุ่มเหยื่อบนจอ: ${bs.length} ปุ่ม (ปกติ)`;
+      const rows = bs.map((b, i) => {
+        const a = b.getAttribute('aria-label') || '';
+        const txt = (b.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+        const cls = String(b.className || '').slice(0, 70);
+        const st = b.getAttribute('style') || '';
+        const marks = [];
+        for (const k of ['aria-pressed', 'aria-selected', 'aria-current', 'data-active', 'data-selected']) {
+          const v = b.getAttribute(k); if (v != null) marks.push(`${k}=${v}`);
+        }
+        let ring = '';
+        try { const cs = W.getComputedStyle(b); ring = `border:${cs.borderColor}/${cs.borderWidth} outline:${cs.outlineColor}`; } catch {}
+        return `  [${i}] aria="${a}" · ข้อความ="${txt}" · ขั้นที่อ่านได้=${tierFromName(txt) ?? '?'}\n      class="${cls}"${marks.length ? ` · ${marks.join(' ')}` : ''}\n      ${ring}${st ? ` · style="${st.slice(0, 60)}"` : ''}`;
+      });
+      return `🪱 **เจอปุ่มเหยื่อ ${bs.length} ปุ่มพร้อมกัน** (ตอนสู้บอสเกมแจกจุดอ่อนมาให้เลือก)\n${rows.join('\n')}`;
+    } catch (e) { return '🪱 ส่องปุ่มเหยื่อไม่สำเร็จ: ' + e; }
   }
   // จับคู่ชื่อเหยื่อในข้อความ → ขั้น (เลือกชื่อ "ยาวสุด" ก่อน เพราะ "มัดไส้เดือนอ้วน"⊃"ไส้เดือน")
   //   v6.312: รวมชื่อย่อที่การ์ดในกระเป๋าใช้ด้วย ("มัดอ้วน ×124" / "ปลารุ้ง ×44 (ใช้อยู่)")
