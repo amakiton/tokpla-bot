@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.383
+// @version      6.384
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.383';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.384';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3703,15 +3703,28 @@
   //   → `bossHuntDue` ปฏิเสธการออกเดินทางจนถึง 20:00 → ออกตอนบอสเกิดพอดี → ถึงถ้ำสาย ~2 นาที
   //   (เกิดเฉพาะคู่รอบที่ห่างกัน < ความยาวหน้าต่าง — ในตารางจริงคือ 19:30 → 20:00 ซึ่งมีทุกวัน)
   //   แก้: เหลือ ≤ lead ถึงรอบถัดไป = ถือว่าล็อกเก่าหมดอายุ ให้เตรียมตัว/ออกเดินทางได้ตามปกติ
-  function bossRoundDone() {
+  // 🔴 v6.384 — **ล็อกหมดอายุที่ `bossLeadMin` เท่านั้น ⇒ `bossOnlyLeadMin` (หยุดฟาร์มก่อน N นาที) ใช้ไม่ได้จริง**
+  //   หลักฐานสด รอบ 00:11 (3/8): ตั้ง bossOnlyLeadMin = 5 ⇒ ควรหยุดฟาร์มตั้งแต่ 00:05:32
+  //     00:07:17 💰 ขายปลาที่เหลือก่อนซื้อเหยื่อ... / เปิดกระเป๋าเช็คของ...   ← ยังฟาร์มอยู่!
+  //     00:08:01 ⚠️ ยกเลิกก่อนออกเดินทาง — เทสต์เดินตัวละครไม่ผ่าน (กระเป๋าเปิดค้าง เดินไม่ได้)
+  //     00:08:47 🚶 ออกเดินทาง                                             ← **ช้าไป 46 วินาที**
+  //   ต้นตอ: ทั้ง `bossSoloAutoNow()` และ `bossSoloMode()` ปฏิเสธเมื่อ `bossRoundDone()` เป็นจริง
+  //     แต่ล็อกหมดอายุเมื่อเหลือ ≤ **bossLeadMin (3)** ⇒ โหมดหยุดฟาร์มเปิดได้เร็วสุดที่ 3 นาที ไม่ใช่ 5
+  //   ⇒ **ค่าที่ผู้ใช้ตั้งไว้ถูกกลืนทุกรอบที่รอบก่อนหน้าจบด้วยล็อก (คือเกือบทุกรอบ)**
+  //   ✅ ให้ผู้เรียกบอกได้ว่า "ฉันเตรียมตัวก่อนกี่นาที" — ล็อกควรหมดอายุตามความต้องการของงานนั้น
+  //   ⚠️ ไม่ทำให้ออกเดินทางเร็วขึ้น: `bossHuntDue` ยังกั้นด้วย `min <= bossLeadMin` แยกต่างหากเหมือนเดิม
+  function bossRoundDone(leadMinOverride) {
     const raw = bossRoundDoneRaw();
     if (!raw) return '';
     try {
       const b = bossRoundBounds();
-      if (b.next && b.next - Date.now() <= clamp(cfg.bossLeadMin, 1, 60) * 60000) return '';
+      const lead = clamp(leadMinOverride != null ? leadMinOverride : cfg.bossLeadMin, 1, 60);
+      if (b.next && b.next - Date.now() <= lead * 60000) return '';
     } catch {}
     return raw;
   }
+  // เตรียมตัวก่อนบอสกี่นาที (โหมดหยุดฟาร์ม) — ต้อง ≥ เวลาเดินทางเสมอ ไม่งั้นโหมดจะเปิดหลังออกเดินทางไปแล้ว
+  const bossSoloLeadMin = () => Math.max(clamp(cfg.bossOnlyLeadMin || 5, 1, 60), clamp(cfg.bossLeadMin, 1, 60));
   // ⏳ v6.357 — **ห้ามทะลุประตูถ้ำก่อนเวลาเกิดของรอบใหม่** (ผู้ใช้เจอเอง · log ยืนยันเป๊ะ)
   //   หลักฐานสด 1/8: `19:59:08 อยู่ naga_vortex บอสมา=false` → `20:00:25 แมพเปลี่ยนเป็น boss_cave` → เจอบอส
   //   กลไกจริง: **ประตูพาเข้า "ถ้ำที่ active ณ วินาทีที่เดินผ่าน"** — ตอน 19:59 รอบที่ active ยังเป็น 19:30
@@ -6591,12 +6604,13 @@
   function bossSoloAutoNow() {
     if (!isOn('bossOnlyAuto') || !isOn('bossHunt')) return false;
     if (bossPhase !== 'idle') return true;                    // กำลังล่าอยู่ = คงโหมดไว้จนจบทริป
-    if (bossRoundDone()) return false;                        // 🔒 v6.344: รอบนี้จบแล้ว = ไม่มีอะไรให้เตรียม กลับไปตกปลา
+    const soloLead = bossSoloLeadMin();
+    // 🔒 v6.344: รอบนี้จบแล้ว = ไม่มีอะไรให้เตรียม กลับไปตกปลา
+    // 🔴 v6.384: ...แต่ต้องวัดอายุล็อกด้วย **soloLead** ไม่ใช่ bossLeadMin ไม่งั้นค่าที่ผู้ใช้ตั้งไม่มีผล
+    if (bossRoundDone(soloLead)) return false;
     if (now() - bossTimerCacheAt > 5000) { bossTimerCacheAt = now(); bossTimerCache = bossTimerMin(); }
     const min = bossTimerCache;
     if (min == null) return false;                            // อ่านเวลาไม่ได้ = ไม่เดา ปล่อยฟาร์มตามปกติ
-    // ต้อง ≥ lead เสมอ — ตั้งน้อยกว่าเวลาเดินทางก็ไม่มีประโยชน์ (โหมดจะเปิดหลังออกเดินทางไปแล้ว)
-    const soloLead = Math.max(clamp(cfg.bossOnlyLeadMin || 5, 1, 60), clamp(cfg.bossLeadMin, 1, 60));
     return min <= soloLead;
   }
   // 🎣 v6.299 (ผู้ใช้สั่งย้ำ 27/7): ปุ่มม่วง "ล่าบอสอย่างเดียว" (bossOnly) = หยุดตกปลา **เฉพาะช่วงใกล้เวลาออกเดินทางล่าบอส** เท่านั้น
@@ -6618,13 +6632,13 @@
     //   log สดยืนยันว่าป้ายค้างจริง: `🐯 ป้าย "ถึงรอบบอสแล้ว" + ไม่มีตัวนับถอยหลังบนจอ → ถือว่าถึงเวลาบอส` (ซ้ำทุกนาที)
     //   กติกาใหม่: **หน้าต่างรอบปิดแล้ว (เลย spawn + raidWindowMinutes) = เลิกเชื่อป้าย ใช้นาฬิกาแทน**
     //   และถ้าใช้ทริปครบเพดานของรอบนี้แล้ว ก็ไม่มีอะไรให้เตรียมอีก → ปล่อยตกปลา
-    const roundOver = !!bossRoundDone();
+    const soloLead = bossSoloLeadMin();
+    const roundOver = !!bossRoundDone(soloLead);              // 🔴 v6.384: วัดอายุล็อกด้วย soloLead (ดูเหตุผลที่ bossRoundDone)
     const _rb = bossRoundBounds();
     const windowOver = !!_rb.prev && (Date.now() - _rb.prev) > SERVER_RAID_WINDOW_MIN * 60000;
     const tripsUsed = bossTripsThisRound() >= BOSS_TRIPS_MAX;
     const stale = roundOver || windowOver || tripsUsed;
     if (!stale && now() - bossTimerCacheAt > 5000) { bossTimerCacheAt = now(); bossTimerCache = bossTimerMin(); }
-    const soloLead = Math.max(clamp(cfg.bossOnlyLeadMin || 5, 1, 60), clamp(cfg.bossLeadMin, 1, 60));
     // ป้ายเชื่อไม่ได้แล้ว → นับถอยหลังจาก "ตารางนาฬิกา" ของรอบถัดไปแทน (ยังหยุดตกก่อนรอบใหม่ได้ตามเดิม)
     const min = stale
       ? (_rb.next ? Math.max(0, Math.round((_rb.next - Date.now()) / 60000)) : null)
@@ -12885,7 +12899,7 @@ ${esc(reason)}
       soloBtn.style.cssText = 'width:100%;padding:7px;border-radius:8px;border:none;color:#fff;font-weight:800;font-size:11.5px;cursor:pointer;margin:0 0 6px;';
       const paint = () => {
         // 🎯 v6.299: ปุ่มม่วง = "หยุดตกปลาเฉพาะช่วงใกล้เวลาบอส" (ไม่ใช่หยุดทันทีถาวรอีกแล้ว)
-        const lead = Math.max(clamp(cfg.bossOnlyLeadMin || 5, 1, 60), clamp(cfg.bossLeadMin, 1, 60));
+        const lead = bossSoloLeadMin();   // v6.384: สูตรเดียวกับที่ระบบใช้จริง (จุดเดียว กันดริฟต์)
         soloBtn.textContent = isOn('bossOnly')
           ? (bossSoloAutoOn
               ? '🎯 ล่าบอสอย่างเดียว: ⏳ ใกล้เวลาบอส — หยุดตกไปล่าแล้ว (กดปิด)'
