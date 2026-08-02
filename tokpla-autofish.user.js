@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.377
+// @version      6.378
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.377';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.378';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -815,6 +815,71 @@
     return { life: newLife(), recs: {} };
   }
   let profit = loadProfit();
+  // 📅 v6.378 — **บัญชีรายวัน** (แยกคีย์ของตัวเอง ไม่ปนกับ profit.life ที่เป็นยอดสะสมตลอดกาล)
+  //   ทำไมต้องแยก: ยอดสะสมบอกได้แค่ "โดยรวมกำไร" แต่ตอบไม่ได้ว่า **วันนี้ดีขึ้นหรือแย่ลงกว่าเมื่อวาน**
+  //   ซึ่งเป็นคำถามเดียวที่ใช้ตัดสินได้ว่าที่แก้ไปแต่ละรอบได้ผลจริงไหม
+  //   เก็บแค่ 3 วัน (วันนี้ + เมื่อวาน + เผื่อข้ามคืน) — ไม่ให้ localStorage บวม
+  const DAILY_KEY = 'tokpla_daily';
+  const dayKey = (ms) => { const d = new Date(ms == null ? Date.now() : ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+  const newDay = () => ({ revenue: 0, baitCost: 0, casts: 0, catches: 0, coffeeCost: 0, potionCost: 0, bossFights: 0, bossKills: 0, shards: 0, restMin: 0, firstAt: Date.now(), lastAt: Date.now() });
+  function loadDaily() { try { const o = JSON.parse(W.localStorage.getItem(DAILY_KEY) || '{}'); return o && typeof o === 'object' ? o : {}; } catch { return {}; } }
+  //   ⚠️ อ่าน-แก้-เขียนทุกครั้ง (ไม่ cache ไว้ในตัวแปร) — หน้าเกมโหลดใหม่เองบ่อย (วัดได้ ~9 ครั้ง/ชม.)
+  //   ถ้า cache ไว้แล้วโดนรีโหลดกลางคัน ยอดของช่วงนั้นจะหายไปเงียบ ๆ
+  function dayAdd(field, n) {
+    if (!(n > 0) && n !== 0) return;
+    try {
+      const o = loadDaily(), k = dayKey();
+      const d = o[k] || (o[k] = newDay());
+      d[field] = (d[field] || 0) + n;
+      d.lastAt = Date.now();
+      // เก็บ 3 วันล่าสุดพอ
+      const keys = Object.keys(o).sort();
+      while (keys.length > 3) { delete o[keys.shift()]; }
+      W.localStorage.setItem(DAILY_KEY, JSON.stringify(o));
+    } catch {}
+  }
+  const dayNet = (d) => (d.revenue || 0) - (d.baitCost || 0) - (d.coffeeCost || 0) - (d.potionCost || 0);
+  // 📅 รายงาน "วันนี้ vs เมื่อวาน" — ตอบคำถามเดียว: ที่แก้ไปได้ผลจริงไหม
+  function dailyReport() {
+    const o = loadDaily();
+    const tKey = dayKey(), yKey = dayKey(Date.now() - 86400000);
+    const t = o[tKey], y = o[yKey];
+    if (!t && !y) return '📅 ยังไม่มีบัญชีรายวัน — เริ่มเก็บตั้งแต่ v6.378 (ตัวเลขจะขึ้นหลังตกปลาสักพัก)';
+    const n = (v) => Math.round(v || 0).toLocaleString();
+    // ชั่วโมงที่ "ทำงานจริง" = ช่วงเวลาที่มีการลงบัญชี (ไม่ใช่ 24 ชม.เต็ม) → เทียบวันที่ยังไม่จบได้อย่างเป็นธรรม
+    const hrs = (d) => (d && d.lastAt > d.firstAt ? (d.lastAt - d.firstAt) / 3600000 : 0);
+    const per = (v, h) => (h > 0.05 ? Math.round(v / h) : null);
+    const rows = [];
+    const line = (label, tv, yv, fmt) => {
+      const f = fmt || n;
+      const d = (tv || 0) - (yv || 0);
+      const pct = yv > 0 ? Math.round(((tv || 0) / yv - 1) * 100) : null;
+      rows.push(`${label.padEnd(16)} ${String(f(tv)).padStart(10)} ${String(y ? f(yv) : '—').padStart(10)}`
+        + (y && yv > 0 ? `  ${d >= 0 ? '▲' : '▼'}${pct >= 0 ? '+' : ''}${pct}%` : ''));
+    };
+    const th = hrs(t), yh = hrs(y);
+    rows.push(`${''.padEnd(16)} ${'วันนี้'.padStart(10)} ${'เมื่อวาน'.padStart(10)}`);
+    rows.push('─'.repeat(46));
+    line('มูลค่าปลา', t && t.revenue, y && y.revenue);
+    line('ทุนเหยื่อ', t && t.baitCost, y && y.baitCost);
+    line('☕ + 🧪', (t ? (t.coffeeCost || 0) + (t.potionCost || 0) : 0), (y ? (y.coffeeCost || 0) + (y.potionCost || 0) : 0));
+    rows.push('─'.repeat(46));
+    line('💰 กำไรสุทธิ', t && dayNet(t), y && dayNet(y));
+    line('  ต่อชั่วโมง', t && per(dayNet(t), th), y && per(dayNet(y), yh));
+    rows.push('');
+    line('เหวี่ยง (ครั้ง)', t && t.casts, y && y.casts);
+    line('  ต่อชั่วโมง', t && per(t.casts, th), y && per(t.casts != null ? y.casts : 0, yh));
+    line('ติดปลา', t && t.catches, y && y.catches);
+    rows.push('');
+    line('👹 ล่าบอส (รอบ)', t && t.bossFights, y && y.bossFights);
+    line('  ฆ่าได้', t && t.bossKills, y && y.bossKills);
+    line('🦴 เศษบอส', t && t.shards, y && y.shards);
+    const tail = [];
+    if (t) tail.push(`วันนี้เก็บข้อมูลมา ${th.toFixed(1)} ชม. (${new Date(t.firstAt).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}–${new Date(t.lastAt).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })})`);
+    if (y) tail.push(`เมื่อวาน ${yh.toFixed(1)} ชม.`);
+    else tail.push('ยังไม่มีข้อมูลเมื่อวาน — พรุ่งนี้ถึงจะเทียบได้');
+    return `📅 บัญชีรายวัน (${tKey})\n${rows.join('\n')}\n\nℹ️ ${tail.join(' · ')}\nℹ️ "ต่อชั่วโมง" หารด้วยเวลาที่บอทเดินจริง ไม่ใช่ 24 ชม. — เทียบวันที่ยังไม่จบได้อย่างเป็นธรรม`;
+  }
   function saveProfit() { if (restoring) return; try { W.localStorage.setItem(PROFIT_KEY, JSON.stringify({ v: PROFIT_V, life: profit.life, recs: profit.recs })); } catch {} }
 
   // 🎣 โหมดตกปลาที่ "มีผลจริง" — ระหว่างทดสอบเหยื่อบังคับเป็น 'bot' เสมอ (เทสต์ต้องเหวี่ยง+เล่นมินิเกมเอง
@@ -852,6 +917,7 @@
     // ฝั่ง "ติดปลา": รายได้ +ราคาปลา · catches +1  (ต้นทุนเหยื่อ/casts คิดไปแล้วตอนเหวี่ยงติด — ดู pushCastCost)
     profit.life.revenue += c.price || 0;
     profit.life.catches += 1;
+    dayAdd('revenue', c.price || 0); dayAdd('catches', 1);   // 📅 v6.378
     sessRev += c.price || 0; sessCatches += 1;
     feedModeStats(fishModeEff(), { price: c.price || 0, baitCost: baitUnit(tier), weight: +c.weight || 0, rarity: c.rarity, junk: c.junk, tier });   // 🔬 สถิติ 2 แบบ
     // 📋 log สรุปทุกขั้นตอนของปลาตัวนี้ (โหมด bot — v6.88 เคยหายไปเพราะย้าย log เข้า recordGameCatch ที่โหมด bot ไม่เรียก)
@@ -872,6 +938,7 @@
     mythicBaitOnCast(tier, !!readBuffs().luck);   // 🌈 นับตัวอย่างให้ระบบออโต้เลือกเหยื่อล่าปลาเทพ (นับทุกโหมด — ข้อมูลสะสมเร็วกว่า)
     profit.life.baitCost += baitUnit(tier);
     profit.life.casts += 1;
+    dayAdd('baitCost', baitUnit(tier)); dayAdd('casts', 1);   // 📅 v6.378
     sessBait += baitUnit(tier);
     if (Date.now() - lastCatchSaveAt >= 3000) { lastCatchSaveAt = Date.now(); saveProfit(); }
   }
@@ -1353,6 +1420,7 @@
     '🗺️ /maps - เทียบกำไรตามแมพ (แมพไหนคุ้มสุด)',
     '📝 /log [N] - ดู log ล่าสุด N บรรทัด · /report - รายงานปัญหาเต็ม',
     '🔬 /compare - เทียบโหมดบอท vs เกมออโต้ (ตกเยอะ/พลังงาน/แรร์) · /cmpreset - ล้าง',
+    '📅 /today - กำไรรายวัน เทียบวันนี้ vs เมื่อวาน (แยกจากยอดสะสม)',
     '📊 /statsexport - ส่งออกสถิติ (สรุป) ไว้ส่งวิเคราะห์',
     '🧠 /advisor - ดูคำแนะนำเหยื่อ+ยาจากสถิติจริง',
     '🧪 /testbait - ทดสอบเหยื่อใหม่ · /testcont - ทำต่อ · /teststop - หยุด · /testprog - ความคืบหน้า',
@@ -1455,6 +1523,8 @@
       case 'buy': reply('🪱 สั่งซื้อเหยื่อ...'); void runWhenIdle('ซื้อเหยื่อ', () => sellThenBuy(true)); break;
       case 'quest': reply('🎁 เก็บเควส...'); void runWhenIdle('รับเควส', runQuests); break;
       case 'bait': { if (testRunning) { reply('🧪 กำลังทดสอบเหยื่ออยู่ — ระบบทดสอบคุมเหยื่อเองทั้งหมด (หยุดก่อน: /teststop)'); break; } const n = parseInt(args[0], 10); if (n >= 1 && n <= MAX_BAIT_TIER) { cfg.baitTier = n; saveCfg(); syncPanel(); reply(`🪱 ตั้งเหยื่อขั้น ${n} (${BAIT_TIERS[n - 1].name})${isOn('advisor') && isOn('advisorAuto') ? '\n⚠️ Advisor โหมดลงมือเองเปิดอยู่ — อาจสลับกลับตามสถิติ (ปิด: /set advisorAuto off)' : ''}`); } else reply(`ใช้: /bait 1-${MAX_BAIT_TIER}`); break; }
+      case 'today': case 'daily': case 'วันนี้':   // 📅 v6.378: กำไรรายวัน วันนี้ vs เมื่อวาน
+        reply('<pre>' + esc(dailyReport()) + '</pre>'); break;
       case 'profit': reply(profitLines()); break;
       case 'baitstats': case 'bs': {
         const a = (args[0] || '').toLowerCase();
@@ -1934,9 +2004,11 @@
     // ฟังก์ชันนี้ถูกเรียกจาก pollGameCatches เท่านั้น (gate = โหมด gameauto) → คิดต้นทุน+นับแบบ gameauto ตรงๆ
     profit.life.baitCost += baitUnit(tier);
     profit.life.casts += 1;
+    dayAdd('baitCost', baitUnit(tier)); dayAdd('casts', 1);   // 📅 v6.378 (ทาง gameauto)
     sessBait += baitUnit(tier);
     profit.life.revenue += price;
     profit.life.catches += 1;
+    dayAdd('revenue', price); dayAdd('catches', 1);   // 📅 v6.378
     sessRev += price; sessCatches += 1;
     const rec = { fish: r.fish, rarity: r.rarity, price, shiny: !!r.isShiny, junk: junk || undefined,
                   at: Date.now(), map: curMap || undefined, bw: buffs.weight || undefined, bl: buffs.luck || undefined,
@@ -2950,6 +3022,13 @@
   const BOSS_STATS_KEY = 'tokpla_boss_stats';
   const loadBossStats = () => { try { const a = JSON.parse(W.localStorage.getItem(BOSS_STATS_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch { return []; } };
   function recordBossFight(rec) {
+    // 📅 v6.378: ลงบัญชีรายวันก่อนเสมอ — ไม่ผูกกับ bossStatKeep (ปิดเก็บสถิติไฟต์ ก็ยังต้องรู้ว่าวันนี้ล่ากี่รอบ)
+    try {
+      dayAdd('bossFights', 1);
+      if (rec && rec.outcome === 'kill') dayAdd('bossKills', 1);
+      const sh = rec && rec.reward && rec.reward.shards;
+      if (sh > 0) dayAdd('shards', sh);
+    } catch {}
     const keep = clamp(cfg.bossStatKeep || 0, 0, 200);
     if (!keep) return;                                   // 0 = ปิดการเก็บ
     try {
@@ -5431,7 +5510,7 @@
     if (!buy || buy.disabled || /เหรียญไม่พอ/.test(buy.textContent)) return false;
     fireClick(buy);
     const done = await waitFor(() => { const t = document.body.innerText; if (t.includes('✅ ซื้อสำเร็จ!')) return 'ok'; if (t.includes('❌')) return 'fail'; return null; }, 8000);
-    if (done === 'ok') { profit.life.baitCost += baitUnit(r.tier) * baitPack(r.tier); saveProfit(); return true; }
+    if (done === 'ok') { const c = baitUnit(r.tier) * baitPack(r.tier); profit.life.baitCost += c; dayAdd('baitCost', c); saveProfit(); return true; }
     return false;
   }
   // 👹 เตรียมเหยื่อ "ก่อนเข้าถ้ำบอส" (ในถ้ำซื้อไม่ได้) — v6.243 เสริม safety net หลังผู้ใช้เจอ "เหยื่อหมด ตีบอสไม่ได้"
@@ -5484,7 +5563,7 @@
       }
       if (bought) {
         const cost = bought * HP_POTION_PRICE;
-        profit.life.potionCost += cost; saveProfit(); refreshProfit();   // นับเป็นต้นทุนจริง ไม่ให้กำไรดูสวยเกิน
+        profit.life.potionCost += cost; dayAdd('potionCost', cost); saveProfit(); refreshProfit();   // นับเป็นต้นทุนจริง ไม่ให้กำไรดูสวยเกิน
         say(`❤️ ตุนยาฟื้นเลือด ${bought} ขวด (−${cost.toLocaleString()} 🪙) — มี ${have + bought}/${keep} พร้อมเข้าถ้ำ`);
         // การซื้อ = เสียเงินจริง → แจ้งเสมอ ไม่ขึ้นกับ tgTrade (ธรรมเนียมเดียวกับ v6.182 ตอนซื้อเหยื่อ)
         if (isOn('tgOn')) void tgSend(`❤️ ซื้อยาฟื้นเลือด ${bought} ขวด (<b>${cost.toLocaleString()} 🪙</b>) ก่อนล่าบอส`);
@@ -5539,7 +5618,7 @@
       const done = await waitFor(() => { const t = document.body.innerText; if (t.includes('✅ ซื้อสำเร็จ!')) return 'ok'; if (t.includes('❌')) return 'fail'; return null; }, 8000);
       if (done !== 'ok') return;
       bumpStewBought();
-      profit.life.potionCost += STEW_PRICE; saveProfit(); refreshProfit();
+      profit.life.potionCost += STEW_PRICE; dayAdd('potionCost', STEW_PRICE); saveProfit(); refreshProfit();
       say(`🍲 ซื้อต้มปลาร้อน 1 ถ้วย (−${STEW_PRICE.toLocaleString()} 🪙 · วันนี้ซื้อไป ${usedToday + 1}/${STEW_DAILY_MAX})`);
       if (isOn('tgOn')) void tgSend(`🍲 ซื้อต้มปลาร้อน (<b>${STEW_PRICE.toLocaleString()} 🪙</b>) ก่อนล่าบอส — เลือดสูงสุด +20%`);
       await sleep(350);
@@ -8408,6 +8487,7 @@
       }, 8000);
       if (done === 'ok') {
         profit.life.coffeeCost = (profit.life.coffeeCost || 0) + COFFEE_PRICE;
+        dayAdd('coffeeCost', COFFEE_PRICE);   // 📅 v6.378
         saveProfit(); refreshProfit();
         await sleep(300); await closeShop();
         // เกมล่าสุด: ซื้อแล้วของเข้ากระเป๋า ต้อง "กดใช้" ถึงได้พลัง
