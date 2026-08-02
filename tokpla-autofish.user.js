@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.379
+// @version      6.380
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.379';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.380';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -667,6 +667,9 @@
   let energyResting = false;   // กำลังนั่งพักรอพลังฟื้น (จัดการเชิงรุก)
   let lastRestCoffeeAt = -1e9;   // v6.209: throttle การลองกาแฟระหว่างนั่งพัก (นาทีละครั้ง)
   let energySat = false;       // กดปุ่มนั่งพักไปแล้ว (ไว้ลุกตอนกลับมาตก)
+  // 📅 v6.380: จับเวลานั่งพักลงบัญชีรายวัน — ลงทีละนาที ไม่ใช่ตอนจบการพัก
+  //   เพราะหน้าเกม **โหลดใหม่เองบ่อย** (วัดได้ 1-10 ครั้ง/ชม.) ถ้ารอลงตอนจบ การพักที่โดนรีโหลดคั่นจะหายทั้งก้อน
+  let lastRestTick = 0;
   let sessionStart = 0;        // เวลาเปิดบอทรอบนี้ (ไว้คำนวณ uptime)
   let lastHeartbeat = 0;       // ส่งรายงานสถานะครั้งล่าสุดเมื่อไร
   let lastProgressAt = 0;      // มีความคืบหน้า (ตกได้/เปลี่ยนสถานะ) ครั้งล่าสุดเมื่อไร
@@ -870,6 +873,11 @@
     line('เหวี่ยง (ครั้ง)', t && t.casts, y && y.casts);
     line('  ต่อชั่วโมง', t && per(t.casts, th), y && per(t.casts != null ? y.casts : 0, yh));
     line('ติดปลา', t && t.catches, y && y.catches);
+    rows.push('');
+    // 😴 v6.380: เวลาที่ "ไม่ได้ตกเลย" เพราะนั่งพักรอพลัง — ตัวชี้ขาดว่าควรปรับ energyRestAt/energyResumeAt ไหม
+    line('😴 นั่งพัก (นาที)', t && t.restMin, y && y.restMin);
+    line('  = % ของเวลาเดิน', t && (th > 0.05 ? Math.round((t.restMin || 0) / (th * 60) * 100) : null),
+      y && (yh > 0.05 ? Math.round((y.restMin || 0) / (yh * 60) * 100) : null));
     rows.push('');
     line('👹 ล่าบอส (รอบ)', t && t.bossFights, y && y.bossFights);
     line('  ฆ่าได้', t && t.bossKills, y && y.bossKills);
@@ -11863,6 +11871,7 @@ ${esc(reason)}
             const sitBtn = () => qBtn('นั่งพัก');
             if (!energyResting && e <= cfg.energyRestAt && !restBlocked) {
               energyResting = true;
+              lastRestTick = now();   // v6.380: เริ่มจับเวลาพัก (ลงบัญชีทีละนาทีด้านล่าง)
               if (cfg.energySit && !energySat) { const b = sitBtn(); if (b) { fireClick(b); energySat = true; } }
               say(`⚡ พลังเหลือ ${Math.round(e)}% — นั่งพักจนถึง ${cfg.energyResumeAt}%`);
               if (cfg.tgPause) void tgSend(`⚡ พลังเหลือ ${Math.round(e)}% — บอทพักรอถึง ${cfg.energyResumeAt}% (ตกไปแล้ว ${casts} ครั้ง)`);
@@ -11873,6 +11882,12 @@ ${esc(reason)}
               lastCast = now();   // รอ animation ลุกก่อนค่อยเหวี่ยง
             }
             if (energyResting) {
+              // 📅 v6.380 — **`restMin` ถูกประกาศไว้ใน v6.378 แต่ไม่เคยมีใครเขียนค่าลงไป** (เป็น 0 ตลอด)
+              //   ซึ่งเป็นตัวเลขที่ตอบคำถามสำคัญที่สุดของบัญชีรายวัน: "วันนี้เสียเวลาไปกับการนั่งพักกี่นาที"
+              //   ⇒ ไม่มีมัน ก็เทียบไม่ได้ว่าการปรับ energyRestAt/energyResumeAt ได้ผลจริงไหม
+              //   ลงทีละ 1 นาที (ไม่รอจบการพัก) → หน้าเกมโหลดใหม่กลางคันก็เสียมากสุด 1 นาที
+              if (!lastRestTick) lastRestTick = now();
+              if (now() - lastRestTick >= 60000) { lastRestTick = now(); dayAdd('restMin', 1); }
               // ระหว่างนั่งพัก (พลังต่ำ) เป็นจังหวะที่ดีที่สุดในการเก็บเควส — รางวัลพลังงานช่วยให้ฟื้นถึงเกณฑ์เร็วขึ้น
               // (บล็อกเควสปกติอยู่หลัง return นี้ จึงต้องเรียกตรงนี้ด้วย ไม่งั้นตอนพักจะไม่เก็บเควสเลย)
               if (cfg.autoQuest && !busy && now() - lastQuestCheck > cfg.questEvery * 60000) {
