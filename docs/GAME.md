@@ -363,6 +363,24 @@ scene.spawnRaidBoss/startBiteDodge/startSpinDodge/showAttackTelegraph/showSpinTe
 - **กราฟแมพ:** รู้ exit เฉพาะแมพที่อยู่ปัจจุบัน (`def.zones`) → เรียนรู้สะสมลง `tokpla_boss_graph` แล้ว BFS · village = hub (ต่อ river_bank/boss_cave/fisher_town/ice) · boss_cave ต่อ village อย่างเดียว
 - zones ตัวอย่าง boss_cave: spawn `from_village`(836,800) · fishing `boss_pool`(841,445 castRadius560) · exit `to_village`(836,915 w240 h44 →village/from_boss_cave)
 
+#### 🚪 โซน exit ทุกใบ (ดึงสด 2/8/2026 — `GET /api/config` → `mapZones.<map>.exits`)
+
+⚠️ **ไม่ต้องเปิด `/play` ก็อ่านได้** — endpoint นี้สาธารณะ มีโซนของ **ทุกแมพ** ไม่ใช่แค่แมพที่ยืนอยู่
+
+| จาก → ไป | x | y | กว้าง | สูง | กลางโซน | ครึ่งเส้นทแยง |
+|---|---|---|---|---|---|---|
+| village → **boss_cave** | 24 | 404 | 44 | 240 | (46, 524) | **122** |
+| village → river_bank | 1305 | 42 | 214 | 73 | (1412, 78) | 113 |
+| village → fisher_town | 1005 | 880 | 272 | 64 | (1141, 912) | 140 |
+| sea_dock → river_bank | 1467 | 700 | 50 | 230 | (1492, 815) | 118 |
+| sea_dock → fisher_town | 687 | −16 | 185 | 78 | (779, 23) | 100 |
+| river_bank → village | 1 | 419 | 72 | 194 | (37, 516) | 103 |
+| fisher_town → sea_dock | 326 | 894 | 149 | 64 | (400, 926) | 81 |
+
+🔴 **บทเรียน v6.379:** โซนเหล่านี้เป็น **สี่เหลี่ยมผืนผ้าใหญ่** — ครึ่งเส้นทแยง 81–140px
+การเช็ค “ถึงประตูหรือยัง” ด้วยรัศมีจากกลางโซน (ของเดิมใช้ `< 80`) จึง **เป็นเท็จได้ทั้งที่ยืนอยู่ในโซน**
+⇒ ต้องทดสอบแบบ “อยู่ในสี่เหลี่ยม + เผื่อขอบ” เสมอ และ **เดินไปกลางโซน ไม่ใช่มุม (x, y)**
+
 ### 🪟 กติกา "รอบบอส" ของจริง (ค่าจากเซิร์ฟเวอร์ `/api/config` · ตรวจ 1/8/2026) — สำคัญกว่าที่เคยคิด
 
 | ค่า | ของจริง | ผลต่อบอท |
