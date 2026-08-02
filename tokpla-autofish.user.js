@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.376
+// @version      6.377
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.376';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.377';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4454,6 +4454,7 @@
     //   ⚠️ `node --check` จับไม่ได้ (ถูกไวยากรณ์) และเทสต์ที่ตัดฟังก์ชันมา eval ก็ไม่เจอ เพราะไม่ได้รันลำดับจริง
     let snapWeak = [], snapWeakNames = [], snapBait = null, snapBossName = null, snapHpMax = null, snapHpMaxEnd = null;
     let baitDiagSaid = false;   // 🔴 v6.367: ส่องแถวปุ่มเหยื่อครั้งเดียวต่อไฟต์ (ไม่สแปม)
+    let weakOrbClicked = false;   // 🎯 v6.377: กดออร์บเหยื่อจุดอ่อนไปแล้วหรือยัง (ครั้งเดียวต่อไฟต์)
     const prepBossGear = async () => {
       if (gearPrepped) return;
       gearPrepped = true;
@@ -4605,7 +4606,38 @@
       if (!baitPreState) baitPreState = 2;
       bossEvent(`✅ เหยื่อจุดอ่อนขั้น ${wantBait} พร้อมแล้วตอนเริ่ม — ${baitPreState === 1 ? 'บอทติดล่วงหน้าเองตอนรอในถ้ำ 🎯' : 'ติดมาก่อนแล้ว (ผู้ใช้ตั้งไว้/ค้างจากรอบก่อน)'}`);
     }
-    if (wantBait > 0 && cb0?.tier !== wantBait) {
+    // 🎯 v6.377 — **ตอนสู้บอสต้อง "คลิกเลือก" ออร์บเหยื่อจุดอ่อน ไม่ใช่สลับเหยื่อแบบปกติ** (ผู้ใช้ยืนยัน 2/8/69)
+    //   โครงจริงจาก /baitbtn: เกมโชว์ออร์บจุดอ่อน 2 ปุ่มพร้อมกัน — `aria="เหยื่อจุดอ่อน ขั้น N"` · ข้อความ = จำนวนคงเหลือ
+    //     [0] aria="เหยื่อจุดอ่อน ขั้น 1" · "548"   [1] aria="เหยื่อจุดอ่อน ขั้น 6" · "186"
+    //   ⇒ `cycleTo('เลือกเหยื่อ')` ใช้ไม่ได้เลยในหน้านี้ (ไม่มีปุ่มนั้น + หมุนก็ไม่ใช่กลไกที่ถูก)
+    //   ⇒ นี่คือคำตอบของอาการ "บอทตีเฉย ๆ ไม่กดใช้เหยื่อจุดอ่อน" ที่ผู้ใช้แจ้งมาหลายรอบ
+    //   เลือกขั้น **ต่ำสุดที่ยังมีของ** — ได้ x1.5 เท่ากันทุกขั้นจุดอ่อน แต่ขั้นต่ำถูกกว่า (ตรงกับที่ผู้ใช้ทำเอง)
+    //   ⚠️ กดครั้งเดียวต่อไฟต์ — ยังไม่รู้ว่ากดซ้ำแล้ว toggle ปิดหรือเปล่า (ไม่เดา · ดูผลจากไฟต์ถัดไปก่อน)
+    if (wantBait > 0 && !weakOrbClicked) {
+      const orbs = [];
+      try {
+        for (const b of baitButtons()) {
+          const m = /ขั้น\s*(\d+)/.exec(b.getAttribute('aria-label') || '');
+          if (!m) continue;
+          const stock = parseInt(((b.textContent || '').match(/\d+/) || [0])[0], 10) || 0;
+          orbs.push({ b, tier: +m[1], stock });
+        }
+      } catch {}
+      if (orbs.length >= 2) {                       // มีออร์บจุดอ่อนจริง = อยู่ในหน้าสู้บอส
+        weakOrbClicked = true;
+        const want = orbs.filter((o) => snapWeak.includes(o.tier) && o.stock > 0).sort((a, b) => a.tier - b.tier)[0]
+                  || orbs.filter((o) => o.stock > 0).sort((a, b) => a.tier - b.tier)[0];
+        if (want) {
+          fireClick(want.b);
+          baitPreState = 3;
+          bossEvent(`🎯 กดเลือกออร์บเหยื่อจุดอ่อน **ขั้น ${want.tier}** (เหลือ ${want.stock}) — จากออร์บที่มี ${orbs.map((o) => `ขั้น${o.tier}×${o.stock}`).join(' · ')}`);
+          say(`🎯 กดใช้เหยื่อจุดอ่อนขั้น ${want.tier} (x1.5)`);
+        } else {
+          bossEvent(`⚠️ มีออร์บจุดอ่อน ${orbs.length} ปุ่มแต่ของหมดทุกขั้น (${orbs.map((o) => `ขั้น${o.tier}×${o.stock}`).join(' · ')}) — เสีย x1.5 รอบนี้`);
+        }
+      }
+    }
+    if (wantBait > 0 && cb0?.tier !== wantBait && !weakOrbClicked) {
       prevBaitTier = cb0 ? cb0.tier : null;
       busy = true;
       try {
