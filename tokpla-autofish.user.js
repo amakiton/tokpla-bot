@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.382
+// @version      6.383
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.382';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.383';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4326,6 +4326,36 @@
       await sleep(randInt(120, 260)); bossReleaseAll();
     }
   }
+  // ⚡ v6.383 — **จัดเบ็ด/ทุ่นตอน "ยืนรอหน้าประตู" ไม่ใช่ตอนบอสโผล่แล้ว**
+  //   ผู้ใช้แจ้ง: *"เราตีบอสช้ากว่าคนอื่น กว่าจะเริ่มตี คนอื่นคะแนนนำไปเยอะแล้ว"*
+  //   วัดจาก log จริงรอบ 00:11 (3/8): เข้าถ้ำ 00:11:02 → **ตีครั้งแรก 00:11:18 = ช้าไป 16 วิ**
+  //     00:11:04→00:11:09 สลับเบ็ด (5 วิ) · 00:11:09→00:11:14 สลับทุ่น (5 วิ) · +เหยื่อ/ต้ม (3 วิ)
+  //   ⇒ ทุกวินาทีนั้นบอสอยู่ที่ 100% และคนอื่นรุมตีอยู่ = เสียส่วนแบ่งดาเมจตรง ๆ
+  //   v6.345 ตั้งใจให้จัดของ "ตอนรอในถ้ำ" อยู่แล้ว — **แต่รอบที่เข้าไปแล้วบอสยืนรออยู่ ไม่มีช่วงรอเลย**
+  //   ✅ ช่วงที่ว่างจริงและยาวพอคือ **ตอนยืนหน้าประตู** (รอบนี้ยืน 100 วินาที ไม่ได้ทำอะไรเลย)
+  //   ⚠️ ทำเฉพาะ "เบ็ด + ทุ่น" — เหยื่อจุดอ่อนต้องรู้ว่าเป็นถ้ำไหนก่อน (ตอนนี้ยังอยู่ village) จึงทำในถ้ำเหมือนเดิม
+  //   ⚠️ ต้องเหลือเวลา > 30 วิ ก่อนประตูเปิด (สลับใช้ ~10 วิ) — ไม่งั้นจะเปิดกระเป๋าค้างตอนประตูเปิดพอดี
+  let bossGearEarlyAt = NEVER;
+  const bossGearEarlyFresh = () => now() - bossGearEarlyAt < 15 * 60000;
+  async function prepBossGearEarly(why) {
+    if (bossGearEarlyFresh()) return false;
+    bossGearEarlyAt = now();                       // ตั้งก่อนทำ — กันถูกเรียกซ้ำระหว่างที่ยัง await อยู่
+    bossEvent(`⚡ จัดเบ็ด/ทุ่นบอสล่วงหน้า (${why}) — พอประตูเปิดจะได้พุ่งเข้าตีเลย ไม่ต้องเปิดกระเป๋าตอนบอส 100%`);
+    if (isOn('rodSwitchOn')) {
+      busy = true;
+      try { say('⚡ เลือกเบ็ดที่ดาเมจบอสสูงสุด (ระหว่างยืนรอ)'); if (!(await equipRodBy('boss'))) say('⚠️ ใช้เบ็ดชิ้นเดิมตีบอสแทน'); }
+      catch (e) { logErr('เลือกเบ็ดบอสล่วงหน้าล้มเหลว', e); }
+      finally { busy = false; }
+    }
+    if (isOn('floatSwitchOn')) {
+      busy = true;
+      try { say('⚡ เลือกทุ่นที่ตีบอสแรงสุด (ระหว่างยืนรอ)'); await equipFloatBy('boss'); }
+      catch (e) { logErr('เลือกทุ่นบอสล่วงหน้าล้มเหลว', e); }
+      finally { busy = false; }
+    }
+    bossReleaseAll();                              // เผื่อมีปุ่มค้างจากก่อนเปิดกระเป๋า
+    return true;
+  }
   async function bossWaitGate(cur, toMap, exitZone) {
     const dest = toMap || bossActiveCave();
     const target = BOSS_NAV_TARGET[dest] || BOSS_NAV_TARGET[BOSS_MAP] || { x: 841, y: 445 };
@@ -4363,6 +4393,7 @@
           markBossRoundDone(`เกมบอกว่ารอบหน้าเปิดอีก ${mm} นาที`);
           bossNavFail = `รอบบอสปิดแล้ว (ประตูเปิดอีก ${mm} นาที)`;
           bossReleaseAll();
+          if (bossGearEarlyFresh()) lastFarmRodAt = 0;   // ⚡ v6.383: ติดเบ็ดบอสไว้แล้วแต่ไม่ได้ล่า → ให้ตัวเช็ค idle คืนเบ็ดฟาร์มทันที
           return false;
         }
       }
@@ -4406,6 +4437,9 @@
         // (ก) มีนับถอยหลังสดและยังเหลือเวลา = **แน่นอน 100%** → ยืนรอ ไม่แตะประตูสักครั้ง
         if (gs.sec != null && gs.sec > 2) {
           if (now() - lastWaitSay > 30000) { lastWaitSay = now(); logInfo(`🚪 ประตูยังไม่เปิด — เกมบอกเองว่าอีก ${gs.sec} วิ · ยืนรอเฉยๆ (ไม่ดันประตู) แล้วเข้าทันทีที่เปิด`); }
+          // ⚡ v6.383: ยืนรออยู่แล้ว = เวลาว่างฟรี → เอาไปจัดเบ็ด/ทุ่นให้จบตรงนี้ (ดูเหตุผลเต็มที่ prepBossGearEarly)
+          //   เกณฑ์ 30 วิ มาจากเวลาสลับจริงที่วัดได้ (เบ็ด 5 + ทุ่น 5) เผื่อ 3 เท่า
+          if (gs.sec > 30) { await prepBossGearEarly(`ยืนรอหน้าประตู · ประตูเปิดอีก ${gs.sec} วิ`); }
           await bossGateIdle();                             // ยืนรอแบบคน (นิ่งเป็นหลัก ขยับห่างๆ)
           continue;
         }
@@ -4509,7 +4543,10 @@
       }
       await sleep(400);
     }
-    return bossMapId() !== cur;
+    const _got = bossMapId() !== cur;
+    // ⚡ v6.383: จัดเบ็ดบอสไว้ตอนรอแล้วสุดท้ายเข้าไม่ได้ → อย่าถือเบ็ดบอสกลับไปฟาร์ม (ดาเมจปลาต่ำกว่า)
+    if (!_got && bossGearEarlyFresh()) lastFarmRodAt = 0;
+    return _got;
   }
   // 📋 v6.242: เก็บ "ข้อความ/นับถอยหลัง" ที่ปากประตูถ้ำ — ยังไม่รู้รูปแบบแน่ (ผู้ใช้บอกมี countdown+เตือน) → จดดิบไว้ดูของจริง
   const BOSS_GATE_KEY = 'tokpla_boss_gate';
@@ -4608,7 +4645,10 @@
       if (gearPrepped) return;
       gearPrepped = true;
       gearPrepEarly = !spawnSeenAt;   // ⏱️ v6.345: จัดของ "ก่อนบอสโผล่" ไหม — ตัวแปรที่ t2first ต้องเทียบด้วย
-      if (isOn('rodSwitchOn')) {
+      // ⚡ v6.383: จัดไปแล้วตอนยืนรอหน้าประตู = ข้ามเลย (นี่คือ 10 วินาทีที่เคยเสียไปตอนบอส 100%)
+      if (bossGearEarlyFresh()) {
+        logInfo('⚡ เบ็ด/ทุ่นบอสจัดไว้ตั้งแต่ตอนยืนรอหน้าประตูแล้ว — ข้ามไปตีเลย (ประหยัด ~10 วิ)');
+      } else if (isOn('rodSwitchOn')) {
         busy = true;
         try {
           say('👹 เลือกเบ็ดที่ดาเมจบอสสูงสุด');
@@ -4619,7 +4659,7 @@
         logInfo('👹 ปิดการสลับเบ็ดไว้ — ใช้เบ็ดที่ใส่อยู่ตีบอส');
       }
       // ⭕ v6.304 (ทุ่น "ตาดุก" = ของรางวัลบอส มี "ตีบอสแรงขึ้น 15%") · ไม่มีทุ่นบอส = คงทุ่นเดิม
-      if (isOn('floatSwitchOn')) {
+      if (!bossGearEarlyFresh() && isOn('floatSwitchOn')) {
         busy = true;
         try { say('👹 เลือกทุ่นที่ตีบอสแรงสุด'); await equipFloatBy('boss'); }
         catch (e) { logErr('เลือกทุ่นบอสล้มเหลว', e); }
