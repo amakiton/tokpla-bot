@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.375
+// @version      6.376
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.375';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.376';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -7055,9 +7055,19 @@
     if (m) earned += parseInt(m[1].replace(/,/g, ''), 10);   // earned = ยอดโชว์บนป้าย · กำไรนับผ่าน observer แยก
     say(toast);
     if (/ไม่สำเร็จ|ยังไม่พร้อม/.test(toast)) {
-      disableForSession('sell', `${toast} — พักระบบขายอัตโนมัติไว้ก่อน (เซสชันนี้)`);
-    } else if (cfg.tgTrade) {
-      void tgSend(`💰 ${esc(toast)}`);
+      // 🔴 v6.376 — **ห้ามปิดระบบขายถาวร** (เคสจริง 2/8/69: บอทตายทั้งเช้า)
+      //   เดิม `disableForSession('sell', …)` = ขายพลาด 2 ครั้งติด → ปิดทั้งเซสชัน
+      //   log จริง: 07:55:59 ปิดระบบขาย → 08:12:02 "กระเป๋าหนักเกินพิกัด — เกมห้ามเหวี่ยง"
+      //   → **เงียบยาว 2 ชม.ครึ่ง ไม่ขายอีกเลย ไม่ตกปลาอีกเลย** จนผู้ใช้มาเห็นเอง
+      //   เหตุผลเชิงระบบ: การขายเป็น "งานที่ขาดไม่ได้" — ไม่ขาย = กระเป๋าเต็ม = เหวี่ยงไม่ได้ = บอทตาย
+      //   สิ่งที่ปิดถาวรได้ต้องเป็นของที่ "ไม่ทำก็ยังฟาร์มต่อได้" เท่านั้น (เช่น A/B, หีบ, ล่าปลาเทพ)
+      //   ใหม่: ถอยแบบมีจังหวะ (backoff) แล้วกลับมาลองใหม่เสมอ · ยิ่งพลาดยิ่งเว้นนาน แต่ไม่เกิน 20 นาที
+      sellFailRun++;
+      sellFailUntil = now() + Math.min(20 * 60000, 3 * 60000 * sellFailRun);
+      say(`${toast} — พักการขาย ${Math.round((sellFailUntil - now()) / 60000)} นาทีแล้วลองใหม่ (ครั้งที่ ${sellFailRun})`);
+    } else {
+      if (m) { sellFailRun = 0; sellFailUntil = 0; }   // v6.376: ขายได้เงินจริง = ระบบยังดี ล้างการถอยทิ้ง
+      if (cfg.tgTrade) void tgSend(`💰 ${esc(toast)}`);
     }
     return toast;
   }
@@ -7556,12 +7566,26 @@
     const b = baitButton();
     if (!b) return null;
     let tier = null;
+    // 🎯 v6.376 — **ตอนสู้บอส ขั้นเหยื่ออยู่ใน `aria-label` ตรง ๆ** (ยืนยันจาก /baitbtn สด 2/8/69):
+    //     [0] aria="เหยื่อจุดอ่อน ขั้น 1" · ข้อความ="548"   ← ข้อความคือ "จำนวนที่เหลือ" ไม่ใช่ชื่อเหยื่อ
+    //     [1] aria="เหยื่อจุดอ่อน ขั้น 6" · ข้อความ="186"
+    //   ⇒ `tierFromName(textContent)` อ่านไม่ออกแน่นอน (เจอแต่ตัวเลข) และไอคอนก็ไม่มี class บอกขั้น
+    //   นี่คือเหตุผลที่ `cycleTo` เห็นค่าเป็น null ตลอดตอนสู้บอส (บั๊กที่ v6.366 กันไว้ด้วยการ "ไม่หมุนตาบอด")
+    //   อ่านจาก aria-label ก่อนเสมอ — เป็นแหล่งเดียวที่บอกขั้นชัดเจนในหน้าสู้บอส
+    {
+      const am = /ขั้น\s*(\d+)/.exec(b.getAttribute('aria-label') || '');
+      if (am) tier = +am[1];
+    }
     // 1) ไอคอน: background-image(style) / <img src> / class / data-tier — ลองทุกทาง
-    for (const el of b.querySelectorAll('[style],img,[class*="bait"],[data-tier]')) {
-      const g = (a) => (el.getAttribute ? el.getAttribute(a) : null);
-      tier = tierFromStr(g('style')) || tierFromStr(g('src')) || tierFromStr(g('class'))
-          || (/^\d{1,2}$/.test(g('data-tier') || '') ? +g('data-tier') : null);
-      if (tier) break;
+    //    ⚠️ v6.376: ลูปนี้ **เขียนทับ `tier` ทุกรอบ** → ต้องข้ามถ้าอ่านจาก aria-label ได้แล้ว
+    //    (ไม่งั้นค่าที่ถูกต้องจะถูกล้างเป็น null เมื่อไอคอนไม่มีข้อมูล — เจอตอนรีวิวโค้ดที่เพิ่งเขียนเอง)
+    if (tier == null) {
+      for (const el of b.querySelectorAll('[style],img,[class*="bait"],[data-tier]')) {
+        const g = (a) => (el.getAttribute ? el.getAttribute(a) : null);
+        tier = tierFromStr(g('style')) || tierFromStr(g('src')) || tierFromStr(g('class'))
+            || (/^\d{1,2}$/.test(g('data-tier') || '') ? +g('data-tier') : null);
+        if (tier) break;
+      }
     }
     // 2) สำรอง: ชื่อเหยื่อในปุ่ม (เกมโชว์ชื่อ เช่น "สปินเนอร์ขนนก"=ขั้น7) — ทนต่อการเปลี่ยนชื่อไฟล์
     if (!tier) tier = tierFromName(b.textContent || '');
@@ -10908,8 +10932,14 @@
     }
   }
 
+  // 🔴 v6.376: ถอยแบบมีจังหวะแทนการปิดถาวร — ดูเหตุผลที่จุดตั้งค่า sellFailUntil
+  let sellFailUntil = 0, sellFailRun = 0;
+  //   `force` (สั่งเอง/กระเป๋าหนักจนเหวี่ยงไม่ได้) ต้องข้ามการถอยได้เสมอ —
+  //   ตอนกระเป๋าเต็ม การไม่ลองขายคือแย่กว่าการลองแล้วพลาด (ยังไงก็ตกปลาไม่ได้อยู่แล้ว)
+  const sellBackoffLeft = () => Math.max(0, sellFailUntil - now());
   async function runSell(force) {
     if (busy) return;
+    if (!force && sellBackoffLeft() > 0) return;
     busy = true;
     try {
       await ensureMenuOpen();   // v6.104: เมนูถูกย่อ = ปุ่มกระเป๋าหายจาก DOM
