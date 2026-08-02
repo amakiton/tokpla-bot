@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.380
+// @version      6.381
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.380';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.381';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3636,7 +3636,16 @@
       const d = new Date(), nowMin = d.getHours() * 60 + d.getMinutes();
       let best = null;
       for (const m of list) if (m <= nowMin && (best == null || m > best)) best = m;
-      if (best == null) return '';                       // ยังไม่ถึงรอบแรกของวัน
+      // 🌙 v6.381 — **ช่องโหว่เที่ยงคืน: ก่อนรอบแรกของวัน คีย์เคยเป็น '' = "ไม่มีรอบ"**
+      //   ตารางจริงมีรอบแรกที่ **00:11** ⇒ ช่วง 00:00–00:10 ทุกคืนตกอยู่ในช่องโหว่นี้
+      //   ผลที่ตามมา: `markBossRoundDone` เป็น no-op (ล็อกรอบไม่ได้เลย) และล็อกของรอบเมื่อคืน
+      //   (เช่น 22:30 ที่ปิดไปแล้ว) **มองไม่เห็น** ⇒ บอทออกเดินทางได้ตั้งแต่ 00:00 ไปยืนหน้าประตูที่ยังล็อก
+      //   ⇒ เสียเวลาฟาร์มได้ถึง 11 นาที/คืน โดยไม่มีใครเห็น (ไม่มี log บอกว่าทำไมออกเร็ว)
+      //   ✅ ถูกต้องกว่า: ก่อนรอบแรก = ยังอยู่ใน "รอบสุดท้ายของเมื่อวาน" ตามนาฬิกาจริง
+      if (best == null) {
+        const y = new Date(d.getTime() - 86400000);
+        return `${y.getFullYear()}-${y.getMonth() + 1}-${y.getDate()}#${Math.max(...list)}`;
+      }
       return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}#${best}`;
     } catch { return ''; }
   }
@@ -3658,7 +3667,10 @@
         if (m > nowMin && (next == null || m < next)) next = m;
       }
       return {
-        prev: prev == null ? 0 : mid + prev * 60000,
+        // 🌙 v6.381: ก่อนรอบแรกของวัน (00:00–00:10 ตามตารางจริง) prev เคยเป็น 0 = "ไม่รู้"
+        //   ⇒ ตัวคิด "มาก่อน/มาหลังบอสเกิด" ตาบอดทั้งช่วง · ที่ถูกคือรอบสุดท้ายของ **เมื่อวาน**
+        //   (ต้องแก้คู่กับ bossRoundKey ไม่งั้นล็อกรอบกับขอบเวลาจะพูดคนละเรื่องกัน)
+        prev: prev == null ? mid - 86400000 + Math.max(...list) * 60000 : mid + prev * 60000,
         next: next == null ? mid + 86400000 + list[0] * 60000 : mid + next * 60000,
       };
     } catch { return { prev: 0, next: 0 }; }
