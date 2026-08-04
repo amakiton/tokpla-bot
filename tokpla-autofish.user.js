@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.392
+// @version      6.393
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.392';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.393';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2507,6 +2507,9 @@
   const BAIT_KEEP_CHEAP = 300;   // ขั้น 1-3: ตุนเยอะ ๆ (ถูกมาก + เป็นตัวที่อยากใช้ที่สุด)
   const BAIT_KEEP_MID = 100;     // ขั้น 4 ขึ้นไป: พอใช้ (แพงขึ้น + ใช้เฉพาะรอบที่จุดอ่อนไม่มีขั้นถูก)
   const BAIT_PACKS_PER_RUN = 4;  // เพดานซื้อต่อขั้นต่อรอบ (กันเงินหมดรวดเดียวถ้าร้าน/สต๊อกเพี้ยน)
+  // ⏱️ v6.393: ร้านต้องรีเรนเดอร์ระหว่างแพ็ค — ยิงติดกันแล้วแพ็คถัดไปเงียบ (ดูคอมเมนต์ที่ buyBaitRowEx)
+  const BAIT_BUY_GAP_MS = 700;   // เว้นจังหวะหลังซื้อสำเร็จ ก่อนยิงแพ็คถัดไป
+  const BAIT_BUY_RETRY = 2;      // ร้านไม่ตอบ = ลองใหม่ได้ (ไม่กินโควตาแพ็ค) — ต่างจาก "เหรียญไม่พอ" ที่เลิกทันที
   const baitKeepFor = (t) => (t <= 3 ? BAIT_KEEP_CHEAP : BAIT_KEEP_MID);
   // ตรวจจากข้อมูลของเราเองว่า "สุ่มจริงไหม" — บอสตัวเดียวกันเคยโชว์จุดอ่อนต่างกันหรือยัง
   function bossWeakRandomProof() {
@@ -5809,15 +5812,37 @@
   //   (เดิม bossFight แค่ "สลับ" ไปขั้นจุดอ่อน ถ้าไม่มีในกระเป๋า = ตีด้วยเหยื่อผิด ไม่ได้ดาเมจ x1.5)
   //   1 แพ็ค (100 ชิ้น) พอตีบอส 1 ตัว (~110 วิ) เหลือเผื่อรอบถัดไป · ราคาถูก (ขั้น2 = ~1,200🪙)
   // 🛒 ซื้อเหยื่อ 1 แพ็คจากแถวร้าน — คืน true ถ้าซื้อสำเร็จ (helper ใช้ซ้ำใน ensureBossBaitStock)
-  async function buyBaitRow(r) {
-    if (!r || r.lockedLv || !r.addBtn || r.addBtn.disabled) return false;
-    fireClick(r.addBtn); await sleep(300);
+  // 🔴 v6.393 — **"ซื้อไม่ผ่าน" ไม่ได้แปลว่า "เงินไม่พอ" — และการเดาผิดทำให้หยุดซื้อทั้งที่ควรลองใหม่**
+  //   หลักฐานสด 5/8/69 00:08 (มีเงิน **2,922,189 🪙** ในกระเป๋า):
+  //     🎯 ตุนเหยื่อขั้น 3 ไม่สำเร็จ — ซื้อไม่ผ่าน (เงินไม่พอ/ร้านไม่ตอบ) · มี 137 ชิ้น
+  //     ❤️ เงินไม่พอซื้อยาฟื้นเลือด — เข้าถ้ำด้วยของที่มี
+  //   ⇒ ทั้งสองบรรทัดบอกว่า "เงินไม่พอ" ทั้งที่เงินเหลือเฟือ · ของจริงคือ **ร้านยังไม่พร้อมรับคำสั่งถัดไป**
+  //     (v6.392 ยิงซื้อติดกันโดยไม่เว้นจังหวะ — แพ็คที่ 2 สำเร็จ แพ็คที่ 3 ร้านยังรีเรนเดอร์อยู่)
+  //   ⇒ คืนค่าเป็น "เหตุผล" ไม่ใช่ true/false — ผู้เรียกจะได้แยกได้ว่าควร **ลองใหม่** หรือ **เลิก**
+  //     'ok' = ซื้อสำเร็จ · 'broke' = เงินไม่พอจริง (เกมบอกเอง) · 'busy' = ร้านไม่ตอบ/ยังไม่พร้อม (ลองใหม่ได้)
+  async function buyBaitRowEx(r) {
+    if (!r || r.lockedLv) return 'locked';
+    if (!r.addBtn || r.addBtn.disabled) return 'busy';          // ปุ่มยังไม่พร้อม = ยังไม่ใช่ความล้มเหลวถาวร
+    fireClick(r.addBtn); await sleep(400);
     const buy = btnByText('ซื้อเลย!') || btnByText('เหรียญไม่พอ');
-    if (!buy || buy.disabled || /เหรียญไม่พอ/.test(buy.textContent)) return false;
+    if (!buy) return 'busy';                                     // ตะกร้ายังไม่ขึ้น = ร้านไม่ทัน
+    if (/เหรียญไม่พอ/.test(buy.textContent || '')) return 'broke';   // เกมบอกเอง = เงินไม่พอจริง
+    if (buy.disabled) return 'busy';
     fireClick(buy);
     const done = await waitFor(() => { const t = document.body.innerText; if (t.includes('✅ ซื้อสำเร็จ!')) return 'ok'; if (t.includes('❌')) return 'fail'; return null; }, 8000);
-    if (done === 'ok') { const c = baitUnit(r.tier) * baitPack(r.tier); profit.life.baitCost += c; dayAdd('baitCost', c); saveProfit(); return true; }
-    return false;
+    if (done === 'ok') { const c = baitUnit(r.tier) * baitPack(r.tier); profit.life.baitCost += c; dayAdd('baitCost', c); saveProfit(); return 'ok'; }
+    return done === 'fail' ? 'fail' : 'busy';                    // ไม่มีคำตอบใน 8 วิ = ถือว่าร้านไม่ตอบ (ลองใหม่ได้)
+  }
+  // ตัวเดิม (true/false) — ยังใช้ที่อื่นอยู่ · ห่อทับเพื่อไม่ต้องแก้ผู้เรียกทุกจุด
+  const buyBaitRow = async (r) => (await buyBaitRowEx(r)) === 'ok';
+  // v6.393: กู้ร้านให้กลับมาพร้อมรับคำสั่ง ก่อนลองซื้อใหม่
+  //   ⚠️ ห้ามใช้ Escape กู้ — Escape ปิดร้านทั้งบาน แล้ว shopTab จะหาแท็บไม่เจอตลอดกาล
+  //   ตัวชี้ขาดว่า "ร้านเปิดอยู่จริง" คือ aria `ปิดร้าน` เท่านั้น (กฎ v6.105 — ห้ามใช้ข้อความยืนยัน)
+  async function shopSettle(tab) {
+    await sleep(BAIT_BUY_GAP_MS * 2);                  // ให้ป๊อปอัพ/ตะกร้าที่ค้างอยู่คลี่ตัวเอง
+    if (!qBtn('ปิดร้าน') && !(await openShop())) return false;
+    await shopTab(tab); await sleep(400);
+    return true;
   }
   // 👹 เตรียมเหยื่อ "ก่อนเข้าถ้ำบอส" (ในถ้ำซื้อไม่ได้) — v6.243 เสริม safety net หลังผู้ใช้เจอ "เหยื่อหมด ตีบอสไม่ได้"
   //   ตีบอสต้องมีเหยื่อติดเบ็ด (bossFight สลับเป็นเหยื่อจุดอ่อน) · เหยื่อหมดเกลี้ยง = ตีไม่ได้เลย = เสียรอบทั้งรอบ
@@ -5855,17 +5880,25 @@
       const cap = clamp(cfg.bossHpPotionMaxBuy || 2, 1, HP_POTION_HOLD_MAX);
       if (need > cap) need = cap;                              // เพดานต่อรอบล่า
       let bought = 0;
+      // 🔴 v6.393: เดิมทุกความล้มเหลวถูกป่าวว่า "เงินไม่พอ" — เห็นสด 00:08 ตอนมีเงิน 2.9 ล้าน
+      //   ⇒ พูดตามที่เกมบอกเท่านั้น · "ร้านไม่ตอบ" ให้ลองใหม่ได้ (ยาเป็นตัวลด deaths จริง ยอมเสียเวลา 2 วิ)
+      let busyRetry = 0;
       for (let i = 0; i < need; i++) {
         const { row: r2 } = hpPotionStock();
         const add = r2 && [...r2.querySelectorAll('button')].find((b) => /ใส่ตะกร้า/.test(b.textContent) && !b.disabled);
-        if (!add) break;
-        fireClick(add); await sleep(300);
-        const buy = btnByText('ซื้อเลย!') || btnByText('เหรียญไม่พอ');
-        if (!buy || buy.disabled || /เหรียญไม่พอ/.test(buy.textContent)) { say('❤️ เงินไม่พอซื้อยาฟื้นเลือด — เข้าถ้ำด้วยของที่มี'); break; }
-        fireClick(buy);
-        const done = await waitFor(() => { const t = document.body.innerText; if (t.includes('✅ ซื้อสำเร็จ!')) return 'ok'; if (t.includes('❌')) return 'fail'; return null; }, 8000);
-        if (done !== 'ok') break;
-        bought++; await sleep(350);
+        let buy = null;
+        if (add) { fireClick(add); await sleep(400); buy = btnByText('ซื้อเลย!') || btnByText('เหรียญไม่พอ'); }
+        if (buy && /เหรียญไม่พอ/.test(buy.textContent || '')) { say('❤️ เหรียญไม่พอซื้อยาฟื้นเลือด (เกมบอกเอง) — เข้าถ้ำด้วยของที่มี'); break; }
+        let done = null;
+        if (buy && !buy.disabled) {
+          fireClick(buy);
+          done = await waitFor(() => { const t = document.body.innerText; if (t.includes('✅ ซื้อสำเร็จ!')) return 'ok'; if (t.includes('❌')) return 'fail'; return null; }, 8000);
+        }
+        if (done === 'ok') { bought++; busyRetry = 0; await sleep(BAIT_BUY_GAP_MS); continue; }
+        if (done === 'fail') { logWarn('❤️ ร้านปฏิเสธการซื้อยา (❌) — หยุดตุนรอบนี้'); break; }
+        if (busyRetry >= BAIT_BUY_RETRY) { logWarn(`❤️ ร้านยาไม่ตอบ (ลองใหม่ ${BAIT_BUY_RETRY} ครั้งแล้ว) — เข้าถ้ำด้วยยาที่มี ${have + bought} ขวด`); break; }
+        busyRetry++; i--;                                  // ร้านไม่ตอบ ≠ ซื้อไม่ได้ — ไม่กินโควตาจำนวนขวด
+        if (!(await shopSettle('🧪 ยา'))) { logWarn('❤️ ร้านปิดไปเอง เปิดใหม่ไม่ได้ — เข้าถ้ำด้วยยาที่มี'); break; }
       }
       if (bought) {
         const cost = bought * HP_POTION_PRICE;
@@ -5993,22 +6026,37 @@
         const want = rows.length ? bossWeakTiersWanted() : [];   // v6.284: ตุน "ทุกขั้น" เพราะจุดอ่อนสุ่มต่อรอบ ทำนายไม่ได้
         // 🎯 v6.392: ไล่จากขั้นถูกไปแพง และ **ซื้อซ้ำจนถึงเป้า** (เดิมซื้อแค่ 1 แพ็คแล้วผ่านไป
         //   ⇒ ขั้นถูกที่ถูกใช้บ่อยที่สุดหมดเร็วกว่าที่เติม = ตกไปใช้ขั้นแพง ซึ่งคือสิ่งที่ผู้ใช้ไม่ต้องการ)
+        // 🔴 v6.393: ยิงซื้อติดกันแบบ v6.392 = ร้านตามไม่ทัน — แพ็คถัดไป "ซื้อไม่ผ่าน" ทั้งที่เงินมี 2.9 ล้าน
+        //   ⇒ เว้นจังหวะให้ร้านรีเรนเดอร์ + ถ้าเป็น 'busy' (ร้านไม่ตอบ) ให้ลองใหม่ ไม่ใช่เลิกทั้งขั้น
+        let broke = false;                                 // เงินหมดจริง → ขั้นถัด ๆ ไปก็ไม่ต้องลอง
         for (const wt of want) {
+          if (broke) break;
           const keep = baitKeepFor(wt);
-          let got = 0, stop = '';
+          let got = 0, stop = '', busyRetry = 0;
           for (let k = 0; k < BAIT_PACKS_PER_RUN; k++) {
             const wr2 = rows.find((r) => r.tier === wt);   // อ่านแถวใหม่ทุกรอบ — สต๊อกเปลี่ยนหลังซื้อ
             if (!wr2) { stop = 'หาแถวในร้านไม่เจอ'; break; }
             if (wr2.lockedLv) { stop = `ยังไม่ปลดล็อก (Lv.${wr2.lockedLv})`; break; }
             if ((wr2.stock || 0) >= keep) break;           // ถึงเป้าแล้ว
-            if (!(await buyBaitRow(wr2))) { stop = 'ซื้อไม่ผ่าน (เงินไม่พอ/ร้านไม่ตอบ)'; break; }
-            got++;
+            const res = await buyBaitRowEx(wr2);
+            if (res === 'ok') {
+              got++; busyRetry = 0;
+              await sleep(BAIT_BUY_GAP_MS);                // ให้ร้านรีเรนเดอร์ก่อนยิงแพ็คถัดไป
+            } else if (res === 'broke') {
+              stop = 'เหรียญไม่พอ (เกมบอกเอง)'; broke = true; break;
+            } else if (busyRetry < BAIT_BUY_RETRY) {
+              busyRetry++; k--;                            // ร้านไม่ตอบ ≠ ซื้อไม่ได้ — พักแล้วลองใหม่ ไม่กินโควตาแพ็ค
+              if (!(await shopSettle('🪱 เหยื่อ'))) { stop = 'ร้านปิดไปเอง เปิดใหม่ไม่ได้'; break; }
+            } else { stop = `ร้านไม่ตอบ (ลองใหม่ ${BAIT_BUY_RETRY} ครั้งแล้ว)`; break; }
             rows = shopRows().filter((r) => r.tier);       // สต๊อกเปลี่ยนแล้ว — อ่านใหม่ก่อนวนรอบถัดไป
           }
           const now2 = (rows.find((r) => r.tier === wt) || {}).stock;
           if (got) say(`🎯 ตุนเหยื่อขั้น ${wt} เพิ่ม ${got} แพ็ค → มี ${now2 ?? '?'} ชิ้น (เป้า ${keep}) · x1.5 เท่ากันทุกขั้น จึงต้องมีขั้นถูกไว้เยอะที่สุด`);
           else if (stop) say(`🎯 ตุนเหยื่อขั้น ${wt} ไม่สำเร็จ — ${stop} · มี ${now2 ?? '?'} ชิ้น`);
+          if (got) await sleep(BAIT_BUY_GAP_MS);           // เว้นจังหวะข้ามขั้นด้วย (คนละแถว แต่ร้านเดียวกัน)
         }
+        // เงินหมดจริงระหว่างตุน = เรื่องใหญ่ (จะตีบอสได้ไม่เต็มที่) → แจ้งออกไป ไม่ใช่แค่ log
+        if (broke && isOn('tgOn') && isOn('tgWarn')) void tgSend('🎯 <b>เหรียญไม่พอตุนเหยื่อจุดอ่อน</b> — เข้าถ้ำด้วยของที่มี');
         if (want.length) rows = shopRows().filter((r) => r.tier);      // อ่านสต๊อกใหม่หลังซื้อ
       }
       // 1) เหยื่อจุดอ่อนที่ผู้ใช้ตั้งเอง (ของเดิม — ยังเคารพถ้าตั้งไว้) · v6.329: ข้ามถ้าอ่านร้านไม่ออก
