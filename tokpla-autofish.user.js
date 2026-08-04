@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.387
+// @version      6.388
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.387';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.388';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -824,7 +824,20 @@
   //   เก็บแค่ 3 วัน (วันนี้ + เมื่อวาน + เผื่อข้ามคืน) — ไม่ให้ localStorage บวม
   const DAILY_KEY = 'tokpla_daily';
   const dayKey = (ms) => { const d = new Date(ms == null ? Date.now() : ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
-  const newDay = () => ({ revenue: 0, baitCost: 0, casts: 0, catches: 0, coffeeCost: 0, potionCost: 0, bossFights: 0, bossKills: 0, shards: 0, restMin: 0, firstAt: Date.now(), lastAt: Date.now() });
+  const newDay = () => ({ revenue: 0, baitCost: 0, casts: 0, catches: 0, coffeeCost: 0, potionCost: 0, bossFights: 0, bossKills: 0, shards: 0, restMin: 0, coinFirst: null, coinLast: null, firstAt: Date.now(), lastAt: Date.now() });
+  // 💵 v6.388: ยอดเหรียญจริงจาก HUD — `[aria="ยอดเหรียญ (แตะดูยอด)"]` (ยืนยันจากผลส่อง 4/8/2026)
+  //   สำรอง: aria ที่ขึ้นต้นด้วย "ยอดเหรียญ" (เกมอาจแก้คำในวงเล็บ) — ห้ามผูกกับอิโมจิ 🪙 (บทเรียนซ้ำรอบที่ 7)
+  function readCoins() {
+    try {
+      let b = qBtn('ยอดเหรียญ (แตะดูยอด)');
+      if (!b) for (const x of document.querySelectorAll('button[aria-label^="ยอดเหรียญ"]')) { if (!isBotUI(x)) { b = x; break; } }
+      if (!b) return null;
+      const m = /([\d,]{1,15})/.exec((b.textContent || '').trim());
+      if (!m) return null;
+      const v = parseInt(m[1].replace(/,/g, ''), 10);
+      return Number.isFinite(v) ? v : null;
+    } catch { return null; }
+  }
   function loadDaily() { try { const o = JSON.parse(W.localStorage.getItem(DAILY_KEY) || '{}'); return o && typeof o === 'object' ? o : {}; } catch { return {}; } }
   //   ⚠️ อ่าน-แก้-เขียนทุกครั้ง (ไม่ cache ไว้ในตัวแปร) — หน้าเกมโหลดใหม่เองบ่อย (วัดได้ ~9 ครั้ง/ชม.)
   //   ถ้า cache ไว้แล้วโดนรีโหลดกลางคัน ยอดของช่วงนั้นจะหายไปเงียบ ๆ
@@ -841,6 +854,24 @@
       W.localStorage.setItem(DAILY_KEY, JSON.stringify(o));
     } catch {}
   }
+  // 💵 v6.388: จดยอดเหรียญจริง — ครั้งแรกของวันเก็บเป็นฐาน ครั้งหลัง ๆ อัปเดตยอดล่าสุด
+  //   ⇒ "เงินสดที่เปลี่ยนไปจริงวันนี้" = coinLast − coinFirst · ไม่ผ่านการประเมินใด ๆ ทั้งสิ้น
+  //   ⚠️ อ่าน-แก้-เขียนทุกครั้ง (ไม่ cache) ด้วยเหตุผลเดียวกับ dayAdd — หน้าเกมโหลดใหม่เองบ่อย
+  function dayCoin(v) {
+    if (!Number.isFinite(v) || v < 0) return;
+    try {
+      const o = loadDaily(), k = dayKey();
+      const d = o[k] || (o[k] = newDay());
+      if (d.coinFirst == null) d.coinFirst = v;
+      d.coinLast = v;
+      d.lastAt = Date.now();
+      const keys = Object.keys(o).sort();
+      while (keys.length > 3) { delete o[keys.shift()]; }
+      W.localStorage.setItem(DAILY_KEY, JSON.stringify(o));
+    } catch {}
+  }
+  // เงินสดจริงที่เปลี่ยนไปในวันนั้น (null = ยังอ่านยอดเหรียญไม่ได้ / เป็นข้อมูลวันเก่าก่อน v6.388)
+  const dayCash = (d) => (d && d.coinFirst != null && d.coinLast != null ? d.coinLast - d.coinFirst : null);
   const dayNet = (d) => (d.revenue || 0) - (d.baitCost || 0) - (d.coffeeCost || 0) - (d.potionCost || 0);
   // 📅 รายงาน "วันนี้ vs เมื่อวาน" — ตอบคำถามเดียว: ที่แก้ไปได้ผลจริงไหม
   function dailyReport() {
@@ -869,6 +900,18 @@
     rows.push('─'.repeat(46));
     line('💰 กำไรสุทธิ', t && dayNet(t), y && dayNet(y));
     line('  ต่อชั่วโมง', t && per(dayNet(t), th), y && per(dayNet(y), yh));
+    // 💵 v6.388 — **บรรทัดที่เถียงไม่ได้**: ยอดเหรียญจริงเปลี่ยนไปเท่าไร (ไม่ใช่มูลค่าปลาที่ประเมิน)
+    //   3/8/69 บอทรายงานกำไร +1,348,618 แต่เงินสดจริง −154,670 — ต่างกันเพราะปลาที่ล็อกไว้ขายไม่ได้
+    {
+      const tc = dayCash(t), yc = dayCash(y);
+      rows.push('');
+      if (tc == null && yc == null) rows.push('💵 เงินสดจริง       (เริ่มเก็บ v6.388 — จะขึ้นในไม่กี่นาที)');
+      else {
+        line('💵 เงินสดจริง', tc, yc);
+        line('  ต่อชั่วโมง', tc != null ? per(tc, th) : null, yc != null ? per(yc, yh) : null);
+        if (t && t.coinLast != null) rows.push(`   (ยอดล่าสุด ${t.coinLast.toLocaleString()} 🪙${t.coinFirst != null ? ` · ต้นวัน ${t.coinFirst.toLocaleString()}` : ''})`);
+      }
+    }
     rows.push('');
     line('เหวี่ยง (ครั้ง)', t && t.casts, y && y.casts);
     line('  ต่อชั่วโมง', t && per(t.casts, th), y && per(t.casts != null ? y.casts : 0, yh));
@@ -1954,12 +1997,13 @@
 
   const btnByText = (prefix) =>
     [...document.querySelectorAll('button')].find((b) => !isBotUI(b) && b.textContent.trim().startsWith(prefix)) || null;
-  // 🔎 v6.387 — **`btnByText` ใช้ startsWith ⇒ ปุ่มที่ขึ้นต้นด้วยอิโมจิจะหาไม่เจอตลอดกาล**
-  //   เจอตอนรีวิว v6.386 ที่เพิ่ง push: ป้ายเปิดป๊อบอัพบนจอจริงคือ **"🐯 ถึงรอบบอสแล้ว!"**
-  //   ⇒ `btnByText('ถึงรอบบอสแล้ว')` = false เสมอ ⇒ เส้นทาง "เปิดป๊อบอัพเองแล้วค่อยกดวาร์ป" ตายสนิท
-  //     (จะทำงานได้เฉพาะตอนปุ่มวาร์ปโผล่อยู่บนจอพอดีเท่านั้น = พึ่งโชค)
-  //   ⚠️ บทเรียนเดิมของโปรเจกต์ซ้ำอีกรอบ: ห้ามผูก selector กับอิโมจิ — และ "ขึ้นต้นด้วย" ก็คือการผูกกลาย ๆ
-  //   ตัวนี้จับแบบ "มีคำนี้อยู่ในปุ่ม" + ข้าม UI บอทเหมือนกัน (กฎเหล็ก #7) · ใช้เมื่อรู้ว่าปุ่มมีอิโมจิ/คำนำหน้า
+  // 🔎 v6.387 — ตัวจับปุ่มแบบ "มีคำนี้อยู่ในปุ่ม" (ไม่ต้องขึ้นต้นด้วยคำนั้น) + ข้าม UI บอท (กฎเหล็ก #7)
+  //   ⚠️ v6.388 แก้ข้อสันนิษฐานที่ผิดของ v6.387: ตอนนั้นเดาจาก **ภาพหน้าจอ** ว่าปุ่มคือ "🐯 ถึงรอบบอสแล้ว!"
+  //     แล้วสรุปว่า startsWith ใช้ไม่ได้ · **ผลส่องจริง (`/probe`) บอกว่า `button "ถึงรอบบอสแล้ว!"` ไม่มีอิโมจิใน textContent**
+  //     (🐯 บนจอมาจาก element อื่น) ⇒ `btnByText` เดิมใช้ได้อยู่แล้ว
+  //   📌 บทเรียน: **ข้อความที่ "ตาเห็นบนจอ" ≠ `textContent` ของปุ่มนั้น** — ห้ามสรุป selector จากภาพหน้าจอ
+  //   ตัวนี้ยังคงไว้เป็น "ตัวสำรองชั้นสุดท้าย" — มีประโยชน์จริงกับปุ่มที่มีตัวเลข/อิโมจิปนใน textContent
+  //     (ผลส่องยืนยันว่ามีจริง เช่น `button.tk-chip "🦴194"` · `[aria="เลือกเหยื่อ"] "60"`)
   const btnByTextLoose = (s) =>
     [...document.querySelectorAll('button')].find((b) => !isBotUI(b) && (b.textContent || '').includes(s)) || null;
 
@@ -4132,8 +4176,36 @@
   const WARP_LABELS = ['วาปไปหาบอส', 'Warp to the boss'];
   const RAID_POPUP_OPENERS = ['ดูตาราง', 'Schedule', 'ถึงเวลาล่าบอส', 'Boss hunt is open', 'ถึงรอบบอสแล้ว'];
   let warpFailAt = NEVER;
-  // v6.387: ใช้ตัวจับแบบ "มีคำนี้อยู่" — ปุ่มเกมมักมีอิโมจิ/ช่องว่างนำหน้า (ดูเหตุผลที่ btnByTextLoose)
-  const warpBtn = () => { for (const s of WARP_LABELS) { const b = btnByTextLoose(s); if (b && !b.disabled) return b; } return null; };
+  // 🎯 v6.388 — **ผูกกับโครงจริงจากผลส่อง `/probe ถึงรอบบอสแล้ว` (4 ส.ค. 2026)** ไม่ใช่ข้อความอย่างเดียวแล้ว
+  //     div.tk-card "⠿ตารางบอสวันนี้×กำลังเปิดอยู่ เหลืออีก 21 นาที 44 วิ วาปไปหาบ…"
+  //       div [aria="ลากย้ายหน้าต่าง"] "⠿"
+  //       button [aria="ปิด"] "×"
+  //       button.tk-btn.tk-btn-primary "วาปไปหาบอส"     ← ปุ่มวาร์ป
+  //       button "ถึงรอบบอสแล้ว!"                        ← ตัวเปิด (ไม่มี aria-label · ไม่มีอิโมจิใน textContent)
+  //   ⚠️ **ปุ่มวาร์ปไม่มี `aria-label`** — ผูกกับ aria ไม่ได้จริง ๆ (ตรวจแล้ว ไม่ใช่ว่าไม่ได้หา)
+  //     สิ่งที่ใช้ยืนยันแทนได้: อยู่ใน `.tk-card` (การ์ดป๊อบอัพ) + class `tk-btn-primary` + ข้อความจาก i18n
+  //     ⇒ ต้องครบ "ข้อความตรง" **และ** "อยู่ในการ์ด/เป็นปุ่มหลัก" ถึงจะกด — กันกดปุ่มมั่วบนจอหลัก
+  const warpBtn = () => {
+    for (const s of WARP_LABELS) {
+      for (const b of document.querySelectorAll('button.tk-btn-primary, .tk-card button')) {
+        if (isBotUI(b) || b.disabled) continue;
+        if ((b.textContent || '').includes(s)) return b;
+      }
+    }
+    // สำรอง: เกมเปลี่ยน class/โครงการ์ด → กลับไปหาแบบข้อความล้วน (ยังพิสูจน์ผลด้วยการเปลี่ยนแมพอยู่ดี)
+    for (const s of WARP_LABELS) { const b = btnByTextLoose(s); if (b && !b.disabled) return b; }
+    return null;
+  };
+  // ปิดป๊อบอัพตารางบอส — ผลส่องยืนยันว่ามี `button [aria="ปิด"]` อยู่ในการ์ด (แม่นกว่ายิง Esc ทั้งหน้า)
+  //   ⚠️ ห้ามใส่ ' (apostrophe) ใน regex บรรทัดล่าง — `tools/check-order.js` เคยตาบอดทั้งไฟล์เพราะเรื่องนี้ (v6.388)
+  const closeRaidCard = () => {
+    for (const c of document.querySelectorAll('.tk-card')) {
+      if (isBotUI(c) || !/ตารางบอส|boss rounds/i.test(c.textContent || '')) continue;
+      const x = c.querySelector('button[aria-label="ปิด"], button[aria-label="Close"]');
+      if (x) { fireClick(x); return true; }
+    }
+    gameEscape(); return false;
+  };
   async function bossWarpToCave() {
     if (now() - warpFailAt < 5 * 60000) return false;   // เพิ่งลองแล้วไม่ได้ = อย่ากดรัว (ป๊อบอัพเด้งบ่อยดูเป็นบอท)
     const cur = bossMapId();
@@ -4147,13 +4219,13 @@
         b = warpBtn();
         if (b) break;
       }
-      if (!b) { if (opened) gameEscape(); warpFailAt = now(); return false; }
+      if (!b) { if (opened) closeRaidCard(); warpFailAt = now(); return false; }   // v6.388: ปิดด้วยปุ่ม ✕ ของการ์ด
     }
     say('🌀 เจอปุ่ม "วาปไปหาบอส" ของเกม — วาร์ปเข้าถ้ำเลย (ไม่ต้องเดิน)');
     fireClick(b);
     const ok = await waitFor(() => bossMapId() && bossMapId() !== cur, 8000, 250);
     if (!ok) {
-      gameEscape(); warpFailAt = now();
+      closeRaidCard(); warpFailAt = now();
       bossEvent('🌀 กดวาปไปหาบอสแล้วแมพไม่เปลี่ยน — ถอยไปใช้การเดินตามปกติ');
       return false;
     }
@@ -6588,6 +6660,7 @@
   //   เก็บลง log ring → /report เห็นได้ · ไว้ถอดรหัสกลไกสู้บอส (ตีเอง/บอทตี ก็จับได้)
   //   บันทึกไทม์ไลน์บอสตัวล่าสุดแยกไว้ (bossFightLog) เผื่ออยากดูเป็นชุด
   let lastBossObs = 0, bossObsPrev = '', bossFightLog = [], bossObsHot = false, bossGaugeDom = '', lastGraphMap = '';
+  let lastCoinRead = NEVER;   // 💵 v6.388: อ่านยอดเหรียญจาก HUD ครั้งล่าสุด (NEVER = รีโหลดแล้วอ่านได้ทันที)
   let sosProbeAt = 0, sosProbeDone = false;   // 🆘 v6.330: จับจังหวะ "บอสอยู่แต่ตีไม่ได้นาน" แล้วเก็บรายชื่อปุ่ม (หา SOS)
   function bossObserve() {
     try {
@@ -11589,6 +11662,12 @@ ${esc(reason)}
       lastGameCatchPoll = now();
       pollGameCatches();
     }
+    // 💵 v6.388 — **อ่าน "ยอดเหรียญจริง" จาก HUD ทุก 60 วิ** (ทำงานแม้บอทปิด — อ่านอย่างเดียว)
+    //   ผลส่อง `/probe` เปิดทางนี้ให้: `button.tk-chip [aria="ยอดเหรียญ (แตะดูยอด)"] "868,094"`
+    //   ทำไมสำคัญกว่าที่ดูเหมือน: บัญชีทั้งระบบนับ **"มูลค่าปลาที่ตกได้"** ไม่ใช่ "เงินที่เข้ากระเป๋า"
+    //   ⇒ วันที่ 3/8 บอทรายงานกำไร **+1,348,618** แต่เงินสดจริง **−154,670** (ปลาที่ล็อกไว้กิน 58% ของมูลค่า)
+    //   ⇒ ต่อให้แก้ตัวเลขประเมินอีกกี่รอบ ก็ยังเป็นการประเมิน · **ยอดเหรียญคือความจริงที่เถียงไม่ได้**
+    if (now() - lastCoinRead > 60000) { lastCoinRead = now(); const _c = readCoins(); if (_c != null) dayCoin(_c); }
     // 👹 เฝ้าบันทึกบอส — v6.109: ทำงาน "แม้บอทปิด" (เป็นแค่การอ่านสถานะ ปลอดภัย · ไม่กระทำใดๆ)
     //   v6.111: ตอนมีบอส (context) จับถี่ 350ms (เกจหมุนเร็ว 1 วิพลาด) · แมพปกติ 1.2 วิ (ประหยัด)
     if (now() - lastBossObs > (bossObsHot ? 350 : 1200)) { lastBossObs = now(); bossObserve(); }

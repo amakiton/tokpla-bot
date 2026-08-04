@@ -4,3 +4,5 @@ bot.txt
 bot2.txt
 .DS_Store
 Thumbs.db
+
+tools/.check-order-count
