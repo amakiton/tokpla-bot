@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.390
+// @version      6.391
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.390';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.391';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -5128,6 +5128,19 @@
     let beatMissRun = 0;              // v6.285: หลุดจังหวะติดกันกี่ครั้งหลังล็อก (ครบ 3 = ปลดล็อกจับใหม่)
     let beatStartedAt = 0;            // startedAt จริงจาก fiber (ถ้าหาเจอ = แม่นสุด)
     let beatFindTried = false;
+    // 🥁 v6.391 — **สมอที่ได้จาก "ดี" แม่นได้แค่ ±300ms ⇒ ไม่มีวันถึง "เป๊ะ" (±150ms)**
+    //   หลักฐานสด ไฟต์ 19:30 (หมึกยักษ์ท่าเรือ): กด 325 ครั้ง → ดี 267 · **เป๊ะ 0** · หลุด 0 · คอมโบสูงสุด 0
+    //   ค่าจริงจากเซิร์ฟเวอร์: perfect ±150ms ×0.88 · good ±300ms ×0.67 · คอมโบ +5%/สเต็ป เพดาน +30%
+    //   ⇒ ล็อกสมอจาก "ดี" ครั้งแรก (v6.285) แล้วยิงห่างสมอ ≤110ms — ถ้าสมอเพี้ยนไป 250ms
+    //     ทุกนัดจะตกในช่วง 140–360ms = **"ดี" ตลอดกาล ไม่เคยแตะ "เป๊ะ"**
+    //   ⇒ และมันค้ำตัวเองด้วย: "ดี" รีเซ็ต beatMissRun ⇒ ไม่มีวันครบ 3 miss ⇒ ไม่มีวันปลดล็อกไปจับใหม่
+    //   ⚠️ คอมโบมาจาก "เป๊ะ" เท่านั้น — ยืนยันจากไฟต์นี้: ดีติดกัน 267 ครั้ง คอมโบยังเป็น 0
+    //   ✅ แก้: ถ้ายังไม่เคยได้ "เป๊ะ" ให้ **ไล่หา** ด้วยการเลื่อนจุดยิงทีละน้อยรอบสมอ
+    //     พอได้ "เป๊ะ" ครั้งแรก → ยึดสลอตนั้นเป็นสมอจริงและหยุดไล่ (แม่น ±150ms แล้ว)
+    //     ผลที่คาด: ตัวคูณ 0.67 → 0.88 (+31%) และปลดคอมโบได้ถึง +30% ⇒ รวม ~+70%
+    let beatPrecise = false;          // สมอมาจาก "เป๊ะ" แล้วหรือยัง
+    let beatProbeIdx = 0;             // ไล่หาถึงรอบไหนแล้ว
+    const BEAT_PROBES = [0, -90, 90, -150, 150, -50, 50, -200, 200];
     let tapWait = null;               // { at, slot } — การกดที่รอผลตอบกลับ
     const tapFb = { perfect: 0, good: 0, miss: 0, none: 0 };
     let comboMax = 0, stunSkips = 0;
@@ -5152,14 +5165,25 @@
       //   ⇒ ไม่มีทางถึง 24 ตัวอย่างในไฟต์เดียว · และเฟสข้ามไฟต์ไม่ได้ (`startedAt` คนละค่าต่อ raid)
       //   ⇒ วิธีที่ถูก: **โดน "เป๊ะ" หรือ "ดี" แค่ครั้งเดียวก็รู้เฟสแล้ว** — จังหวะนั้นคือบีต
       //      จากนั้นยิงที่ anchor + k×1200ms · แม่นทันทีแทนที่จะรอสะสม
-      if (beatLockSlot == null && (fb === 'perfect' || fb === 'good')) {
+      // 🥁 v6.391: "เป๊ะ" ชนะทุกอย่าง — ยึดสลอตนั้นเป็นสมอจริงทันที แม้เคยล็อกจาก "ดี" ไว้แล้ว
+      if (fb === 'perfect' && !beatPrecise) {
+        beatLockSlot = tapWaitSlot; beatPrecise = true; beatMissRun = 0;
+        logInfo(`🥁 ได้ "เป๊ะ!" แล้ว — ยึดสมอจริงที่ ${beatLockSlot}ms (เลิกไล่หา) · ตัวคูณ 0.88 + ปลดคอมโบได้ถึง +30%`);
+      } else if (beatLockSlot == null && fb === 'good') {
         beatLockSlot = tapWaitSlot;
-        logInfo(`🥁 จับจังหวะได้จาก "${fb === 'perfect' ? 'เป๊ะ' : 'ดี'}" ครั้งเดียว — ล็อกบีตที่ ${beatLockSlot}ms แล้วยิงตามทุก 1.2 วิ`);
-      } else if (beatLockSlot != null && fb === 'miss' && ++beatMissRun >= 3) {
+        logInfo(`🥁 จับจังหวะคร่าว ๆ จาก "ดี" ที่ ${beatLockSlot}ms — ยังไม่แม่นพอ (ดี = คลาดได้ถึง ±300ms) จะไล่หา "เป๊ะ" ต่อ`);
+      } else if (!beatPrecise && beatLockSlot != null && (fb === 'good' || fb === 'miss')) {
+        // ยังไม่เคยเป๊ะ = สมอยังเพี้ยนได้ → ขยับจุดยิงไปลองตำแหน่งถัดไปรอบสมอ
+        beatProbeIdx++;
+        if (beatProbeIdx === BEAT_PROBES.length) logInfo('🥁 ไล่หา "เป๊ะ" ครบรอบแล้วยังไม่เจอ — วนไล่ใหม่ (บอสตัวนี้อาจไม่มีบีต)');
+      }
+      if (beatLockSlot != null && fb === 'miss' && ++beatMissRun >= 3) {
         // หลุด 3 ครั้งติดหลังล็อก = สมอเพี้ยน (เฟสเลื่อน/อ่านผลผิด) → ปลดล็อกไปจับใหม่ ดีกว่ายิงผิดที่ต่อ
         beatMissRun = 0; beatLockSlot = null;
         logInfo('🥁 หลุดจังหวะ 3 ครั้งติด — ปลดล็อกไปจับสมอใหม่');
       } else if (fb === 'perfect' || fb === 'good') beatMissRun = 0;
+      // v6.391: ปลดล็อกแล้ว = ต้องเริ่มไล่หาใหม่ทั้งชุด (ไม่งั้นสมอใหม่จะถูกยิงด้วย offset เก่าที่ค้างอยู่)
+      if (beatLockSlot == null) { beatPrecise = false; beatProbeIdx = 0; }
       // (ของเดิม) ล็อกจากสถิติ — เก็บไว้เป็นทางสำรองกรณีไม่เคยได้ "เป๊ะ/ดี" เลย
       if (beatLockSlot == null && tapFb.perfect + tapFb.good + tapFb.miss >= 24) {
         const ranked = beatBuckets.map((v, i) => ({ i, avg: v.n ? v.score / v.n : -9, n: v.n })).filter((v) => v.n >= 2).sort((a, b2) => b2.avg - a.avg);
@@ -5169,13 +5193,16 @@
         }
       }
     };
-    // ตอนนี้ควรกดไหม (โหมดล็อกแล้วเท่านั้น) — ห่างจากบีตไม่เกิน ±110ms คือได้ perfect/good
+    // ตอนนี้ควรกดไหม (โหมดล็อกแล้วเท่านั้น)
+    // 🥁 v6.391: ยังไม่เคยได้ "เป๊ะ" → เลื่อนจุดยิงไปตาม BEAT_PROBES เพื่อ **ไล่หาบีตจริง**
+    //   และบีบหน้าต่างให้แคบลงเมื่อแม่นแล้ว (±70ms) — ยิงห่าง 110ms จากบีตจริงยังหลุด "เป๊ะ" (±150) ได้ถ้าสมอเพี้ยนนิดเดียว
     const beatOkNow = () => {
       if (beatLockSlot == null && !beatStartedAt) return true;   // ยังวัดอยู่ = กดตามเดิม ไม่เปลี่ยนพฤติกรรม
       const slot = beatStartedAt ? (Date.now() - beatStartedAt) % BEAT_MS : Date.now() % BEAT_MS;
-      const target = beatStartedAt ? 0 : beatLockSlot;
+      const probe = (beatStartedAt || beatPrecise) ? 0 : BEAT_PROBES[beatProbeIdx % BEAT_PROBES.length];
+      const target = ((beatStartedAt ? 0 : beatLockSlot) + probe + BEAT_MS) % BEAT_MS;
       let d = Math.abs(slot - target); if (d > BEAT_MS / 2) d = BEAT_MS - d;
-      return d <= 110;
+      return d <= ((beatStartedAt || beatPrecise) ? 70 : 110);
     };
     // 🛡️ v6.266: เกมปฏิเสธการกดตอน downed/stunned (โค้ดเกม: Promise.reject('downed'/'stunned'))
     //   กดตอนนั้น = เสียเปล่า + เสี่ยงตัดคอมโบ · scene มีธงพวกนี้ให้อ่านตรงๆ
@@ -5743,7 +5770,8 @@
       tapPerfect: tapFb.perfect, tapGood: tapFb.good, tapMiss: tapFb.miss, tapNoFb: tapFb.none,
       // ❤️ v6.270: ยาฟื้นเลือด — ดูว่าช่วยลด deaths จริงไหม (เทียบกับรอบ 10:30 ที่ตาย 3)
       potionUses, potionFails, potionPath: potionQuickPath,
-      comboMax, stunSkips, beatLock: beatLockSlot, beatSrc: beatStartedAt ? 'startedAt' : (beatLockSlot != null ? 'วัดเอง' : 'ยังไม่ล็อก'),
+      comboMax, stunSkips, beatLock: beatLockSlot, beatPrecise, beatProbes: beatProbeIdx,   // v6.391: แม่นหรือยัง + ไล่หาไปกี่รอบ
+      beatSrc: beatStartedAt ? 'startedAt' : (beatLockSlot != null ? (beatPrecise ? 'เป๊ะ' : 'ดี(หยาบ)') : 'ยังไม่ล็อก'),
       beatBuckets: beatBuckets.map((b) => (b.n ? +(b.score / b.n).toFixed(2) : null)),
     });
     if (isOn('tgOn')) void tgSend(`👹 <b>จบสู้บอส</b> ${esc(outcome)}\n${esc(stat)}\nกำลังกลับไปฟาร์ม`);
