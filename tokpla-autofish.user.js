@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.386
+// @version      6.387
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.386';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.387';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1954,6 +1954,14 @@
 
   const btnByText = (prefix) =>
     [...document.querySelectorAll('button')].find((b) => !isBotUI(b) && b.textContent.trim().startsWith(prefix)) || null;
+  // 🔎 v6.387 — **`btnByText` ใช้ startsWith ⇒ ปุ่มที่ขึ้นต้นด้วยอิโมจิจะหาไม่เจอตลอดกาล**
+  //   เจอตอนรีวิว v6.386 ที่เพิ่ง push: ป้ายเปิดป๊อบอัพบนจอจริงคือ **"🐯 ถึงรอบบอสแล้ว!"**
+  //   ⇒ `btnByText('ถึงรอบบอสแล้ว')` = false เสมอ ⇒ เส้นทาง "เปิดป๊อบอัพเองแล้วค่อยกดวาร์ป" ตายสนิท
+  //     (จะทำงานได้เฉพาะตอนปุ่มวาร์ปโผล่อยู่บนจอพอดีเท่านั้น = พึ่งโชค)
+  //   ⚠️ บทเรียนเดิมของโปรเจกต์ซ้ำอีกรอบ: ห้ามผูก selector กับอิโมจิ — และ "ขึ้นต้นด้วย" ก็คือการผูกกลาย ๆ
+  //   ตัวนี้จับแบบ "มีคำนี้อยู่ในปุ่ม" + ข้าม UI บอทเหมือนกัน (กฎเหล็ก #7) · ใช้เมื่อรู้ว่าปุ่มมีอิโมจิ/คำนำหน้า
+  const btnByTextLoose = (s) =>
+    [...document.querySelectorAll('button')].find((b) => !isBotUI(b) && (b.textContent || '').includes(s)) || null;
 
   // 🎣 ระบบ "ตกปลาอัตโนมัติ" ของเกม (ปุ่มเดียวสลับ ตกปลาอัตโนมัติ ↔ หยุดตกอัตโนมัติ · aria-label ทั้งคู่)
   //   เกมย้ายกลไกตก (จังหวะฮุบ/มินิเกมดึง) ไปวาดบน canvas ที่บอทอ่านไม่ได้ตั้งแต่เวอร์ชันล่าสุด
@@ -4124,7 +4132,8 @@
   const WARP_LABELS = ['วาปไปหาบอส', 'Warp to the boss'];
   const RAID_POPUP_OPENERS = ['ดูตาราง', 'Schedule', 'ถึงเวลาล่าบอส', 'Boss hunt is open', 'ถึงรอบบอสแล้ว'];
   let warpFailAt = NEVER;
-  const warpBtn = () => { for (const s of WARP_LABELS) { const b = btnByText(s); if (b && !b.disabled) return b; } return null; };
+  // v6.387: ใช้ตัวจับแบบ "มีคำนี้อยู่" — ปุ่มเกมมักมีอิโมจิ/ช่องว่างนำหน้า (ดูเหตุผลที่ btnByTextLoose)
+  const warpBtn = () => { for (const s of WARP_LABELS) { const b = btnByTextLoose(s); if (b && !b.disabled) return b; } return null; };
   async function bossWarpToCave() {
     if (now() - warpFailAt < 5 * 60000) return false;   // เพิ่งลองแล้วไม่ได้ = อย่ากดรัว (ป๊อบอัพเด้งบ่อยดูเป็นบอท)
     const cur = bossMapId();
@@ -4132,7 +4141,7 @@
     if (!b) {                                            // ป๊อบอัพยังไม่เปิด → เปิดก่อน
       let opened = false;
       for (const s of RAID_POPUP_OPENERS) {
-        const o = btnByText(s);
+        const o = btnByTextLoose(s);   // v6.387: ป้ายจริงคือ "🐯 ถึงรอบบอสแล้ว!" — startsWith จับไม่ได้
         if (!o || o.disabled) continue;
         fireClick(o); await sleep(700); opened = true;
         b = warpBtn();
@@ -7609,10 +7618,11 @@
     if (busy || orchestrating) { say2('🔎 บอทติดงานอยู่ (busy/orchestrating) — ลองใหม่อีกครั้ง'); return; }
     busy = true;
     try {
-      let btn = qBtn(label) || btnByText(label);
+      // v6.387: เพิ่มตัวจับแบบ "มีคำนี้อยู่" — ไม่งั้นส่องปุ่มที่ขึ้นต้นด้วยอิโมจิไม่ได้เลย (เช่น "🐯 ถึงรอบบอสแล้ว!")
+      let btn = qBtn(label) || btnByText(label) || btnByTextLoose(label);
       if (!btn) {   // เมนูถูกย่อ = ปุ่มหายจาก DOM (v6.104) → กางก่อนแล้วหาใหม่
         const open = qBtn('กางแผงเมนู');
-        if (open) { fireClick(open); await sleep(600); btn = qBtn(label) || btnByText(label); }
+        if (open) { fireClick(open); await sleep(600); btn = qBtn(label) || btnByText(label) || btnByTextLoose(label); }
       }
       if (!btn) { say2(`🔎 หาปุ่ม "${esc(label)}" ไม่เจอบนจอ · ลองชื่อที่เห็นบนปุ่มจริง เช่น "แลกเศษบอส" / "จดหมาย" / "กระเป๋า" / "ร้านค้านักตกปลา"`); return; }
       fireClick(btn); await sleep(1300);
@@ -13631,7 +13641,7 @@ ${esc(reason)}
         void (async () => {
           busy = true;
           try {
-            const btn = qBtn(label) || btnByText(label);
+            const btn = qBtn(label) || btnByText(label) || btnByTextLoose(label);   // v6.387: รับปุ่มที่มีอิโมจินำหน้าด้วย
             if (!btn) { showTextModal('🔎 ส่องแผงเกม', `หาปุ่ม "${label}" ไม่เจอบนจอ\n\nถ้าเมนูถูกย่อไว้ ให้ลองส่อง "กางแผงเมนู" ก่อน แล้วค่อยส่องแผงที่ต้องการ`); return; }
             fireClick(btn); await sleep(1200);
             const out = domOutline(120);
