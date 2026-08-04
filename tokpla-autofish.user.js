@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.389
+// @version      6.390
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.389';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.390';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4489,16 +4489,15 @@
     if (bossGearEarlyFresh()) return false;
     bossGearEarlyAt = now();                       // ตั้งก่อนทำ — กันถูกเรียกซ้ำระหว่างที่ยัง await อยู่
     bossEvent(`⚡ จัดเบ็ด/ทุ่นบอสล่วงหน้า (${why}) — พอประตูเปิดจะได้พุ่งเข้าตีเลย ไม่ต้องเปิดกระเป๋าตอนบอส 100%`);
-    if (isOn('rodSwitchOn')) {
+    // 🎒 v6.390: เบ็ด+ทุ่นอยู่แท็บเดียวกัน — เปิดกระเป๋ารอบเดียวทำให้จบ (เดิมเปิด/ปิด 2 รอบ)
+    if (isOn('rodSwitchOn') || isOn('floatSwitchOn')) {
       busy = true;
-      try { say('⚡ เลือกเบ็ดที่ดาเมจบอสสูงสุด (ระหว่างยืนรอ)'); if (!(await equipRodBy('boss'))) say('⚠️ ใช้เบ็ดชิ้นเดิมตีบอสแทน'); }
-      catch (e) { logErr('เลือกเบ็ดบอสล่วงหน้าล้มเหลว', e); }
-      finally { busy = false; }
-    }
-    if (isOn('floatSwitchOn')) {
-      busy = true;
-      try { say('⚡ เลือกทุ่นที่ตีบอสแรงสุด (ระหว่างยืนรอ)'); await equipFloatBy('boss'); }
-      catch (e) { logErr('เลือกทุ่นบอสล่วงหน้าล้มเหลว', e); }
+      try {
+        await withBagOpen(async () => {
+          if (isOn('rodSwitchOn')) { say('⚡ เลือกเบ็ดที่ดาเมจบอสสูงสุด (ระหว่างยืนรอ)'); if (!(await equipRodBy('boss'))) say('⚠️ ใช้เบ็ดชิ้นเดิมตีบอสแทน'); }
+          if (isOn('floatSwitchOn')) { say('⚡ เลือกทุ่นที่ตีบอสแรงสุด (ระหว่างยืนรอ)'); await equipFloatBy('boss'); }
+        });
+      } catch (e) { logErr('จัดเบ็ด/ทุ่นบอสล่วงหน้าล้มเหลว', e); }
       finally { busy = false; }
     }
     bossReleaseAll();                              // เผื่อมีปุ่มค้างจากก่อนเปิดกระเป๋า
@@ -4794,24 +4793,21 @@
       gearPrepped = true;
       gearPrepEarly = !spawnSeenAt;   // ⏱️ v6.345: จัดของ "ก่อนบอสโผล่" ไหม — ตัวแปรที่ t2first ต้องเทียบด้วย
       // ⚡ v6.383: จัดไปแล้วตอนยืนรอหน้าประตู = ข้ามเลย (นี่คือ 10 วินาทีที่เคยเสียไปตอนบอส 100%)
+      // 🎒 v6.390: รวมเบ็ด+ทุ่นไว้ในการเปิดกระเป๋ารอบเดียว (⭕ v6.304: ทุ่น "ตาดุก" มี "ตีบอสแรงขึ้น 15%")
       if (bossGearEarlyFresh()) {
         logInfo('⚡ เบ็ด/ทุ่นบอสจัดไว้ตั้งแต่ตอนยืนรอหน้าประตูแล้ว — ข้ามไปตีเลย (ประหยัด ~10 วิ)');
-      } else if (isOn('rodSwitchOn')) {
+      } else if (isOn('rodSwitchOn') || isOn('floatSwitchOn')) {
         busy = true;
         try {
-          say('👹 เลือกเบ็ดที่ดาเมจบอสสูงสุด');
-          if (!(await equipRodBy('boss'))) say('⚠️ ใช้เบ็ดชิ้นเดิมตีบอสแทน');
-        } catch (e) { logErr('เลือกเบ็ดบอสล้มเหลว', e); }
+          await withBagOpen(async () => {
+            if (isOn('rodSwitchOn')) { say('👹 เลือกเบ็ดที่ดาเมจบอสสูงสุด'); if (!(await equipRodBy('boss'))) say('⚠️ ใช้เบ็ดชิ้นเดิมตีบอสแทน'); }
+            else logInfo('👹 ปิดการสลับเบ็ดไว้ — ใช้เบ็ดที่ใส่อยู่ตีบอส');
+            if (isOn('floatSwitchOn')) { say('👹 เลือกทุ่นที่ตีบอสแรงสุด'); await equipFloatBy('boss'); }
+          });
+        } catch (e) { logErr('จัดเบ็ด/ทุ่นบอสล้มเหลว', e); }
         finally { busy = false; }
       } else {
-        logInfo('👹 ปิดการสลับเบ็ดไว้ — ใช้เบ็ดที่ใส่อยู่ตีบอส');
-      }
-      // ⭕ v6.304 (ทุ่น "ตาดุก" = ของรางวัลบอส มี "ตีบอสแรงขึ้น 15%") · ไม่มีทุ่นบอส = คงทุ่นเดิม
-      if (!bossGearEarlyFresh() && isOn('floatSwitchOn')) {
-        busy = true;
-        try { say('👹 เลือกทุ่นที่ตีบอสแรงสุด'); await equipFloatBy('boss'); }
-        catch (e) { logErr('เลือกทุ่นบอสล้มเหลว', e); }
-        finally { busy = false; }
+        logInfo('👹 ปิดการสลับเบ็ด/ทุ่นไว้ — ใช้ของที่ใส่อยู่ตีบอส');
       }
       // 🎯 v6.355 — **ติดเหยื่อจุดอ่อนล่วงหน้า ตอนบอสยังไม่โผล่** (นี่คือหัวใจของรุ่นนี้)
       //   ทำที่นี่เพราะเป็นช่วงเดียวที่ **ปุ่ม "เลือกเหยื่อ" ยังอยู่ใน DOM** — พอบอสโผล่ปุ่มจะหาย สลับไม่ได้อีก
@@ -5655,8 +5651,10 @@
       busy = true;
       try {
         say('🎣 สลับกลับเบ็ด/ทุ่นสำหรับฟาร์ม');
-        if (isOn('rodSwitchOn')) await equipRodBy('farm');
-        if (isOn('floatSwitchOn')) await equipFloatBy('farm');   // ⭕ v6.304: สลับทุ่นกลับฟาร์ม (โบนัสปลาสูงสุด) ด้วย
+        await withBagOpen(async () => {   // 🎒 v6.390: เปิดกระเป๋ารอบเดียว
+          if (isOn('rodSwitchOn')) await equipRodBy('farm');
+          if (isOn('floatSwitchOn')) await equipFloatBy('farm');   // ⭕ v6.304: สลับทุ่นกลับฟาร์ม (โบนัสปลาสูงสุด) ด้วย
+        });
         lastFarmRodAt = now();
       }   // v6.301: กัน idle-check สแกนซ้ำทันทีหลังบอส
       catch (e) { logErr('เลือกเบ็ด/ทุ่นฟาร์มล้มเหลว', e); }
@@ -8368,7 +8366,20 @@
     return false;
   }
 
-  async function closeBagUI() { try { gameEscape(); } catch {} await sleep(250); }
+  // 🎒 v6.390 — **เปิดกระเป๋าครั้งเดียว ทำให้จบทุกอย่าง** (ผู้ใช้เห็นบอทเปิด-ปิดกระเป๋ารัว ๆ บนจอ)
+  //   ของเดิม: `equipRodBy` ปิดกระเป๋าตอนจบ → `equipFloatBy` ต้องเปิดใหม่ → ปิดอีก
+  //   ⇒ เบ็ด+ทุ่น = **เปิด/ปิด 2 รอบเต็ม** ทั้งที่อยู่ "แท็บเดียวกัน" ของกระเป๋าใบเดียวกัน
+  //   ⇒ เสียเวลา ~5 วิ/รอบ (เปิด 0.5 + escape 0.25 + รอ React วาด) และดูเป็นบอทชัดมาก
+  //   ✅ ใช้ตัวนับแทนธง boolean — ซ้อนกันได้ ไม่มีทางที่ตัวในสุดปิดทับตัวนอก
+  //   ⚠️ `finally` ต้องลดตัวนับเสมอ ไม่งั้น throw ครั้งเดียว = กระเป๋าค้างเปิดตลอดกาล (บังจอ ตกปลาไม่ได้)
+  let bagKeepOpen = 0;
+  async function closeBagUI() { if (bagKeepOpen > 0) return; try { gameEscape(); } catch {} await sleep(250); }
+  // ทำหลายงานในกระเป๋ารอบเดียว — ข้างในเรียก closeBagUI ได้ตามปกติ (จะถูกกลืนไว้จนจบ)
+  async function withBagOpen(fn) {
+    bagKeepOpen++;
+    try { return await fn(); }
+    finally { bagKeepOpen--; await closeBagUI(); }
+  }
 
   // ⭕ v6.303 (ผู้ใช้ขอ): ระบบเลือก "ทุ่น" อัตโนมัติ — มิเรอร์ระบบเลือกเบ็ด (ตรวจสดจากกระเป๋าจริง 27/7)
   //   ทุ่นอยู่ **แท็บเดียวกับเบ็ด** (bagOpenRodTab) แต่กลุ่ม "⭕ ทุ่นที่มี" อยู่ล่างสุด (ใต้เบ็ด+เหยื่อ) → ต้องเลื่อนให้ render ก่อน
@@ -8454,8 +8465,10 @@
     if (busy || orchestrating || (!isOn('rodSwitchOn') && !isOn('floatSwitchOn'))) return;
     busy = true;
     try {
-      if (isOn('rodSwitchOn')) await equipRodBy('farm');
-      if (isOn('floatSwitchOn')) await equipFloatBy('farm');   // ⭕ v6.303: เลือกทุ่นโบนัสปลาสูงสุด (แท็บเดียวกัน)
+      await withBagOpen(async () => {   // 🎒 v6.390: เบ็ด+ทุ่นอยู่แท็บเดียวกัน — เปิดกระเป๋ารอบเดียวพอ
+        if (isOn('rodSwitchOn')) await equipRodBy('farm');
+        if (isOn('floatSwitchOn')) await equipFloatBy('farm');   // ⭕ v6.303: เลือกทุ่นโบนัสปลาสูงสุด (แท็บเดียวกัน)
+      });
     }
     catch (e) { logErr('สลับเบ็ด/ทุ่นฟาร์มล้มเหลว', e); }
     finally { busy = false; lastCast = now(); pendingCast = 0; }
