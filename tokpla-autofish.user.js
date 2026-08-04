@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.384
+// @version      6.385
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.384';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.385';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -7343,6 +7343,24 @@
     } catch {}
     return null;
   }
+  // 💰 v6.385: ราคาต่อตัวของปลาชนิดนี้ "จากที่เคยตกได้จริง" — ใช้ **มัธยฐาน** ไม่ใช่ค่าเฉลี่ย
+  //   ราคาปลาชนิดเดียวกันแกว่งตามน้ำหนัก (rec.w) → ค่าเฉลี่ยถูกตัวหนักผิดปกติดึงไปทั้งก้อน
+  //   มัธยฐานทน outlier และเป็นตัวแทน "ตัวทั่วไป" ได้ดีกว่า · null = ไม่เคยตกชนิดนี้เลย
+  const priceCache = new Map();
+  let priceCacheAt = NEVER;
+  function recordedPrice(species) {
+    if (now() - priceCacheAt > 60000) { priceCache.clear(); priceCacheAt = now(); }
+    if (priceCache.has(species)) return priceCache.get(species);
+    let out = null;
+    try {
+      const ps = [];
+      for (const t of Object.keys(profit.recs || {}))
+        for (const c of (profit.recs[t] || [])) if (c && c.fish === species && !c.junk && c.price > 0) ps.push(c.price);
+      if (ps.length) { ps.sort((a, b) => a - b); out = ps[ps.length >> 1]; }
+    } catch {}
+    priceCache.set(species, out);
+    return out;
+  }
   function readBag() {
     const cards = [];
     for (const b of document.querySelectorAll('button[aria-label]')) {
@@ -7449,18 +7467,42 @@
     if (!junkAutoSaid) { junkAutoSaid = true; logInfo(`🗑️ Lv.${lv} ≥ ${AUTO_SELL_JUNK_LV} — อ่านจำนวนขยะไม่ได้ ใช้เกณฑ์เลเวลชั่วคราว (จะตรวจซ้ำทุกครั้งที่เปิดกระเป๋า)`); }
     return true;
   }
+  // 🔴 v6.385 — **เลิกรอตัวเลขจากปุ่ม "ขายทั้งหมด" (เกมไม่เคยใส่มาให้)**
+  //   v6.267 พยายามขยาย pattern ให้ครอบทุกสัญลักษณ์เงิน แต่ปัญหาไม่ใช่ pattern —
+  //   **ข้อความจริงบนปุ่มคือ "ขายทั้งหมด" เฉย ๆ ไม่มีตัวเลขอยู่เลย** (log ยืนยันซ้ำทุกครั้งที่ขาย 3-4/8/69)
+  //   ⇒ `readTotalCoins()` คืน 0 เสมอ ⇒ `sellAtCoins` ตายสนิท + บรรทัดรายงานขึ้น "· 0 🪙" ทุกครั้ง
+  //   ⇒ ขยาย pattern ต่อไปอีกกี่รอบก็ไม่มีวันได้ค่า — ต้องเปลี่ยนแหล่งข้อมูล
+  //
+  //   ✅ คิดเองจากการ์ดในกระเป๋า: Σ (จำนวนที่ขายได้ × ราคามัธยฐานที่เคยตกได้ของชนิดนั้น)
+  //      **นับเฉพาะตัวที่บอทจะขายจริง** — ตัดระดับใน lockRarities · ตัดที่ผู้เล่นล็อกเอง · ตัด ✨ ถ้า keepShiny
+  //      ⇒ ได้ "มูลค่าที่แปลงเป็นเงินสดได้จริง" ไม่ใช่ "มูลค่าปลาทั้งกระเป๋า"
+  //      (บทเรียน 3/8/69: ปลาที่ล็อกไว้กิน 58% ของมูลค่า — ตัวเลขที่รวมมันเข้ามาจะหลอกให้คิดว่ากำไร)
+  //   ⚠️ ชนิดที่ยังไม่เคยตกเลย = ไม่รู้ราคา → ไม่นับ (ต่ำกว่าจริงได้ แต่ไม่มีวันสูงเกินจริง = ปลอดภัยกับเกณฑ์ขาย)
   let totalCoinsWarned = false;
-  function readTotalCoins() {
+  function readTotalCoins(cards) {
+    // ถ้าวันหนึ่งเกมใส่ตัวเลขกลับมาบนปุ่ม ก็ใช้ของเกมก่อน (แม่นกว่าที่เราประมาณเอง)
     const b = sellAllBtn();
-    if (!b) return 0;
-    const t = (b.textContent || '').trim();
+    const t = b ? (b.textContent || '').trim() : '';
     const m = /([\d,]+)\s*(?:🪙|💰|เหรียญ)/.exec(t) || /^ขาย(?:ปลา|ขยะ)?ทั้งหมด\D*([\d,]+)\s*$/.exec(t);
     if (m) return parseInt(m[1].replace(/,/g, ''), 10);
-    if (!totalCoinsWarned) {
-      totalCoinsWarned = true;
-      logWarn(`💰 อ่านยอดขายจากปุ่มไม่ออก — ข้อความจริงคือ ${JSON.stringify(t.slice(0, 60))} · เกณฑ์ "ขายเมื่อได้กี่เหรียญ" จะใช้ไม่ได้จนกว่าจะแก้ pattern`);
+    const list = Array.isArray(cards) ? cards : readBag();
+    if (!list.length) return 0;
+    const locked = new Set(cfg.lockRarities || []);
+    let total = 0, known = 0, unknown = 0;
+    for (const c of list) {
+      const n = c.sellable ?? c.count;
+      if (!n) continue;                                    // ผู้เล่นล็อกไว้ทั้งกลุ่ม
+      if (cfg.keepShiny && c.shiny) continue;              // ✨ = ล็อกทั้งชนิด (เกมแยกขายไม่ได้)
+      if (!c.rarity || locked.has(c.rarity)) continue;     // อ่านระดับไม่ออก = ถือว่าไม่ขาย (ปลอดภัยกับปลาแพง)
+      const p = recordedPrice(c.species);
+      if (p == null) { unknown++; continue; }
+      total += p * n; known++;
     }
-    return 0;
+    if (unknown && !totalCoinsWarned) {
+      totalCoinsWarned = true;
+      logInfo(`💰 ประเมินมูลค่าที่ขายได้จากราคาที่เคยตกได้จริง — รู้ราคา ${known} ชนิด · ยังไม่รู้ ${unknown} ชนิด (ตกครั้งแรกแล้วจะรู้เอง)`);
+    }
+    return total;
   }
 
   // ---- ข้อความแจ้งผลการขายในหน้ากระเป๋า (แถบเขียว = สำเร็จ, แดง = ล้มเหลว) ----
@@ -11188,8 +11230,8 @@
 
       const bag = readBagCount();
       if (bag && bag.slots > 0) bagSlotsCache = bag.slots;   // v6.294: จำช่องกระเป๋าให้ pickSpecies กันปลาลุงหยัดล้น
-      const total = readTotalCoins();
       const cards = readBag();
+      const total = readTotalCoins(cards);   // 💰 v6.385: คิดจากการ์ดจริง — ปุ่มไม่เคยมีตัวเลขให้อ่าน
 
       // ---- เงื่อนไขว่าถึงเวลาขายหรือยัง (คิดจากปลาในกระเป๋า) ----
       // เกณฑ์ % คิดจาก bagSlots จริง เผื่อผู้เล่นอัปเกรดกระเป๋า (50 -> สูงสุด 200 ช่อง)
@@ -11209,7 +11251,7 @@
       //   ขยะไม่มีล็อก = ขายได้เสมอ → เป็น "ช่องว่างฟรี" ที่ต้องไม่พลาด โดยเฉพาะตอนปลาล็อกจนตกปลาต่อไม่ได้
       sellFish: {
       if (!force && !byPct && !byCount && !byCoins && !noCond) {
-        say(`ยังไม่ถึงเกณฑ์ขายปลา (${bag.count}/${bag.slots} = ${pctNow.toFixed(0)}% · ${total.toLocaleString()} 🪙) — ข้ามไปเช็คขยะ`);
+        say(`ยังไม่ถึงเกณฑ์ขายปลา (${bag.count}/${bag.slots} = ${pctNow.toFixed(0)}% · ขายได้ ~${total.toLocaleString()} 🪙) — ข้ามไปเช็คขยะ`);
         break sellFish;
       }
       if (!cards.length) {
@@ -11268,7 +11310,9 @@
           //   = เหลือสัญญาณเดียวคือ disabled ซึ่งดันเป็นตัวที่มี race → ต้อง **รอจนปุ่มพร้อมจริง** ไม่ใช่อ่านครั้งเดียว
           let jBtn = sellAllBtn();
           for (let i = 0; i < 8 && !(jBtn && !jBtn.disabled); i++) { await sleep(250); jBtn = sellAllBtn(); }
-          const jTotal = readTotalCoins();  // เกมใหม่ไม่ใส่ยอดในปุ่มแล้ว — เก็บไว้เผื่อ UI เก่า/ข้อความกลับมา
+          // v6.385: ส่ง [] ไปเสมอ — ตัวคำนวณใหม่ใช้ราคาปลา ซึ่งไม่มีความหมายกับแท็บขยะ
+          //   (ยังลองอ่านจากปุ่มให้ เผื่อ UI เก่ากลับมา) · ตัวตัดสินจริงของขยะคือ jn + ปุ่มกดได้
+          const jTotal = readTotalCoins([]);
           const jn = junkCountInBag();      // ✅ ของจริงจากตัวเลขบนแท็บ = สัญญาณที่เชื่อได้ที่สุด
           // v6.167: เดิมเชื่อยอดเหรียญอย่างเดียว — ขยะบางชิ้นราคา 0/อ่านยอดไม่ออก = ข้ามทิ้งทั้งที่มีของกินช่องอยู่
           //   เพิ่มเงื่อนไข "ปุ่มขายทั้งหมดกดได้" = มีของให้ขายจริง (สำคัญมากตอนกระเป๋าเต็ม — ขยะคือช่องว่างที่ได้มาฟรี)
@@ -14224,11 +14268,11 @@ ${esc(reason)}
 
       const bag = readBagCount();
       if (bag && bag.slots > 0) bagSlotsCache = bag.slots;   // v6.294: จำช่องกระเป๋าให้ pickSpecies กันปลาลุงหยัดล้น
-      const total = readTotalCoins();
       const cards = readBag();
+      const total = readTotalCoins(cards);   // v6.385: คิดจากการ์ดจริง
       const { want, locked, rarityOf } = pickSpecies(cards);
 
-      say(`🎒 ${bag.count}/${bag.slots} · ${total.toLocaleString()} 🪙 · จะขาย ${want.length} ชนิด · ล็อกไว้ ${locked.size} ชนิด (ดูรายละเอียดใน Console)`);
+      say(`🎒 ${bag.count}/${bag.slots} · ขายได้ ~${total.toLocaleString()} 🪙 · จะขาย ${want.length} ชนิด · ล็อกไว้ ${locked.size} ชนิด (ดูรายละเอียดใน Console)`);
       console.table(cards.map((c) => ({
         ชนิด: c.species,
         ระดับ: c.rarity ? RARITY_LABEL[c.rarity] : '?',
