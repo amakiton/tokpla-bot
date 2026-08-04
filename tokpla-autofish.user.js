@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.385
+// @version      6.386
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.385';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.386';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3399,7 +3399,9 @@
         //   (เจอสด: โชว์พร้อมกันกับ "บอสถัดไป 16:30 (อีก 2 ชม. 38 นาที)") · v6.164 `return 0` ทันทีที่เจอ
         //   → bossHuntDue() จริงตลอด → บอทวนออกล่าไม่จบ ติดค้างในถ้ำ ตกปลาไม่ได้ (เทสต์เหยื่อก็เริ่มไม่ได้)
         //   ลำดับความสำคัญที่ถูก: **ตัวนับถอยหลังที่ระบุเวลาชัดเจนชนะเสมอ** · ป้าย "ถึงรอบ" ใช้ได้ต่อเมื่อ "ไม่มีตัวนับใดๆ บนจอ"
-        if (t.length < 60 && /ถึงรอบบอส|บอสมาแล้ว/.test(t)) { sawNowLabel = true; continue; }
+        // 🌀 v6.386: แพตช์ 4/8/69 เพิ่มป้ายชุดใหม่ — ต้องรับด้วย ไม่งั้นวันที่เกมเลิกใช้ป้ายเดิม บอทจะตาบอดทันที
+        //   (สตริงจากตาราง i18n ของเกมเอง) raid.call.tag = "ถึงเวลาล่าบอส" · raid.call.title = "รอบ {time} เปิดแล้ว — บอสโผล่แล้ว!"
+        if (t.length < 60 && /ถึงรอบบอส|บอสมาแล้ว|ถึงเวลาล่าบอส|บอสโผล่แล้ว|Boss hunt is open/.test(t)) { sawNowLabel = true; continue; }
         if (!/บอสถัดไป/.test(t)) continue;
         // รูปแบบ ≥ 1 ชม.
         const rel = /อีก\s*(?:(\d+)\s*ชม\.?)?\s*(?:(\d+)\s*นาที)?/.exec(t);
@@ -4106,8 +4108,60 @@
     const cur = bossMapId();
     return cur === targetMap || (isBossMap(targetMap) && isBossMap(cur));
   };
+  // 🌀 v6.386 — **เกมเพิ่มปุ่ม "วาปไปหาบอส" (แพตช์ 4 ส.ค. 2026)** — ผู้ใช้ส่งภาพจากจอจริงมาให้ดู
+  //   ยืนยันจากบันเดิลเกมเอง (`/_next/static/chunks/*` ตาราง i18n) ไม่ใช่การเดาจากภาพ:
+  //     raid.call.tag       = "ถึงเวลาล่าบอส"        (Boss hunt is open)
+  //     raid.call.warp      = "วาปไปหาบอส"           (Warp to the boss)   ← ปุ่มที่ต้องกด
+  //     raid.call.schedule  = "ดูตาราง"              (Schedule)           ← ตัวเปิดป๊อบอัพ
+  //     raid.schedule.title = "ตารางบอสวันนี้"        (Today's boss rounds)
+  //   ⇒ ตัดทิ้งได้ทั้งชุด: เดิน village→ถ้ำ (30-100 วิ) · ยืนรอหน้าประตูถึง 10 นาที · สลับ A*↔WASD ·
+  //     ก้าวถอย→ก้าวเข้าดันประตู ⇒ **เลิกเดินชนกำแพงให้ผู้เล่นคนอื่น/แอดมินเห็น** (ปัญหาที่ผู้ใช้แจ้งซ้ำหลายรอบ)
+  //   ⚠️ ปุ่มวาร์ปเปิดตลอด 60 นาทีของรอบ แต่ **บอสมีชีวิตแค่ 1-3 นาที** — วาร์ปสายก็ได้ห้องว่าง
+  //     (ระบบเดิมจัดการต่อได้เอง: lateArrival → เลิกรอใน 90 วิ → markBossRoundDone)
+  //   ⚠️ ยังไม่รู้ aria-label/class ของปุ่ม (อ่าน DOM สดไม่ได้ — เกม single-session เปิดแท็บ 2 ไม่ได้)
+  //     จึงจับด้วย "ข้อความจาก i18n ของเกมเอง" ซึ่งเป็นหลักฐานจริง + `btnByText` ข้าม UI บอทให้แล้ว (กฎเหล็ก #7)
+  //     และ **พิสูจน์ผลด้วยการเปลี่ยนแมพจริง** — กดแล้วแมพไม่เปลี่ยน = ถือว่าล้มเหลว ตกไปใช้ทางเดิน (ไม่มีอะไรเสียหาย)
+  const WARP_LABELS = ['วาปไปหาบอส', 'Warp to the boss'];
+  const RAID_POPUP_OPENERS = ['ดูตาราง', 'Schedule', 'ถึงเวลาล่าบอส', 'Boss hunt is open', 'ถึงรอบบอสแล้ว'];
+  let warpFailAt = NEVER;
+  const warpBtn = () => { for (const s of WARP_LABELS) { const b = btnByText(s); if (b && !b.disabled) return b; } return null; };
+  async function bossWarpToCave() {
+    if (now() - warpFailAt < 5 * 60000) return false;   // เพิ่งลองแล้วไม่ได้ = อย่ากดรัว (ป๊อบอัพเด้งบ่อยดูเป็นบอท)
+    const cur = bossMapId();
+    let b = warpBtn();
+    if (!b) {                                            // ป๊อบอัพยังไม่เปิด → เปิดก่อน
+      let opened = false;
+      for (const s of RAID_POPUP_OPENERS) {
+        const o = btnByText(s);
+        if (!o || o.disabled) continue;
+        fireClick(o); await sleep(700); opened = true;
+        b = warpBtn();
+        if (b) break;
+      }
+      if (!b) { if (opened) gameEscape(); warpFailAt = now(); return false; }
+    }
+    say('🌀 เจอปุ่ม "วาปไปหาบอส" ของเกม — วาร์ปเข้าถ้ำเลย (ไม่ต้องเดิน)');
+    fireClick(b);
+    const ok = await waitFor(() => bossMapId() && bossMapId() !== cur, 8000, 250);
+    if (!ok) {
+      gameEscape(); warpFailAt = now();
+      bossEvent('🌀 กดวาปไปหาบอสแล้วแมพไม่เปลี่ยน — ถอยไปใช้การเดินตามปกติ');
+      return false;
+    }
+    // ทะลุเข้ามาแล้ว = แมพนี้คือถ้ำบอสของรอบนี้ (เหตุผลเดียวกับ learnIfLanded ใน bossTravelTo)
+    try { const sc = getPhaserScene(); const m = sc?.mapManager?.def?.id; if (m && m !== cur && sc.raidBoss) learnBossMap(m); } catch {}
+    bossEvent(`🌀 วาร์ปเข้าถ้ำสำเร็จ (${cur} → ${bossMapId()}) — ข้ามการเดิน/ยืนรอหน้าประตูทั้งหมด`);
+    await sleep(600);   // รอฉากนิ่งก่อนให้ผู้เรียกทำงานต่อ
+    return true;
+  }
   // เดินทางไปแมพเป้าหมาย (ข้ามหลายแมพผ่านกราฟ) — คืน true ถ้าถึง
   async function bossTravelTo(targetMap) {
+    // 🌀 v6.386: ขาไปถ้ำบอส — ลองปุ่มวาร์ปของเกมก่อนเสมอ (เร็วกว่า + ไม่มีพฤติกรรมน่าสงสัยให้ใครเห็น)
+    //   ⛔ ไม่ใช้กับขากลับบ้าน/ย้ายแมพล่าปลาเทพ — ปุ่มนี้พาไปถ้ำบอสอย่างเดียว
+    //   ⛔ ไม่ใช้ตอนยังต้อง "ถือจังหวะ" (bossEntryHoldMs > 0) — วาร์ปตอนนี้ = ได้ถ้ำของรอบเก่าที่บอสตายแล้ว (v6.357)
+    if (isBossMap(targetMap) && !bossNavArrived(targetMap) && bossEntryHoldMs() <= 0) {
+      if (await bossWarpToCave()) return true;
+    }
     // 🎮 v6.146: ลอง A* ในตัวเกมก่อน (เชื่อถือได้กว่าเดิน WASD สุ่ม + ข้ามแมพเอง) · ไปไม่ถึง = fallback วิธีเดิม (waypoint + wall-slide)
     // ⏳ v6.357: ระหว่างที่ยัง "ห้ามเข้าถ้ำ" ให้ข้าม A* ไปใช้เส้นทางเดินเอง —
     //   A* ข้ามแมพจะ **พาทะลุประตูเข้าไปเลย** (คุมจังหวะไม่ได้) ส่วนเส้นทางเดินเองมีจุดยืนรอหน้าประตูให้ถือจังหวะได้
