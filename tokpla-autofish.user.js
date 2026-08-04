@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.388
+// @version      6.389
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.388';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.389';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -10565,6 +10565,13 @@
   const saveFishSpot = (m, x, y) => { if (!m) return false; try { const all = fishSpots(); all[m] = { x: Math.round(x), y: Math.round(y) }; W.localStorage.setItem(FISH_SPOT_KEY, JSON.stringify(all)); return true; } catch { return false; } };
   const clearFishSpot = (m) => { try { const all = fishSpots(); if (all[m] != null) { delete all[m]; W.localStorage.setItem(FISH_SPOT_KEY, JSON.stringify(all)); } } catch {} };
   let lastPondWalk = 0, lastPondSay = 0, pondWalkStart = 0, spotWalkStart = 0;
+  // 📍 v6.389: แยกตัวคุมจังหวะของ "จุดที่ผู้ใช้บันทึก" ออกจากของ "บ่อกลางแมพ"
+  //   เดิมใช้ `lastPondWalk`/`lastPondSay` ร่วมกัน ⇒ เวลาสองระบบสลับกันทำงาน log จะกลืนกันเอง
+  //   (มองไม่เห็นว่าบอทวนไป-กลับระหว่าง 2 จุด ซึ่งคืออาการที่ผู้ใช้เห็นบนจอ)
+  //   ⚠️ ต้องเป็น NEVER ไม่ใช่ 0 — `now()` = performance.now() เริ่มใกล้ 0 ทุกครั้งที่รีโหลด
+  //   ถ้าเริ่มที่ 0 คำสั่งเดินครั้งแรกจะถูกหน่วง 3 วิ **ทุกครั้งหลังรีโหลด** (หน้าเกมโหลดเองบ่อยมาก)
+  //   บทเรียนเดียวกับ v6.323 ที่เคยทำให้ Advisor สลับเหยื่อไม่ได้ 30 นาทีแรก · เทสต์รอบนี้จับได้
+  let lastSpotWalk = NEVER, lastSpotSay = NEVER;
   // 🐛 v6.260 (ผู้ใช้อัดวิดีโอมา 2 รอบ: "ถึงจุดหมายเควสแล้ว เด้งรัวไม่หยุด"):
   //   หลักฐานจากคลิป — ตัวละคร **อยู่จุดเดิมเป๊ะ 16 วินาที** · `บอท: เปิด — 0 / ∞` (ไม่เหวี่ยงเลย) · toast เด้งซ้ำ
   //   สาเหตุ: สั่ง `navigate()` ไปจุดที่ A* หาเส้นไม่ได้ (ติดน้ำ/กำแพง) → เกมสแนปเป็น "ถึงแล้ว" ทันที
@@ -10599,15 +10606,26 @@
         spotWalkStart = 0; pondWalkStart = 0; pondTryIdx = 0; pondStuckN = 0; pondLastPos = null; saveFishMap(curMap); return false;
       }
       if (!spotWalkStart) spotWalkStart = now();
-      if (now() - spotWalkStart <= 45000) {   // ภายใน 45 วิ = พยายามเดินไปจุดที่บันทึก
-        if (now() - lastPondWalk >= 3000) {   // อย่าสั่ง navigate ถี่เกิน
-          lastPondWalk = now();
-          try { aw.navigate({ x: spot.x, y: spot.y, mapId: curMap }); } catch {}
-          if (now() - lastPondSay > 30000) { lastPondSay = now(); logInfo(`📍 เดินไปจุดตกปลาที่บันทึกไว้ (${spot.x},${spot.y}) — แมพ ${curMap}`); }
-        }
+      // 🔴 v6.389 — **มีจุดที่ผู้ใช้บันทึกไว้ = ไปจุดนั้นอย่างเดียว ห้ามตกไปยืนจุดอื่นเด็ดขาด** (ผู้ใช้สั่ง 4 ส.ค. 2026)
+      //   อาการที่ผู้ใช้เห็นบนจอ: *"บอทเดินไปสะพาน แล้ววนกลับจุดเซฟ แล้วติดอยู่บนสะพาน"*
+      //   ต้นตอ: บรรทัดเดิมเขียนว่า "เกิน 45 วิ ยังไปไม่ถึง → ปล่อยตรรกะ nearPond เดิมทำต่อ"
+      //     ⇒ ไหลลงไป `pondTargets(fz)` ซึ่งลากบอทไปยืน **"ใต้กลางบ่อ" (fz.y+120) = คนละที่กับสะพาน**
+      //     ⇒ พอ `nearPond` เป็น true (ที่ sea_dock ติด true ตั้งแต่บนหาด) ก็หยุดเดิน = ยืนผิดจุด
+      //     ⇒ รอบถัดไปเริ่มเดินหาจุดที่บันทึกใหม่ → **วนไป-กลับระหว่าง 2 จุดไม่จบ**
+      //   ✅ ใหม่: ไม่เปลี่ยนเป้าหมายเลย · ไปไม่ถึงใน 45 วิ = กดปุ่มกู้ของเกม ("พาฉันออกไป!" → วาร์ปกลับจุดเริ่มแมพ)
+      //     แล้วเริ่มนับใหม่ — เป็นวิธีเดียวที่หลุดจาก "ติดบนสะพาน" ได้จริง (รีโหลดไม่ช่วย ตำแหน่งยังเดิม · v6.328)
+      if (now() - spotWalkStart > 45000) {
+        spotWalkStart = now();
+        logWarn(`📍 เดินไปจุดที่บันทึก (${spot.x},${spot.y}) ไม่ถึงใน 45 วิ — กดปุ่มกู้ของเกมแล้วลองใหม่ (ไม่ไปยืนจุดอื่นแทน)`);
+        void tryMapRescueDeep('เดินไปจุดตกปลาที่บันทึกไว้ไม่สำเร็จเกิน 45 วิ');
         return true;
       }
-      // เกิน 45 วิ ยังไปไม่ถึง (A* ไปไม่ได้/จุดเพี้ยน) → ปล่อยตรรกะ nearPond เดิมทำต่อ (กันค้าง)
+      if (now() - lastSpotWalk >= 3000) {   // อย่าสั่ง navigate ถี่เกิน
+        lastSpotWalk = now();
+        try { aw.navigate({ x: spot.x, y: spot.y, mapId: curMap }); } catch {}
+        if (now() - lastSpotSay > 30000) { lastSpotSay = now(); logInfo(`📍 เดินไปจุดตกปลาที่บันทึกไว้ (${spot.x},${spot.y}) — แมพ ${curMap}`); }
+      }
+      return true;
     } else if (spotWalkStart) spotWalkStart = 0;   // ไม่มีจุดบันทึกแล้ว (ถูกล้าง) = รีเซ็ต
     const fz = bossFishingZone();
     // v6.260: ถึงบ่อแล้ว = ล้างสถานะการไล่จุดเป้าหมายทั้งหมด (ไม่งั้นรอบหน้าเริ่มจากจุดสำรองที่ค้างไว้)
