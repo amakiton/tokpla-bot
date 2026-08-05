@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.395
+// @version      6.396
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.395';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.396';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -14736,6 +14736,57 @@ ${esc(reason)}
     setTimeout(() => W.location.reload(), 1200);
   }
 
+  // 🫀 v6.396 — **"บอทหยุดหายใจ" ต้องมีคนรู้ทันที ไม่ใช่มารู้ตอนพลาดบอสไปแล้ว 2 รอบ**
+  //   เหตุการณ์จริง 5 ส.ค.: log เงียบสนิท 19:06:12 → 20:52:13 (**106 นาที**) ⇒ พลาดรอบบอส 19:30 + 20:00
+  //
+  //   ⚠️ ต้นตอ **ไม่ใช่ธง `busy`/`orchestrating` ค้าง** อย่างที่ผมเดาไว้ตอนแรก:
+  //     ถ้าสคริปต์ยังรันอยู่ ตัวตรวจ 🩺 (ทุก 5 นาที) ต้องฟ้องอย่างน้อย ~20 บรรทัดในช่วงนั้น
+  //     แต่ช่วง 106 นาทีนั้น **ไม่มีสักบรรทัดเดียว** และ `tokpla_reload_log` ก็ไม่มีการโหลดหน้าใหม่เลย
+  //     ⇒ สคริปต์ไม่ได้ทำงาน (แท็บถูกเบราว์เซอร์แช่แข็ง/พัก หรือหน้าเว็บค้างทั้งหน้า)
+  //
+  //   ⇒ **ตัวกู้ที่อยู่ "ในหน้า" กู้ตอนนั้นไม่ได้** เพราะโค้ดไม่ได้ถูกรัน · สิ่งที่ทำได้จริงคือ
+  //     จับให้ได้ **ทันทีที่ฟื้น** แล้วบอกออกไปว่าหายไปนานเท่าไร + คาบเกี่ยวรอบบอสรอบไหนบ้าง
+  //     (เดิมเงียบสนิท — กว่าจะรู้ก็ตอนไล่ log ย้อนหลังหลายชั่วโมงให้หลัง)
+  const HB_KEY = 'tokpla_bot_hb';
+  const HB_EVERY_MS = 30000;
+  const HB_GAP_MS = 150000;   // 5 เท่าของจังหวะปกติ — เผื่อ throttle เล็กน้อยของแท็บพื้นหลัง ไม่ให้ฟ้องมั่ว
+  // (ใช้ `hhmmOf` ที่มีอยู่แล้วตั้งแต่ v6.314 — อย่าประกาศซ้ำ)
+  // รอบบอสตามตารางที่ตกอยู่ในช่วง [a,b] — ใช้บอกว่า "ที่หายไปนั้นทำให้พลาดอะไร"
+  function bossRoundsBetween(a, b) {
+    const out = [];
+    try {
+      const list = bossSchedList();
+      if (!list || !list.length) return out;
+      const day0 = new Date(a); day0.setHours(0, 0, 0, 0);
+      for (let d = day0.getTime(); d <= b; d += 86400000) {
+        for (const mins of list) { const t = d + mins * 60000; if (t >= a && t <= b) out.push(hhmmOf(t)); }
+      }
+    } catch {}
+    return out;
+  }
+  let hbPrev = 0;
+  function heartbeatWatch() {
+    const t = Date.now();
+    if (!enabled) { hbPrev = 0; return; }   // ปิดบอทเอง = ไม่ใช่การหายไป (ไม่ต้องฟ้องตอนเปิดใหม่)
+    let stored = 0;
+    try { stored = +(W.localStorage.getItem(HB_KEY) || 0); } catch {}
+    // hbPrev = จังหวะก่อนหน้าของ "หน้านี้" · stored = ค่าที่จำข้ามการรีโหลด/แท็บถูกทิ้ง
+    const inPage = !!hbPrev;
+    const prev = hbPrev || stored;
+    let resumed = false;
+    try { resumed = W.localStorage.getItem('tokpla_bot_resume') === '1'; } catch {}
+    if (prev && t - prev > HB_GAP_MS && (inPage || resumed)) {
+      const min = Math.round((t - prev) / 60000);
+      const missed = bossRoundsBetween(prev, t);
+      const why = inPage ? 'สคริปต์ไม่ได้ทำงาน (แท็บถูกแช่แข็ง/หน้าเว็บค้าง)' : 'หน้าเว็บถูกปิด/โหลดใหม่ระหว่างนั้น';
+      const miss = missed.length ? ` · 🔴 คาบเกี่ยวรอบบอส ${missed.join(', ')}` : '';
+      logWarn(`🫀 บอทหายไป ${min} นาที (${hhmmOf(prev)} → ${hhmmOf(t)}) — ${why}${miss}`);
+      if (isOn('tgOn')) void tgSend(`🫀 <b>บอทหายไป ${min} นาที</b> (${hhmmOf(prev)} → ${hhmmOf(t)})\n${esc(why)}${esc(miss)}`);
+    }
+    hbPrev = t;
+    try { W.localStorage.setItem(HB_KEY, String(t)); } catch {}
+  }
+
   function recoveryWatch() {
     if (!cfg.autoRecover) return;
     // 1) เด้งไปหน้า login = session หมด — ล็อกอินเองไม่ได้ (กรอกรหัส/OAuth) แจ้งให้ทำเอง
@@ -14894,6 +14945,7 @@ ${esc(reason)}
   setInterval(ensureChatObserver, 3000); // ผูก/ต่อ observer แชทโลก (เมื่อเปิดโหมดบริดจ์)
   setInterval(gameEventWatch, 3000);     // เฝ้าเหตุการณ์เกม (เลเวลอัพ/สภาพอากาศ) -> แจ้ง TG
   setInterval(() => { if (enabled) persistEnabled(); }, 30000);   // heartbeat: ต่ออายุ "ยังรันอยู่" ทุก 30 วิ (ให้ freshness check ผ่านหลังรีเฟรช)
+  setInterval(heartbeatWatch, HB_EVERY_MS);   // 🫀 v6.396: จับ "ช่วงที่สคริปต์ไม่ได้ทำงาน" ให้ได้ทันทีที่ฟื้น
   // Flush profit + สถานะเปิด ก่อนปิด/รีโหลด (กัน catches ที่ยังไม่ throttle-save หาย + จำสถานะรันล่าสุด)
   W.addEventListener('beforeunload', () => { try { saveCfg(); saveProfit(); saveModeStats(); persistEnabled(); saveLog(true); saveTestProgress(); } catch {} });   // v6.155: เซฟ test progress ตอนรีเฟรช/ปิด (กันเทสต์หาย)
   W.addEventListener('pagehide', () => { try { saveCfg(); saveProfit(); saveModeStats(); persistEnabled(); saveLog(true); saveTestProgress(); } catch {} });
