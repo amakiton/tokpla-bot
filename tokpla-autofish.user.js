@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.397
+// @version      6.398
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -54,7 +54,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.397';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.398';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1497,6 +1497,7 @@
     '🎓 /xpnow - สั่งเปิดหน้าตัวละครอ่าน XP เดี๋ยวนี้ + รายงาน',
     '🔎 /probe &lt;ชื่อปุ่ม&gt; - เปิดแผงในเกมแล้วอ่านโครงให้ดู (เช่น /probe แลกเศษบอส)',
     '📸 /screen - ส่องจอตอนนี้แบบอ่านอย่างเดียว · ใช้ได้กลางไฟต์บอส (ไม่กดอะไรเลย)',
+    '📐 /angle - ตารางมุมเข็มตอนกด → เป๊ะ/ดี/หลุด (หายอดวงแดงจากข้อมูลจริง)',
     '🌈 /mythic - สถานะล่าปลาเทพ · /mythic on|off · /mythic map ชื่อแมพ|auto - ล็อกแมพล่า',
     '🌍 /chat - เปิด/ปิดคุยแชทโลกผ่าน TG (พิมพ์ข้อความมาได้เลย)',
     '🌍 /w ข้อความ - ส่งเข้าแชทโลกครั้งเดียว',
@@ -1679,6 +1680,10 @@
         if (a === 'on') { reply('🔬 โหมดวัดเกจถูกถอดออกแล้ว (v6.238) — มันตอบ "ดาเมจต่อมุม" ไม่ได้จริง และเปิดค้างไว้จะทำให้ A/B หยุดเก็บข้อมูล · ใช้ <code>/gaugeab on</code> แทน'); break; }
         if (a === 'reset') { gProbeRing = []; gProbeSave(); reply('🔬 ล้างผลวัดเกจเก่าแล้ว'); break; }
         reply(`<code>${esc(gaugeProbeReport())}</code>`);
+        break;
+      }
+      case 'angle': case 'มุม': {   // 📐 v6.398: ยอดวงแดงอยู่กี่องศา — ตอบด้วยข้อมูล ไม่ใช่การเดา
+        reply(`<code>${esc(tapAngReport())}</code>`);
         break;
       }
       case 'reloads': {   // 📉 v6.241: หน้าโหลดใหม่บ่อยแค่ไหน + ใครสั่ง
@@ -2895,6 +2900,44 @@
   //   (≈ ตีเพิ่มได้อีก 328 ครั้ง มากกว่าที่ตีจริงทั้งไฟต์เสียอีก)
   //   ที่ตัดออกไปแล้ว: **ไม่ใช่เพราะเดินไกล** — ก้อนที่ห่างมากกลับมีระยะใกล้กว่า (24-29px vs 54px)
   //   ⇒ ต้องรู้ให้ได้ว่าเวลาไปอยู่กับอะไร ก่อนจะแก้ถูกจุด · จับเวลาสะสมแยกตามสาเหตุระหว่างสองการตี
+  // 📐 v6.398 — **มุมเข็มตอนกด → ผลตอบกลับ** (ตอบคำถาม "ยอดวงแดงอยู่กี่องศา" ด้วยข้อมูล ไม่ใช่การเดา)
+  //   ทำไมต้องมีชุดใหม่ ทั้งที่มี `tokpla_dmg_attrib` แล้ว:
+  //     `dmg_attrib` ผูกกับยอด "⚔️ ของเรา" = ยอดสะสมที่เด้งช้ากว่าการกด ⇒ โยนดาเมจให้ผิดการกด
+  //     (`gaugeProbeReport` เตือนเรื่องนี้ไว้เองตั้งแต่ v6.238 — ตารางแยกตามมุมของมันจึง "อ่านไม่ได้")
+  //   ส่วนป้าย "เป๊ะ/ดี/หลุด" เป็นผลของการกดครั้งนั้นครั้งเดียว ⇒ จับคู่กับมุมได้จริง
+  const TAPANG_KEY = 'tokpla_tap_ang';
+  let tapAngRing = [];
+  try { const a = JSON.parse(W.localStorage.getItem(TAPANG_KEY) || '[]'); if (Array.isArray(a)) tapAngRing = a.slice(-1500); } catch {}
+  let tapAngSaveAt = 0;
+  function tapAngPush(rec) {
+    try {
+      tapAngRing.push(rec);
+      if (tapAngRing.length > 1500) tapAngRing.splice(0, tapAngRing.length - 1500);
+      if (Date.now() - tapAngSaveAt > 5000) { tapAngSaveAt = Date.now(); W.localStorage.setItem(TAPANG_KEY, JSON.stringify(tapAngRing)); }
+    } catch {}
+  }
+  function tapAngReport() {
+    if (!tapAngRing.length) return '📐 ยังไม่มีข้อมูล "มุมเข็ม → ผลตอบกลับ" (เก็บตั้งแต่ v6.398 — ต้องผ่านไฟต์บอสแบบมีเกจก่อน)';
+    const B = new Map();   // บั๊กเก็ตละ 10°
+    for (const r of tapAngRing) {
+      const k = Math.round(r.a / 10) * 10;
+      const b = B.get(k) || { n: 0, p: 0, g: 0, m: 0 };
+      b.n++; if (r.f === 'perfect') b.p++; else if (r.f === 'good') b.g++; else if (r.f === 'miss') b.m++;
+      B.set(k, b);
+    }
+    const keys = [...B.keys()].sort((x, y) => x - y);
+    const rows = keys.map((k) => {
+      const b = B.get(k);
+      const pp = Math.round(b.p / b.n * 100);
+      return `${String(k).padStart(4)}°  n=${String(b.n).padStart(4)}  เป๊ะ ${String(pp).padStart(3)}%  ดี ${String(Math.round(b.g / b.n * 100)).padStart(3)}%  หลุด ${String(Math.round(b.m / b.n * 100)).padStart(3)}%  ${'█'.repeat(Math.round(pp / 5))}`;
+    });
+    const best = keys.filter((k) => B.get(k).n >= 5).sort((x, y) => B.get(y).p / B.get(y).n - B.get(x).p / B.get(x).n)[0];
+    const tot = tapAngRing.length;
+    return `📐 มุมเข็มตอนกด → ผลตอบกลับ (${tot} การกดที่อ่านป้ายออก)\n`
+      + `0° = กึ่งกลางแถบแดง · ลบ = ยังไม่ถึง · บวก = เลยไปแล้ว\n\n${rows.join('\n')}\n\n`
+      + (best != null ? `👉 ช่วงที่ได้ "เป๊ะ" บ่อยที่สุด: ${best}° (${Math.round(B.get(best).p / B.get(best).n * 100)}% จาก ${B.get(best).n} ครั้ง)\n` : '')
+      + `ℹ️ ถ้ายอดอยู่ที่ 0° จริง กราฟควรพุ่งสูงตรงกลาง — ถ้าพุ่งที่มุมอื่น แปลว่า "ยอดวงแดง" ไม่ได้อยู่กึ่งกลาง`;
+  }
   const HITGAP_KEY = 'tokpla_hit_gap';
   // ⚠️ "พื้น" ของแต่ละโหมดไม่เท่ากัน — charge กดค้าง 1.95 วิ + เว้น 0.3 วิ = พื้น ~2.25 วิ โดยธรรมชาติ
   //   ถ้าใช้เกณฑ์เดียวกันหมด ทุกชาร์จจะถูกนับเป็น "ช่องว่างยาว" ทั้งที่เป็นการทำงานปกติ = ข้อมูลขยะ
@@ -5061,6 +5104,15 @@
     // ⚙️ v6.162: เกจอัจฉริยะ — วัดความเร็วเข็ม (deg/s, EMA) แล้วกด "ล่วงหน้า" ชดเชย latency ~120ms
     //   เดิมกดเฉพาะเข็มอยู่ในแถบ ±2° เป๊ะ → เข็มเร็ว+latency = กดตอนเข็มเลยแถบไปแล้ว/พลาดหน้าต่างทั้งรอบ
     let gPrevAng = null, gPrevAt = 0, gVel = 0;
+    // 📐 v6.398: ระยะห่างจาก "กึ่งกลางแถบแดง" เป็นองศา (ลบ = ก่อนถึงกลาง · บวก = เลยไปแล้ว)
+    //   ป้ายในเกมบอกว่า **"แตะตอนเข็มถึงยอดวงแดง = แรงสุด"** ⇒ ถ้า "ยอด" คือกึ่งกลางจริง
+    //   ค่านี้ยิ่งใกล้ 0 ควรยิ่งได้ "เป๊ะ" · ถ้าข้อมูลออกมาไม่เป็นแบบนั้น แปลว่า "ยอด" ไม่ได้อยู่กลาง
+    const gaugeOffset = (g) => {
+      try {
+        let na = g.ang; if (g.a0 < 0 && na > 180) na -= 360;
+        return Math.round(na - (g.a0 + g.a1) / 2);
+      } catch { return null; }
+    };
     const gaugeReady = (g) => {
       let na = g.ang; if (g.a0 < 0 && na > 180) na -= 360;
       const t = now();
@@ -5221,6 +5273,8 @@
       else if (fb === 'miss') { tapFb.miss++; b.n++; b.score -= 1; }
       else tapFb.none++;
       // 📸 v6.394: อ่านไม่เจอป้ายติดกันครบเกณฑ์ → จับภาพจอส่งออกมาให้ดู (ครั้งเดียวต่อไฟต์)
+      // 📐 v6.398: จับคู่ "มุมเข็มตอนกด" กับ "ผลตอบกลับ" — ข้อมูลชุดเดียวที่ตอบได้ว่ายอดวงแดงอยู่ตรงไหน
+      if (fb && tapWait.ang != null) tapAngPush({ a: tapWait.ang, v: tapWait.vel, f: fb, b: snapBossName || '' });
       const settleGap = lastSettleAt ? now() - lastSettleAt : 0;
       lastSettleAt = now();
       if (fb || settleGap > TAP_BLIND_GAP_MS) tapNoneRun = 0;   // v6.395: ไปทำอย่างอื่นมา = ไม่นับเป็น "ตาบอด"
@@ -5692,7 +5746,15 @@
             if (gabBlock) gabBlock.p++;
             lastPress = now(); lastBossPressAt = Date.now(); fireClick(orb); gaugePresses++;
             gapNotePress(bossHitMode, snapBossName);   // 🔍 v6.360: โหมด cast ก็ต้องนับ ไม่งั้นไฟต์ cast ไม่มีข้อมูลเลย
-            if (!tapWait) tapWait = { at: now(), slot: (beatStartedAt ? (Date.now() - beatStartedAt) : Date.now()) % BEAT_MS };
+            // 📐 v6.398: จดมุมเข็ม "ตอนกด" ไปพร้อมกับการกด — `beatSettle` จะเอาผลตอบกลับ (เป๊ะ/ดี/หลุด)
+            //   ที่อ่านได้อีก ~260ms ถัดมา มาจับคู่กับมุมนี้ ⇒ ได้ตาราง **มุม → คุณภาพการตี** ตรง ๆ
+            //   ⚠️ ทำไมไม่ใช้ `tokpla_dmg_attrib`: ตัวนั้นผูกกับยอด "⚔️ ของเรา" ซึ่งเป็นยอดสะสมที่เด้งช้ากว่าการกด
+            //     ⇒ ดาเมจถูกโยนให้การกดที่บังเอิญค้างอยู่ตอนเลขเด้ง = จับคู่กับมุมไม่ได้ (กับดักเดิมของ v6.229)
+            //     ส่วนป้าย "เป๊ะ/ดี/หลุด" เป็นผลของ **การกดครั้งนั้นครั้งเดียว** จึงจับคู่ได้จริง
+            if (!tapWait) tapWait = {
+              at: now(), slot: (beatStartedAt ? (Date.now() - beatStartedAt) : Date.now()) % BEAT_MS,
+              ang: gaugeOffset(g), vel: Math.round(gVel),   // ระยะห่างจากกึ่งกลางแถบแดง (องศา) + ความเร็วเข็ม
+            };
           }
         }
         await sleep(30);   // ถี่พอจับเข็ม
