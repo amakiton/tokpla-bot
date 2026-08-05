@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.396
+// @version      6.397
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -25,6 +25,18 @@
   // ใช้ window จริงของหน้าเว็บ เพื่อให้ React ได้ยิน event ที่เรายิง
   const W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
 
+  // 🔴 v6.397 — **สคริปต์ห้ามรันบนหน้า `/api/*`**
+  //   `@match *://*.fishbonecast.com/*` กินทุกพาธ ⇒ เปิด `/api/config` (หน้า JSON ที่ใช้อ่านสถานะ)
+  //   ก็ได้บอท "อีกตัว" ขึ้นมาเต็ม ๆ พร้อม listener `beforeunload`/`pagehide`
+  //   ⇒ ตอนปิด/ออกจากแท็บนั้น มันเรียก `persistEnabled()` ด้วย `enabled = false` ซึ่ง
+  //      **เขียนทับ `tokpla_bot_enabled = '0'` และลบธง `tokpla_bot_resume` ทิ้ง**
+  //   ⇒ ถ้าแท็บบอทตัวจริงโหลดใหม่ทีหลัง `autoResumeAfterReload()` จะเห็นว่า "ไม่ต้อง resume"
+  //      แล้ว **เงียบสนิท** (ไม่ log อะไรเลย เพราะ `trackPageReload()` อยู่หลังการเช็ค resume)
+  //   นี่คือคำอธิบายที่ตรงกับหลักฐานทุกข้อของเหตุการณ์ 5 ส.ค. 19:06 → 20:52 (106 นาที):
+  //     ไม่มี log · ไม่มีรายการใน reload_log · 🩺 ไม่ฟ้อง (มันรันเฉพาะตอนบอทเปิด) · พลาดบอส 2 รอบ
+  //   ⚠️ ไม่ใช่ "แท็บถูกแช่แข็ง" อย่างที่สรุปไว้ใน v6.396 — และคนเปิดแท็บ `/api/config` ก็คือผมเอง
+  if (/^\/api(\/|$)/.test(W.location.pathname)) return;
+
   // หลอก Page Visibility API ให้เกมเห็นว่าแท็บ "เปิดอยู่" เสมอ
   // เกมเด้ง "พักจอนาน 5 นาที" เมื่อ document.hidden = true นานเกิน 5 นาที (แท็บถูกซ่อน/พับ/RDP หลุด)
   // override นี้ทำให้ hidden = false ตลอด + กลืน visibilitychange จึงไม่มีวันเด้ง (และลด throttle ด้วย)
@@ -42,7 +54,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.396';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.397';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -11823,7 +11835,14 @@
   // freshness: ถ้าหน้าถูกปิดไว้นานเกิน (เปิดเกมเองวันหลัง) จะไม่สตาร์ทเอง กันบอทเผลอตกโดยไม่ตั้งใจ
   const ENABLED_KEY = 'tokpla_bot_enabled', ENABLED_AT_KEY = 'tokpla_bot_enabled_at';
   const RESUME_FRESH_MS = 12 * 3600000;   // v6.147: 12 ชม. (เดิม 5 นาที สั้นไป — RDP หลุด/browser ค้างนานกว่านั้นแล้วเปิดใหม่ = ไม่ resume) · เป็น fallback ของธง tokpla_bot_resume ที่คุมโดย persistEnabled
+  // 🛡️ v6.397 (กันชั้นสอง): หน้าที่ **ไม่เคยเปิดบอทเลย** ห้ามเขียนทับสถานะของแท็บที่กำลังรันอยู่
+  //   `beforeunload`/`pagehide` เรียก `persistEnabled()` แบบไม่มีเงื่อนไข ⇒ แท็บไหนก็ตามที่โหลดสคริปต์
+  //   แล้วปิดไปโดยไม่เคยกดเปิดบอท จะไปลบธง resume ของตัวจริงทิ้ง
+  //   (กันชั้นแรกคือบล็อก `/api/*` ด้านบน — แต่ยังมีทางอื่นที่เปิดเกมค้างไว้แล้วไม่ได้กดเปิดบอท)
+  let everEnabled = false;
   function persistEnabled() {
+    if (!enabled && !everEnabled) return;   // ไม่เคยเปิดในหน้านี้ = ไม่มีสิทธิ์พูดแทนแท็บอื่น
+    if (enabled) everEnabled = true;
     try {
       W.localStorage.setItem(ENABLED_KEY, enabled ? '1' : '0');
       if (enabled) {
@@ -14877,8 +14896,24 @@ ${esc(reason)}
         if (Date.now() - at < RESUME_FRESH_MS) resume = true;   // เพิ่งรันอยู่ = รีเฟรชกลางคัน → รันต่อ
       }
     } catch {}
-    if (!resume) return;
+    // 🔴 v6.397: จดการโหลดหน้า **ก่อน** ตัดสินใจ resume
+    //   เดิมอยู่หลัง `if (!resume) return;` ⇒ การโหลดหน้าที่ "ไม่ resume" **ไม่ถูกจดเลย**
+    //   ผลคือตอนไล่เหตุการณ์ 106 นาที เห็น reload_log ว่าง แล้วผมสรุปผิดว่า "แท็บถูกแช่แข็ง"
+    //   ทั้งที่ความจริงคือหน้าโหลดใหม่จริง แต่บอทไม่ได้เปิดต่อ — คนละอาการ คนละวิธีแก้
     trackPageReload();   // 📉 v6.241: จดว่าหน้าโหลดใหม่ — แยก "บอทสั่ง" กับ "เกม/เบราว์เซอร์รีโหลดเอง"
+    if (!resume) {
+      // 🔇 v6.397: **"ตายเงียบ"** — หน้าโหลดใหม่ แต่บอทไม่เปิดต่อ ทั้งที่เพิ่งรันอยู่หยก ๆ
+      //   เดิมไม่มีใครรู้เลยจนกว่าจะมีคนไปเปิดจอดู · ต้องส่งออกไปให้รู้ทันที
+      let at = 0;
+      try { at = +(W.localStorage.getItem(ENABLED_AT_KEY) || 0); } catch {}
+      const minAgo = at ? Math.round((Date.now() - at) / 60000) : null;
+      if (at && Date.now() - at < 6 * 3600000) {
+        const msg = `🔇 หน้าเกมโหลดใหม่ แต่บอท "ไม่ได้เปิดต่อ" — ครั้งสุดท้ายที่รันอยู่คือ ${minAgo} นาทีที่แล้ว · ต้องกดเปิดเอง (Alt+B)`;
+        logWarn(msg);
+        if (isOn('tgOn')) void tgSend(`🔇 <b>บอทไม่ได้เปิดต่อหลังหน้าโหลดใหม่</b>\nรันอยู่ล่าสุดเมื่อ ${minAgo} นาทีที่แล้ว — กดเปิดเอง (Alt+B) หรือสั่ง /on`);
+      }
+      return;
+    }
     // 🔄 v6.147: ไม่ล้างธงที่นี่แล้ว — persistEnabled คุมธงตามสถานะเปิด/ปิด (ล้างเฉพาะตอนปิดเอง) · ถ้า resume นี้ไม่สำเร็จ (เกมไม่พร้อม) = รอบหน้าลองใหม่
     let tries = 0;
     // 🐛 v6.221: "โลกเกมพร้อม" แม้ไม่ได้อยู่ริมบ่อ (player+แมพโหลดแล้ว ไม่ transition) — กันเคส spawn ไกลบ่อหลังรีโหลด
