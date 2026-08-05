@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.393
+// @version      6.394
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -42,7 +42,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.393';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.394';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1484,6 +1484,7 @@
     '🔎 /xpprobe - ส่องว่าแถบ XP อยู่ตรงไหนบนจอ (เปิดแผงโปรไฟล์แล้วพิมพ์)',
     '🎓 /xpnow - สั่งเปิดหน้าตัวละครอ่าน XP เดี๋ยวนี้ + รายงาน',
     '🔎 /probe &lt;ชื่อปุ่ม&gt; - เปิดแผงในเกมแล้วอ่านโครงให้ดู (เช่น /probe แลกเศษบอส)',
+    '📸 /screen - ส่องจอตอนนี้แบบอ่านอย่างเดียว · ใช้ได้กลางไฟต์บอส (ไม่กดอะไรเลย)',
     '🌈 /mythic - สถานะล่าปลาเทพ · /mythic on|off · /mythic map ชื่อแมพ|auto - ล็อกแมพล่า',
     '🌍 /chat - เปิด/ปิดคุยแชทโลกผ่าน TG (พิมพ์ข้อความมาได้เลย)',
     '🌍 /w ข้อความ - ส่งเข้าแชทโลกครั้งเดียว',
@@ -1680,6 +1681,19 @@
       //   ตัวนี้คือทางอ่านของจริงโดยไม่ต้องให้ผู้ใช้ไปนั่ง inspect เอง (เกม single-session เปิดแท็บ 2 ไม่ได้)
       case 'panel': case 'ส่อง': {   // ชื่อสำรองที่ไม่ชนใคร
         void probePanel(args.join(' ').trim(), reply);
+        break;
+      }
+      // 📸 v6.394 — **`/screen` ส่องจอ "ตอนนี้" แบบอ่านอย่างเดียว**
+      //   ปมที่ทำให้เราไม่เคยได้ข้อมูลไฟต์บอสสักที (ผู้ใช้ลองสด 13:30 แล้วโดนปฏิเสธ 2 ครั้ง):
+      //     `/probe ตีบอส` → "บอทติดงานอยู่ (busy/orchestrating) — ลองใหม่อีกครั้ง"
+      //   การกันนั้น **ถูกต้อง** เพราะ `probePanel` กดปุ่มเปิดแผงแล้วกด Esc ปิด
+      //   — กลางไฟต์บอสอาจหลุดออกจากห้องบอส
+      //   ⇒ แต่สิ่งที่เราต้องการไม่ต้องกดอะไรเลย: ตอนตีบอส **ป้ายอยู่บนจออยู่แล้ว** แค่ต้องอ่านมัน
+      //   ตัวนี้จึงไม่มี busy gate ไม่มี fireClick ไม่มี gameEscape — อ่านแล้วพิมพ์ออกมาอย่างเดียว
+      case 'screen': case 'จอ': {
+        reply(`📸 <b>จอตอนนี้</b> (อ่านอย่างเดียว · เฟสบอส=${esc(String(bossPhase))} · busy=${busy} · orch=${orchestrating})\n`
+          + `<b>— ข้อความสั้น (แบบเดียวกับที่ readTapFeedback เห็น) —</b>\n<code>${esc(shortTextDump(55))}</code>\n`
+          + `<b>— โครง element —</b>\n<code>${esc(domOutline(45))}</code>`);
         break;
       }
       case 'bossgate': {   // 🚪 v6.242: ข้อความหน้าประตูถ้ำ (หา mechanic เวลาเปิด)
@@ -5169,6 +5183,14 @@
     let tapWait = null;               // { at, slot } — การกดที่รอผลตอบกลับ
     const tapFb = { perfect: 0, good: 0, miss: 0, none: 0 };
     let comboMax = 0, stunSkips = 0;
+    // 📸 v6.394: "อ่านป้ายจังหวะไม่ออกติดกันหลายครั้ง" = ดัมป์จอให้ดูเลย **ครั้งเดียวต่อไฟต์**
+    //   ทำไมต้องยิงเอง: ช่วงเวลาเดียวที่ข้อมูลนี้มีค่าคือ "กลางไฟต์" ซึ่งเป็นช่วงที่กดคำสั่งให้ทันแทบไม่ได้
+    //   (และ `/probe` ก็ถูกกันไว้ตอน orchestrating อยู่แล้ว) — ให้บอทจับภาพตอนอาการเกิดพอดีจะตรงกว่า
+    //   ⚠️ ตั้งเกณฑ์ที่ "ติดกัน" ไม่ใช่ "ยอดรวม" — `none` ยอดรวมสูงเป็นเรื่องปกติ
+    //   (ปุ่มตีมีคูลดาวน์ ⇒ การกดส่วนใหญ่ไม่ได้กลายเป็นการตีจริง ⇒ ไม่มีป้ายให้อ่าน — ดูคอมเมนต์ v6.285)
+    //   แต่ "ไม่เจอป้ายเลย 15 ครั้งติด" แปลว่าน่าจะอ่านไม่เจอจริง ๆ ไม่ใช่แค่คูลดาวน์
+    const TAP_BLIND_RUN = 15;
+    let tapNoneRun = 0, tapBlindDumped = false;
     // 🔍 v6.360: เริ่มไฟต์ใหม่ = ล้างตัวจับ "เวลาที่หายไป" (ไม่งั้นช่องว่างข้ามไฟต์ถูกนับเป็นก้อนเดียวยาวเป็นนาที)
     gapWhy = null; gapWhyAt = now(); gapPrevPress = 0;
     const hitGapAtStart = hitGapRing.length;
@@ -5183,6 +5205,14 @@
       else if (fb === 'good') { tapFb.good++; b.n++; b.score += 1; }
       else if (fb === 'miss') { tapFb.miss++; b.n++; b.score -= 1; }
       else tapFb.none++;
+      // 📸 v6.394: อ่านไม่เจอป้ายติดกันครบเกณฑ์ → จับภาพจอส่งออกมาให้ดู (ครั้งเดียวต่อไฟต์)
+      if (fb) tapNoneRun = 0;
+      else if (++tapNoneRun >= TAP_BLIND_RUN && !tapBlindDumped) {
+        tapBlindDumped = true;
+        const dump = shortTextDump(45);
+        logWarn(`📸 อ่านป้ายจังหวะไม่เจอ ${TAP_BLIND_RUN} ครั้งติด — ข้อความสั้นบนจอตอนนี้:\n${dump}`);
+        if (isOn('tgOn')) void tgSend(`📸 <b>อ่านป้ายจังหวะไม่เจอ ${TAP_BLIND_RUN} ครั้งติด</b> (${esc(snapBossName || 'บอส')})\n<code>${esc(dump)}</code>`);
+      }
       tapWait = null;
       // 🥁 v6.285 — **ล็อกจังหวะแบบ "จับสมอ" แทนการสะสมสถิติ 24 ตัวอย่าง**
       //   หลักฐานจาก 4 ไฟต์จริงว่าดีไซน์เดิมใช้ไม่ได้: กด 73/97/75/35 ครั้ง แต่ได้ตัวอย่างที่ใช้ได้แค่ 5/8/8/7
@@ -7789,6 +7819,35 @@
     return out.join('\n') || '(ไม่เจอ element ที่ใช้ได้)';
   }
 
+  // 🔎 v6.394 — **ดัมป์ "ข้อความสั้นทุกตัวบนจอ" (อ่านอย่างเดียว ไม่กดอะไรเลย)**
+  //   ทำไมต้องมีทั้งที่มี `domOutline` แล้ว: `domOutline` เดินเฉพาะ
+  //   `button,[aria-label],div[class*="tk-"],h1,h2,h3,label,input,select`
+  //   ⇒ **ป้ายเด้ง "เป๊ะ!/ดี/หลุดจังหวะ" ที่ไม่ได้อยู่ใน selector พวกนี้จะมองไม่เห็นเลย**
+  //   ตัวนี้เดิน text node แบบเดียวกับ `readTapFeedback` เป๊ะ ๆ ⇒ ถ้ามันไม่เห็น readTapFeedback ก็ไม่เห็น
+  //   ใช้ตอบคำถามเดียว: "ตอนที่บอทบอกว่าอ่านป้ายไม่ออก บนจอมีข้อความอะไรอยู่บ้าง"
+  function shortTextDump(maxLines) {
+    const out = [];
+    try {
+      const seen = new Set();
+      const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      let n;
+      while ((n = tw.nextNode())) {
+        if (out.length >= (maxLines || 60)) break;
+        const pe = n.parentElement;
+        if (!pe || pe.closest('[data-tkbot]')) continue;      // กฎเหล็ก #7 — ข้าม UI ของบอทเอง
+        if (pe.offsetParent === null) continue;               // มองไม่เห็น = ไม่นับ
+        const t = (n.textContent || '').trim();
+        if (!t || t.length > 24) continue;                    // เกณฑ์เดียวกับ readTapFeedback
+        const cls = (pe.className && typeof pe.className === 'string')
+          ? pe.className.split(/\s+/).slice(0, 4).join('.') : '';
+        const key = pe.tagName + '|' + cls + '|' + t;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(`${pe.tagName.toLowerCase()}${cls ? '.' + cls : ''} "${t}"`);
+      }
+    } catch (e) { out.push('อ่านไม่สำเร็จ: ' + (e && e.message)); }
+    return out.join('\n') || '(ไม่มีข้อความสั้นบนจอ)';
+  }
   // 🔎 v6.353: ตัวส่องแผงตัวจริง (ใช้ร่วมกันทั้งคำสั่ง Telegram และปุ่มในแผงบอท)
   //   แยกออกมาเป็นฟังก์ชันเดียว — v6.352 เขียนซ้ำ 2 ที่ แล้วฝั่ง Telegram ก็ถูก case เก่ากินทิ้งอีก
   async function probePanel(label, reply) {
