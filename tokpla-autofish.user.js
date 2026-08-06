@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.398
+// @version      6.399
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -54,7 +54,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.398';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.399';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -11902,6 +11902,7 @@
   //   แล้วปิดไปโดยไม่เคยกดเปิดบอท จะไปลบธง resume ของตัวจริงทิ้ง
   //   (กันชั้นแรกคือบล็อก `/api/*` ด้านบน — แต่ยังมีทางอื่นที่เปิดเกมค้างไว้แล้วไม่ได้กดเปิดบอท)
   let everEnabled = false;
+  let stopReason = '', stopAt = 0;   // v6.399: จำเหตุผล/เวลาที่หยุด — ใช้ในข้อความเตือนซ้ำ
   function persistEnabled() {
     if (!enabled && !everEnabled) return;   // ไม่เคยเปิดในหน้านี้ = ไม่มีสิทธิ์พูดแทนแท็บอื่น
     if (enabled) everEnabled = true;
@@ -11927,6 +11928,14 @@
     resetFishEngine();   // ปล่อยปุ่มที่กดค้าง (ชักเย่อ) + ล้างสถานะเอนจินใหม่
     zoneKey = null;
     updateBadge(reason);
+    // 🔴 v6.399: **เหตุผลที่หยุด คือบรรทัดสำคัญที่สุดตอนชันสูตร — แต่เดิมไม่เคยถูกบันทึกเลย**
+    //   เหตุการณ์จริง 6 ส.ค.: บอทหยุด 19:15 ค้าง 3 ชม. 37 นาที พลาดบอส 3 รอบ
+    //   `tokpla_bot_log` บรรทัดสุดท้ายเป็น "🎣 คงเบ็ดเดิม..." ธรรมดา ไม่มีร่องรอยว่าหยุดเพราะอะไร
+    //   ⇒ ต้องไปอ่านข้อความจากป้ายบนจอถึงจะรู้ · และถ้าปิดแท็บไปก็หายเลย
+    //   `saveLog(true)` = flush ทันที ไม่รอ throttle (หลังหยุดแล้วอาจไม่มีอะไรมาทริกให้เซฟอีก)
+    stopReason = reason || '';
+    stopAt = Date.now();
+    try { logWarn(`🛑 บอทหยุดเอง — ${reason}`); saveLog(true); } catch {}
     if (cfg.tgStop) void tgSend(`🛑 <b>บอทหยุดแล้ว</b>
 ${esc(reason)}
 เหวี่ยง ${casts} · ติดปลา ${sessCatches}${earned > 0 ? ` · ขายได้ ${earned.toLocaleString()} 🪙` : ''}
@@ -12592,7 +12601,21 @@ ${esc(reason)}
         if (pendingCast && now() - pendingCast > 2500) {
           pendingCast = 0;
           if (++failedCasts >= 3) {
-            stopBot('กดตกปลาไม่ติด และเกมไม่บอกเหตุผล — ลองรีเฟรชหน้า');
+            // 🔄 v6.399: **ข้อความบอกเองว่า "ลองรีเฟรชหน้า" — แล้วทำไมไม่ลองให้เลย?**
+            //   เดิมหยุดทันที ⇒ ต้องรอคนมากดเปิด (6 ส.ค. รอ 3 ชม. 37 นาที พลาดบอส 3 รอบ)
+            //   อาการนี้เคยหายด้วยการรีเฟรชจริง ⇒ ลองเองก่อน 1 ครั้ง แล้วค่อยยอมแพ้ถ้ายังไม่หาย
+            //   `doReload` มีการ์ดของตัวเองครบแล้ว (1 ครั้ง/2 นาที · เกิน 3 ครั้งจะ stopBot ให้เอง)
+            //   ธงนี้กันวนรีโหลด: ถ้าเพิ่งลองไปใน 10 นาทีนี้แล้วยังพัง = ปัญหาอื่น ไม่ใช่หน้าค้าง
+            let triedAt = 0;
+            try { triedAt = +(W.localStorage.getItem('tokpla_castfail_reload_at') || 0); } catch {}
+            if (Date.now() - triedAt > 600000) {
+              try { W.localStorage.setItem('tokpla_castfail_reload_at', String(Date.now())); } catch {}
+              failedCasts = 0;
+              logWarn('🔄 กดตกปลาไม่ติด 3 ครั้ง — ลองรีเฟรชหน้าเองก่อน (ยังไม่หยุดบอท)');
+              doReload('กดตกปลาไม่ติด — ลองรีเฟรชกู้เอง');
+            } else {
+              stopBot('กดตกปลาไม่ติด และเกมไม่บอกเหตุผล — รีเฟรชแล้วยังไม่หาย');
+            }
             return requestAnimationFrame(tick);
           }
         }
@@ -14846,9 +14869,30 @@ ${esc(reason)}
     return out;
   }
   let hbPrev = 0;
+  // 🔔 v6.399: **เตือนครั้งเดียวแล้วเงียบ = พลาดง่ายเกินไป**
+  //   6 ส.ค.: บอทหยุด 19:15 (ส่ง TG ครั้งเดียว) แล้วดับยาว 3 ชม. 37 นาที พลาดบอส 19:30 · 20:00 · 22:30
+  //   ⇒ ตราบใดที่บอท "เคยรันในหน้านี้" แล้วยังปิดอยู่ ให้ย้ำทุก 30 นาที พร้อมบอกว่าพลาดรอบไหนไปแล้วบ้าง
+  const OFF_NAG_MS = 30 * 60000;
+  let offSince = 0, offNagAt = 0;
   function heartbeatWatch() {
     const t = Date.now();
-    if (!enabled) { hbPrev = 0; return; }   // ปิดบอทเอง = ไม่ใช่การหายไป (ไม่ต้องฟ้องตอนเปิดใหม่)
+    if (!enabled) {
+      hbPrev = 0;
+      if (everEnabled) {                       // ปิดตั้งแต่ยังไม่เคยเปิด = ไม่ใช่เรื่องผิดปกติ
+        if (!offSince) { offSince = stopAt || t; offNagAt = t; }
+        if (t - offSince >= OFF_NAG_MS && t - offNagAt >= OFF_NAG_MS) {
+          offNagAt = t;
+          const min = Math.round((t - offSince) / 60000);
+          const missed = bossRoundsBetween(offSince, t);
+          const miss = missed.length ? ` · 🔴 พลาดรอบบอส ${missed.join(', ')}` : '';
+          const why = stopReason ? ` (${stopReason})` : '';
+          logWarn(`🔔 บอทยังปิดอยู่ ${min} นาทีแล้ว${why}${miss}`);
+          if (isOn('tgOn')) void tgSend(`🔔 <b>บอทยังปิดอยู่ ${min} นาทีแล้ว</b>${esc(why)}${esc(miss)}\nกดเปิด (Alt+B) หรือสั่ง /on`);
+        }
+      }
+      return;   // ปิดบอทเอง = ไม่ใช่ "หยุดหายใจ" (ไม่ต้องฟ้อง 🫀 ตอนเปิดใหม่)
+    }
+    offSince = 0; offNagAt = 0; stopReason = '';
     let stored = 0;
     try { stored = +(W.localStorage.getItem(HB_KEY) || 0); } catch {}
     // hbPrev = จังหวะก่อนหน้าของ "หน้านี้" · stored = ค่าที่จำข้ามการรีโหลด/แท็บถูกทิ้ง
