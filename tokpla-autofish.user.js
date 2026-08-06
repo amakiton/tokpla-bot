@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.399
+// @version      6.400
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -54,7 +54,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.399';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.400';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2931,12 +2931,47 @@
       const pp = Math.round(b.p / b.n * 100);
       return `${String(k).padStart(4)}°  n=${String(b.n).padStart(4)}  เป๊ะ ${String(pp).padStart(3)}%  ดี ${String(Math.round(b.g / b.n * 100)).padStart(3)}%  หลุด ${String(Math.round(b.m / b.n * 100)).padStart(3)}%  ${'█'.repeat(Math.round(pp / 5))}`;
     });
-    const best = keys.filter((k) => B.get(k).n >= 5).sort((x, y) => B.get(y).p / B.get(y).n - B.get(x).p / B.get(x).n)[0];
-    const tot = tapAngRing.length;
-    return `📐 มุมเข็มตอนกด → ผลตอบกลับ (${tot} การกดที่อ่านป้ายออก)\n`
-      + `0° = กึ่งกลางแถบแดง · ลบ = ยังไม่ถึง · บวก = เลยไปแล้ว\n\n${rows.join('\n')}\n\n`
-      + (best != null ? `👉 ช่วงที่ได้ "เป๊ะ" บ่อยที่สุด: ${best}° (${Math.round(B.get(best).p / B.get(best).n * 100)}% จาก ${B.get(best).n} ครั้ง)\n` : '')
-      + `ℹ️ ถ้ายอดอยู่ที่ 0° จริง กราฟควรพุ่งสูงตรงกลาง — ถ้าพุ่งที่มุมอื่น แปลว่า "ยอดวงแดง" ไม่ได้อยู่กึ่งกลาง`;
+    const tot = tapAngRing.length, nBoss = new Set(tapAngRing.map((r) => r.b)).size;
+    const angMean = Math.round(tapAngRing.reduce((s, r) => s + r.a, 0) / tot);
+    const negPct = Math.round(tapAngRing.filter((r) => r.a < 0).length / tot * 100);
+    // 🥁 v6.400: **เลิกยกมุมที่ "กดบ่อยสุด" ว่าเป็นมุมที่ดีสุด** — ของเดิมชี้ +20° (เป๊ะแค่ 8%) เพราะมันมี n เยอะ
+    //   ถามให้ถูก: เป๊ะ "เกาะมุม" ไหม → เทียบอัตราเป๊ะใกล้ศูนย์ vs ไกลศูนย์ (ถ้าพอ ๆ กัน = มุมไม่ใช่ตัวกำหนด)
+    const near = tapAngRing.filter((r) => Math.abs(r.a) < 12);
+    const far = tapAngRing.filter((r) => Math.abs(r.a) >= 12);
+    const pr = (a) => (a.length ? Math.round(a.filter((r) => r.f === 'perfect').length / a.length * 100) : null);
+    const prN = pr(near), prF = pr(far);
+    let verdict;
+    if (near.length < 4 || far.length < 4) {
+      verdict = `📌 ข้อมูลยังน้อย (${tot} กด · ${nBoss} บอส) — ผ่านไฟต์แบบมีเกจอีก 2-3 รอบก่อนสรุป`;
+    } else if (Math.abs(prN - prF) < 12) {
+      verdict = `📌 มุมเข็ม "ไม่ได้" กำหนดเป๊ะ/ดี/หลุด — เป๊ะใกล้ศูนย์ ${prN}% ≈ ไกลศูนย์ ${prF}%\n`
+        + `   ⇒ ตัวกำหนดจริงคือ "จังหวะบีต 1200ms" ไม่ใช่มุม · ระบบล็อกบีต (v6.391) คือจุดที่ต้องปรับ`;
+    } else if (prN > prF) {
+      verdict = `📌 ยอดอยู่ใกล้กึ่งกลาง — เป๊ะใกล้ศูนย์ ${prN}% > ไกลศูนย์ ${prF}% ⇒ ควรกดให้เข็มใกล้ 0° กว่านี้`;
+    } else {
+      verdict = `📌 ยอดไม่ได้อยู่กึ่งกลาง — เป๊ะไกลศูนย์ ${prF}% > ใกล้ศูนย์ ${prN}%`;
+    }
+    // 🥁 v6.400: แกนที่ 2 — ระยะห่างจากบีตที่ล็อก (ตัวที่ "น่าจะ" กำหนดเป๊ะจริง) · โผล่เมื่อมีข้อมูล
+    const withD = tapAngRing.filter((r) => r.d != null);
+    let beatBlock = '';
+    if (withD.length >= 8) {
+      const Bd = new Map();
+      for (const r of withD) {
+        const k = Math.round(r.d / 100) * 100;
+        const b = Bd.get(k) || { n: 0, p: 0 };
+        b.n++; if (r.f === 'perfect') b.p++; Bd.set(k, b);
+      }
+      const dr = [...Bd.keys()].sort((x, y) => x - y).map((k) => {
+        const b = Bd.get(k), pp = Math.round(b.p / b.n * 100);
+        return `${String(k).padStart(5)}ms  n=${String(b.n).padStart(4)}  เป๊ะ ${String(pp).padStart(3)}%  ${'█'.repeat(Math.round(pp / 5))}`;
+      });
+      beatBlock = `\n\n🥁 ระยะห่างจากบีตที่ล็อก → เป๊ะ (${withD.length} กด · 0ms = ตรงบีต)\n${dr.join('\n')}`;
+    } else {
+      beatBlock = `\n\n🥁 ระยะห่างจากบีต: ยังเก็บได้ ${withD.length} กด (เริ่ม v6.400 — ผ่านไฟต์มีเกจอีกสักรอบ)`;
+    }
+    return `📐 มุมเข็มตอนกด → ผลตอบกลับ (${tot} กด · ${nBoss} บอส)\n`
+      + `0° = กึ่งกลางแถบแดง · ลบ = ยังไม่ถึง · บวก = เลยไปแล้ว\n\n${rows.join('\n')}\n`
+      + `\n⏱️ การกด ${100 - negPct}% เลยกึ่งกลางไปแล้ว (เฉลี่ย ${angMean >= 0 ? '+' : ''}${angMean}°)${negPct === 0 ? ' — ไม่เคยกดก่อนถึงยอดเลย' : ''}\n${verdict}${beatBlock}`;
   }
   const HITGAP_KEY = 'tokpla_hit_gap';
   // ⚠️ "พื้น" ของแต่ละโหมดไม่เท่ากัน — charge กดค้าง 1.95 วิ + เว้น 0.3 วิ = พื้น ~2.25 วิ โดยธรรมชาติ
@@ -5274,7 +5309,13 @@
       else tapFb.none++;
       // 📸 v6.394: อ่านไม่เจอป้ายติดกันครบเกณฑ์ → จับภาพจอส่งออกมาให้ดู (ครั้งเดียวต่อไฟต์)
       // 📐 v6.398: จับคู่ "มุมเข็มตอนกด" กับ "ผลตอบกลับ" — ข้อมูลชุดเดียวที่ตอบได้ว่ายอดวงแดงอยู่ตรงไหน
-      if (fb && tapWait.ang != null) tapAngPush({ a: tapWait.ang, v: tapWait.vel, f: fb, b: snapBossName || '' });
+      // 🥁 v6.400: เก็บ "ระยะห่างจากบีตที่ล็อกไว้" (ms) ด้วย — ข้อมูล 20 กดแรกชี้ว่า **มุมไม่ใช่ตัวกำหนด**
+      //   (เป๊ะกระจายที่ +1/+22/+39° · หลุดอยู่กลางคลัสเตอร์ +16/+17°) ⇒ ตัวกำหนดจริงคือจังหวะบีต
+      //   d = ระยะจากสมอบีต (−600..+600ms) · null ถ้ายังไม่ล็อก — ไฟต์หน้าจะได้ดูว่าเป๊ะเกาะบีตจริงไหม
+      if (fb && tapWait.ang != null) {
+        const dfl = (beatLockSlot != null) ? (((tapWait.slot - beatLockSlot + 1800) % 1200) - 600) : null;
+        tapAngPush({ a: tapWait.ang, v: tapWait.vel, f: fb, b: snapBossName || '', d: dfl });
+      }
       const settleGap = lastSettleAt ? now() - lastSettleAt : 0;
       lastSettleAt = now();
       if (fb || settleGap > TAP_BLIND_GAP_MS) tapNoneRun = 0;   // v6.395: ไปทำอย่างอื่นมา = ไม่นับเป็น "ตาบอด"
