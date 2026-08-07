@@ -3,6 +3,45 @@
 > **อ่านก่อนแก้บั๊กเสมอ** — กันแก้ซ้ำ/ถอยหลัง · เพิ่มรายการใหม่ไว้บนสุดทุกครั้งที่ bump เวอร์ชัน
 > รูปแบบ: เวอร์ชัน → สิ่งที่เปลี่ยน → เหตุผล/บั๊กต้นเหตุ
 
+## v6.402 — ❄️ ความเสถียร: จับสาเหตุ "บอทตายเงียบหลายชม." ให้ได้ก่อนเชื่อ + keepalive best-effort
+
+ผู้ใช้สั่งโฟกัสความเสถียร (บอทตายยาว 106 นาที → 3.6 ชม. → 6.5 ชม. 3 วันติด)
+
+### ตรวจสด — ตัดตัวเลือกออกไปได้บางส่วน แต่ **ยังไม่ยืนยันสาเหตุ**
+
+- RAM ของแท็บ: **51–72 MB / เพดาน 2144 MB** ⇒ ไม่ใช่หน่วยความจำแท็บนี้เต็ม
+- ช่วงตาย: **ไม่มี reload · ไม่มี log · hb ค้าง** ⇒ สคริปต์หยุดสนิท (ไม่ใช่รีโหลดแล้วไม่ต่อ)
+- `document.wasDiscarded=false` ตอนนี้ **แต่ไม่มีความหมาย** เพราะเพิ่ง navigate เอง
+- Page Lifecycle API มีครบ (`wasDiscarded`/`onfreeze`/`wakeLock`) · **บน VPS แท็บอยู่พื้นหลังเกือบตลอด**
+  ⇒ สมมติฐานนำ: **Chrome (Memory Saver) freeze/discard แท็บพื้นหลัง** — แต่ยังพิสูจน์ไม่ได้
+
+⚠️ **จะไม่แก้จากสมมติฐานที่ยังไม่ยืนยัน** (บทเรียน v6.391–6.394 · v6.396 ที่สรุป "แท็บแช่แข็ง" ผิด)
+
+### สิ่งที่ทำ ① — instrument ให้ "ตายครั้งหน้ารู้สาเหตุแน่ ๆ"
+
+- `document.wasDiscarded` ตอนโหลด → ถ้า true = **ยืนยัน Chrome discard** → log + Telegram บอกวิธีแก้ที่ VPS
+- ฟัง `freeze`/`resume` (Page Lifecycle) → บันทึกลง ring `tokpla_lifecycle` + flush log ทันทีตอน freeze
+- `/reloads` โชว์สรุป: **freeze N · resume N · discard N**
+  - ตายแล้วเห็น freeze/discard = Chrome แช่แข็ง/ทิ้งแท็บ (แก้: keepalive/flag/ปักหมุด)
+  - **ตายแล้ว ring ยังว่าง = ไม่ใช่ discard** (แท็บถูกปิด/เบราว์เซอร์ล่ม → ต้องมี watchdog นอกเบราว์เซอร์)
+
+### สิ่งที่ทำ ② — keepalive เสียงเงียบ (best-effort · ยังไม่การันตี)
+
+AudioContext + oscillator **gain 0 (เงียบสนิท)** → สื่อที่กำลังเล่น = สัญญาณที่ Chrome ไม่ discard/throttle แท็บ
+เริ่มตอนคลิกแรก (คลิกเปิดบอทก็นับ) · **log เฉพาะตอน state=running จริง** (ไม่โม้)
+
+⚠️ **ตรงไปตรงมา: ยังไม่ยืนยันว่า gain-0 กัน discard ได้จริง** (พฤติกรรม Chrome ภายใน) —
+เป็นชั้นลองไว้ก่อน · instrument ด้านบนจะบอกเองว่าได้ผลไหม (ถ้า freeze/discard ยังโผล่ = ไม่ช่วย)
+
+### 🔴 ตัวแก้ที่เชื่อถือได้จริง = ที่ VPS (งานของเจ้าของ)
+
+1. **ปิด Memory Saver** ใน Chrome (`chrome://settings/performance` → ปิด)
+2. **ปักหมุดแท็บเกม** (คลิกขวา → Pin) · อย่าให้แท็บอื่นบัง
+3. เปิด Chrome ด้วยแฟลก: `--disable-features=IntensiveWakeUpThrottling,HighEfficiencyModeAvailable` `--disable-backgrounding-occluded-windows` `--disable-renderer-backgrounding`
+4. ถ้ายังตาย (ring ว่าง = แท็บถูกปิด) → ต้องมี **watchdog นอกเบราว์เซอร์** เปิด /play ใหม่อัตโนมัติ
+
+เทสต์ 21/21 (ดึง lifePush/lifeReport ของจริงมารัน · นับ freeze/resume/discard · ring cap 50 · ต่อสาย keepalive/instrument)
+
 ## v6.401 — 🎣 เกมเปลี่ยนมินิเกมชักเย่อทั้งชุด — บอทเลิกเล่น คะแนนหล่น 98→67 (แก้แล้ว)
 
 ผู้ใช้แจ้ง: *"เกจและวิธีตกปลาเกมอัปเดตใหม่ ตรวจสอบและวิเคราะห์อย่างละเอียด"*

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.401
+// @version      6.402
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -51,10 +51,12 @@
       W.addEventListener('blur', (e) => e.stopImmediatePropagation(), true);
     } catch (e) { console.warn('[Tokpla Bot] keepAlive override ไม่สำเร็จ:', e); }
   })();
+  // 🔊 v6.402: สถานะ keepalive เสียงเงียบ (กัน Chrome discard แท็บพื้นหลัง) — ตั้งค่าจริงตอน startKeepAlive ท้ายไฟล์
+  let keepAliveCtx = null, keepAliveOn = false;
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.401';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.402';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -14883,10 +14885,26 @@ ${esc(reason)}
       if (ext >= 6) logWarn(`📉 หน้าเกมโหลดใหม่เอง ${ext} ครั้งใน 1 ชม. (ไม่ใช่บอทสั่ง) — บอทตกต่อได้ แต่สถิติรอบจะขาดตอน · ดูรายละเอียด /reloads`);
     } catch {}
   }
+  // ❄️ v6.402 — เก็บเหตุการณ์ "วงจรชีวิตแท็บ" (freeze/resume/discard) เพื่อ **จับสาเหตุ "บอทตายเงียบหลายชม." ให้ได้ก่อนเชื่อ**
+  //   บน VPS แท็บเกมอยู่พื้นหลังเกือบตลอด → Chrome (Memory Saver) freeze/discard แท็บพื้นหลังที่ idle ได้
+  //   ⇒ สคริปต์หยุดสนิท (hb ค้าง · ไม่มี log · ไม่มี reload) = อาการที่เจอเป๊ะ · **ยังไม่ยืนยัน** จึง instrument ก่อน
+  const LIFE_KEY = 'tokpla_lifecycle';
+  function lifePush(ev) {
+    try { const a = JSON.parse(W.localStorage.getItem(LIFE_KEY) || '[]'); a.push({ t: Date.now(), ev }); W.localStorage.setItem(LIFE_KEY, JSON.stringify(a.slice(-50))); } catch {}
+  }
+  function lifeReport() {
+    let a = []; try { a = JSON.parse(W.localStorage.getItem(LIFE_KEY) || '[]'); } catch {}
+    if (!a.length) return '❄️ วงจรชีวิตแท็บ: ยังไม่มี freeze/discard (เก็บตั้งแต่ v6.402) — ถ้าตายแล้วยังว่าง = ไม่ใช่ Chrome discard (น่าจะแท็บถูกปิด/เบราว์เซอร์ล่ม)';
+    const T = (ms) => new Date(ms).toLocaleTimeString('th-TH');
+    const n = { freeze: 0, resume: 0, 'discard-restore': 0 };
+    for (const e of a) if (e.ev in n) n[e.ev]++;
+    return `❄️ วงจรชีวิตแท็บ: freeze ${n.freeze} · resume ${n.resume} · discard ${n['discard-restore']} · keepalive=${keepAliveOn ? 'ON' : 'off'}\n`
+      + a.slice(-10).map((e) => `${T(e.t)} ${e.ev}`).join('\n');
+  }
   function reloadReport() {
     let arr = [];
     try { arr = JSON.parse(W.localStorage.getItem(RELOAD_LOG_KEY) || '[]'); } catch {}
-    if (!arr.length) return '📉 ยังไม่มีบันทึกการโหลดหน้า (เริ่มเก็บตั้งแต่ v6.241)';
+    if (!arr.length) return '📉 ยังไม่มีบันทึกการโหลดหน้า (เริ่มเก็บตั้งแต่ v6.241)\n\n' + lifeReport();
     const T = (ms) => new Date(ms).toLocaleTimeString('th-TH');
     const hr = arr.filter((r) => Date.now() - r.t < 3600000);
     const gaps = arr.slice(1).map((r, i) => Math.round((r.t - arr[i].t) / 60000));
@@ -14897,6 +14915,7 @@ ${esc(reason)}
       med != null ? `ห่างกันโดยเฉลี่ย (กลาง): ${med} นาที` : '',
       `\n${arr.slice(-12).map((r) => `${T(r.t)} ${r.b ? '🤖 บอทสั่ง' : '⚠️ ภายนอก'}`).join('\n')}`,
       `\nℹ️ "ภายนอก" = เกม/เบราว์เซอร์โหลดหน้าใหม่เอง (บอทไม่ได้สั่ง) · ถ้าถี่มาก ลองเช็คเน็ต/RAM ของ VPS หรือแท็บอื่นที่แย่งทรัพยากร`,
+      `\n${lifeReport()}`,
     ].filter(Boolean).join('\n');
   }
   // เกม persist session ไว้ (Supabase) → รีโหลดหน้า = กลับเข้าเกมได้เลย ไม่ต้องกรอกรหัส
@@ -15165,6 +15184,35 @@ ${esc(reason)}
   setInterval(gameEventWatch, 3000);     // เฝ้าเหตุการณ์เกม (เลเวลอัพ/สภาพอากาศ) -> แจ้ง TG
   setInterval(() => { if (enabled) persistEnabled(); }, 30000);   // heartbeat: ต่ออายุ "ยังรันอยู่" ทุก 30 วิ (ให้ freshness check ผ่านหลังรีเฟรช)
   setInterval(heartbeatWatch, HB_EVERY_MS);   // 🫀 v6.396: จับ "ช่วงที่สคริปต์ไม่ได้ทำงาน" ให้ได้ทันทีที่ฟื้น
+  // 🔊 v6.402 — keepalive: เสียงเงียบกัน Chrome discard/freeze แท็บพื้นหลัง (มิติที่ "น่าจะ" ทำบอทตายเงียบหลายชม.)
+  //   `keepTabAlive` เดิมปลอม document.hidden แค่กันป๊อบอัพเกม · Chrome ใช้ "แท็บพื้นหลังจริง" ตัดสิน discard ไม่สน hidden ปลอม
+  //   สื่อที่กำลังเล่น (แม้ gain 0 = เงียบสนิท) = สัญญาณเดียวที่ Chrome ไม่ discard/throttle แท็บ · autoplay ต้องมี gesture → เริ่มตอนคลิกแรก
+  //   ⚠️ ยังไม่ยืนยันว่าใช่สาเหตุ — จึงคู่กับ instrument ด้านล่าง (freeze/discard) เพื่อพิสูจน์ · ถ้า headless เสียงอาจไม่เริ่ม (log บอกสถานะ)
+  function startKeepAlive() {
+    try {
+      const AC = W.AudioContext || W.webkitAudioContext; if (!AC) return;
+      if (!keepAliveCtx) {
+        keepAliveCtx = new AC();
+        const osc = keepAliveCtx.createOscillator(), g = keepAliveCtx.createGain();
+        g.gain.value = 0; osc.connect(g); g.connect(keepAliveCtx.destination); osc.start();
+      }
+      const mark = () => { if (!keepAliveOn && keepAliveCtx.state === 'running') { keepAliveOn = true; logInfo('🔊 keepalive เสียงเงียบเริ่มแล้ว — กัน Chrome discard/throttle แท็บพื้นหลัง'); } };
+      if (keepAliveCtx.state !== 'running') keepAliveCtx.resume().then(mark).catch(() => {}); else mark();
+    } catch {}
+  }
+  W.addEventListener('pointerdown', startKeepAlive, true);
+  W.addEventListener('keydown', startKeepAlive, true);
+  startKeepAlive();   // เผื่อมี gesture ค้างอยู่แล้ว (auto-resume หลังรีโหลด)
+  // 🩺 v6.402 instrument วงจรชีวิตแท็บ — ถ้า keepalive เอาไม่อยู่ อย่างน้อย "รู้สาเหตุ" ตอนฟื้น (ดู /reloads)
+  try {
+    if (document.wasDiscarded) {
+      lifePush('discard-restore');
+      logWarn('♻️ ยืนยัน: หน้านี้ถูก Chrome discard (Memory Saver) แล้วโหลดกลับ — ปิด Memory Saver + ปักหมุดแท็บบน VPS');
+      if (isOn('tgOn')) void tgSend('♻️ <b>Chrome discard แท็บเกม</b> (Memory Saver) = สาเหตุบอทตาย\nแก้ที่ VPS: ปิด Memory Saver + ปักหมุด (pin) แท็บ + เปิด Chrome ด้วย --disable-features=IntensiveWakeUpThrottling');
+    }
+  } catch {}
+  W.document.addEventListener('freeze', () => { lifePush('freeze'); try { saveLog(true); } catch {} }, true);
+  W.document.addEventListener('resume', () => { lifePush('resume'); logWarn('❄️ แท็บถูก Chrome แช่แข็ง (freeze) แล้วคืนชีพ — ช่วงนั้นบอทหยุดสนิท (ดู /reloads)'); }, true);
   // Flush profit + สถานะเปิด ก่อนปิด/รีโหลด (กัน catches ที่ยังไม่ throttle-save หาย + จำสถานะรันล่าสุด)
   W.addEventListener('beforeunload', () => { try { saveCfg(); saveProfit(); saveModeStats(); persistEnabled(); saveLog(true); saveTestProgress(); } catch {} });   // v6.155: เซฟ test progress ตอนรีเฟรช/ปิด (กันเทสต์หาย)
   W.addEventListener('pagehide', () => { try { saveCfg(); saveProfit(); saveModeStats(); persistEnabled(); saveLog(true); saveTestProgress(); } catch {} });
