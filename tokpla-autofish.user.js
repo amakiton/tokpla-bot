@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.400
+// @version      6.401
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -54,7 +54,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.400';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.401';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -7452,7 +7452,44 @@
     return best;
   }
   // ชักเย่อ (เฟส 4): กรอบ (bottom/height %) + ปลา (bottom % หรือ calc(X% ± Ypx)) — เกมห่อ calc() บางจังหวะ
+  // 🐟 v6.401 — **เกมเปลี่ยน UI ชักเย่อทั้งชุด (~04:30 · config v856→v879)** ⇒ readTugState เดิมคืน null เสมอ
+  //   ⇒ บอทไม่เข้า state 'tug' ไม่เล่นมินิเกม ⇒ คะแนนจับปลาหล่นจาก ~98 → เฉลี่ย 67 (catch log "เกจ — · สู้ 0 กด")
+  //   ตรวจสด (7 ส.ค.) โครงใหม่:
+  //     ราง: div แนวตั้งแคบ `overflow-hidden` (w-[66px] h~350px)
+  //     กรอบผู้เล่น: `div.absolute.inset-x-1.5.rounded-md` style `height:N%; bottom:calc(M%)` + gradient
+  //                 (เดิมมี class `border-2` → หายไป · **ยืนยันสด: กด ✊ ค้าง = กรอบ bottom% ยกขึ้น · ปล่อย = ตก**)
+  //     ปลา: `div.left-1/2 w-[46px] h-[34px]` style `bottom:calc(P% - 17px); transform:translateX(-50%)` (ไม่มี emoji แล้ว)
+  //   คุมเหมือนเดิมเป๊ะ (แกนตั้ง กด=ขึ้น) ⇒ แค่ทำให้ตรวจเจอ แล้วคืน {boxB,boxH,fishPct} รูปเดิม → ตัวคุม PD ทำงานต่อได้เลย
   function readTugState() {
+    const parseBottomPct = (st) => { const m = st.match(/bottom:\s*(?:calc\()?\s*(-?[\d.]+)%/); return m ? +m[1] : null; };
+    // ── กลไกใหม่ (v6.401): ปลามี translateX(-50%) + bottom ในรางแนวตั้งแคบ ──
+    for (const fishEl of document.querySelectorAll('div[style*="translateX(-50%)"]')) {
+      if (fishEl.closest('[data-tkbot]') || !fishEl.offsetParent) continue;
+      const xst = fishEl.getAttribute('style') || '';
+      if (!/bottom/.test(xst)) continue;
+      const fr = fishEl.getBoundingClientRect();
+      if (fr.width <= 0 || fr.width > 80 || fr.height <= 0 || fr.height > 80) continue;
+      const cont = fishEl.parentElement; if (!cont) continue;
+      const cr = cont.getBoundingClientRect();
+      if (cr.height < 150 || cr.height < cr.width) continue;         // ต้องเป็น "ราง" แนวตั้ง ไม่ใช่ element กลางจอทั่วไป
+      // กรอบผู้เล่น = ลูกอีกตัวในรางที่มี height:% (กรอบสูงเป็น % ของราง) + bottom
+      let frameEl = null;
+      for (const d of cont.children) {
+        if (d === fishEl || d.closest('[data-tkbot]')) continue;
+        const st = d.getAttribute('style') || '';
+        if (/height:\s*(?:calc\()?\s*[\d.]+%/.test(st) && /bottom/.test(st)) { frameEl = d; break; }
+      }
+      if (!frameEl) continue;
+      const fst = frameEl.getAttribute('style') || '';
+      const boxB = parseBottomPct(fst), mh = fst.match(/height:\s*(?:calc\()?\s*([\d.]+)%/);
+      if (boxB == null || !mh) continue;
+      const mc = xst.match(/bottom:\s*calc\(([\d.]+)%\s*([+-])\s*([\d.]+)px\)/);
+      let fishPct;
+      if (mc) fishPct = +mc[1] + ((mc[2] === '-' ? -1 : 1) * +mc[3] / (cr.height || 340)) * 100;
+      else { const p = parseBottomPct(xst); if (p == null) continue; fishPct = p; }
+      return { boxB, boxH: +mh[1], fishPct };
+    }
+    // ── กลไกเก่า (เผื่อเกมย้อนกลับ/บ่ออื่นที่ยังใช้ UI เดิม) ──
     let box = null, fish = null, boxEl = null;
     for (const d of document.querySelectorAll('div[class*="border-2"]')) {
       const st = d.getAttribute('style') || '';
@@ -7460,7 +7497,7 @@
       const mb = st.match(/bottom:\s*(?:calc\()?\s*([\d.]+)%/), mh = st.match(/height:\s*(?:calc\()?\s*([\d.]+)%/);
       if (mb && mh) { box = { b: +mb[1], h: +mh[1] }; boxEl = d; break; }
     }
-    if (!boxEl) return null;
+    if (!boxEl || !boxEl.parentElement) return null;   // v6.401: กัน crash ถ้ากรอบไม่มี parent (detached)
     // ปลาเป็น sibling ใน container เดียวกับกรอบ (emoji สัตว์น้ำ + style bottom)
     for (const d of boxEl.parentElement.children) {
       const tx = (d.textContent || '').trim();
