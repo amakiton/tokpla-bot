@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.404
+// @version      6.405
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -56,7 +56,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.404';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.405';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -4376,22 +4376,34 @@
     //   = เลิกเดินชนกำแพง/ติดสะพานให้คนอื่น/แอดมินเห็น (ปัญหาที่ผู้ใช้แจ้งซ้ำหลายรอบ)
     //   วาร์ปพลาด/เกมไม่มีปุ่ม → ตกไปเดินตามปกติ (ตอนนั้นรอบเปิดแล้ว เดินเข้าประตูได้ทันที ไม่ต้องยืนรอ)
     if (isBossMap(targetMap) && !bossNavArrived(targetMap) && isOn('bossWarp')) {
+      // 🌀 v6.405 — **ใช้สัญญาณ "รอบเปิดหรือยัง" ตัวเดียวกับ A* (bossRoundBounds)** ไม่ใช่ bossEntryHoldMs
+      //   บทเรียนจากดูสด 22:30 (7 ส.ค.): ตอน lead 3 นาที `bossEntryHoldMs()=0` (รอบใหม่ยัง "ไม่ done")
+      //   ⇒ ลูป v6.403 ไม่ทำงาน ⇒ บอทเดิน sea_dock→village→boss_cave แล้วยืนรอหน้าประตู (ปุ่มวาร์ปยังไม่โผล่)
+      //   ✅ สัญญาณที่ถูก: รอบยังไม่เปิด = ไม่มีหน้าต่างเก่าเปิดอยู่ **และ** บอสรอบใหม่ยังมาไม่ถึง (เทียบตาราง)
+      //   ⇒ ยืนอยู่กับที่ (ที่ฟาร์ม ไม่เดินไปประตู) จนบอสเกิด แล้ว **วาร์ปจาก sea_dock ตรงเข้าถ้ำ** (พิสูจน์แล้วว่าได้)
+      //   หลักฐานสด: ปุ่มเปิดป๊อบอัพ "ดูตาราง" โผล่ ~30 วิก่อนเกิด · ประตู/รอบเปิดตอนบอสเกิด (22:30:00)
+      const roundNotOpen = () => {
+        try {
+          const b = bossRoundBounds();
+          const openWin = b.prev && (Date.now() - b.prev) < SERVER_RAID_WINDOW_MIN * 60000;   // หน้าต่างรอบก่อนยังเปิด
+          return !openWin && b.next && b.next > Date.now();                                     // ไม่มีรอบเปิด + บอสใหม่ยังมาไม่ถึง
+        } catch { return false; }
+      };
       let held = false;
-      const holdT0 = now();   // 🛡️ v6.404: กันยืนรอค้างนานถ้าป้ายบอสค้าง (bossEntryHoldMs อาจ 20 นาที) — เกิน 6 นาที = เลิก กลับไปฟาร์ม
+      const holdT0 = now();   // 🛡️ กันยืนรอค้างนาน — เกิน 6 นาที (นานกว่า lead ปกติ 3 นาที) = ป้ายเพี้ยน → เลิก
       while (enabled && (isOn('bossHunt') || mythicActive()) && !bossAbortTravel
-             && bossEntryHoldMs() > 0 && bossEntryHoldMs() <= 20 * 60000
-             && now() - holdT0 < 6 * 60000) {
+             && roundNotOpen() && now() - holdT0 < 6 * 60000) {
         if (!held) {
           held = true;
-          say(`🌀 รอวาร์ปเข้าถ้ำ — ยืนอยู่กับที่อีก ~${Math.round(bossEntryHoldMs() / 1000)} วิ (ไม่เดินไปประตูแล้ว)`);
-          bossEvent('🌀 v6.403: รออยู่กับที่แล้ววาร์ป แทนเดินไปยืนหน้าประตู (เลิกเดินชนกำแพง)');
+          const sec = Math.max(0, Math.round((bossRoundBounds().next - Date.now()) / 1000));
+          say(`🌀 รอวาร์ป — บอสเกิดอีก ~${sec} วิ · ยืนอยู่กับที่ (ไม่เดินไปประตูแล้ว)`);
+          bossEvent('🌀 v6.405: รอบอสเกิดแล้ววาร์ปจากที่เดิม แทนเดิน sea_dock→village→ยืนหน้าประตู');
         }
         await sleep(1500);
       }
       if (bossAbortTravel || !enabled) return false;   // ถูกสั่งล่าด่วน/ปิดบอทระหว่างรอ = ไม่วาร์ปต่อ
-      // 🌀 v6.404: ยืนรอค้างเกิน 6 นาทีทั้งที่ยังไม่ถึงเวลา = ป้ายค้าง/เพี้ยน → เลิกทริป กลับไปฟาร์ม (ไม่วาร์ปมั่ว)
-      if (bossEntryHoldMs() > 0) { bossEvent('🌀 รอวาร์ปนานเกิน 6 นาทีแต่รอบยังไม่เปิด (ป้ายค้าง?) — เลิกทริป กลับไปฟาร์ม'); return false; }
-      if (await bossWarpToCave()) return true;   // รอบเปิดแล้ว → วาร์ป
+      if (roundNotOpen()) { bossEvent('🌀 รอวาร์ปเกิน 6 นาทีแต่รอบยังไม่เปิด (ป้ายเพี้ยน?) — เลิกทริป กลับไปฟาร์ม'); return false; }
+      if (await bossWarpToCave()) return true;   // รอบเปิดแล้ว (บอสเกิด) → วาร์ป
     } else if (isBossMap(targetMap) && !bossNavArrived(targetMap) && bossEntryHoldMs() <= 0) {
       // (bossWarp ปิด) — พฤติกรรมเดิม v6.386: ลองวาร์ปครั้งเดียวถ้ารอบเปิดแล้ว ไม่งั้นเดิน
       if (await bossWarpToCave()) return true;
