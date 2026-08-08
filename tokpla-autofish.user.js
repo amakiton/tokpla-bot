@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.405
+// @version      6.406
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -56,7 +56,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.405';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.406';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -10959,6 +10959,13 @@
   //   ถ้าเริ่มที่ 0 คำสั่งเดินครั้งแรกจะถูกหน่วง 3 วิ **ทุกครั้งหลังรีโหลด** (หน้าเกมโหลดเองบ่อยมาก)
   //   บทเรียนเดียวกับ v6.323 ที่เคยทำให้ Advisor สลับเหยื่อไม่ได้ 30 นาทีแรก · เทสต์รอบนี้จับได้
   let lastSpotWalk = NEVER, lastSpotSay = NEVER;
+  // 🔴 v6.406 — **จุดเซฟเข้าไม่ถึง = อย่ายอมจนบอทหยุด · ตกที่อื่นชั่วคราวแทน** (ผู้ใช้สั่ง 8 ส.ค.)
+  //   เหตุจริง 8 ส.ค.: เดินไปจุดเซฟ (708,308) ไม่ถึง 45 วิ ซ้ำ ๆ 30 นาที → กดตกปลาไม่ติด → บอทหยุดเอง 5 ชม.
+  //   v6.389 ตั้งใจ "ไปจุดเซฟอย่างเดียว ห้ามยืนจุดอื่น" (กันวนสะพาน) — แต่ไม่มีทางถอย ⇒ จุดเซฟพังทีเดียวตายทั้งวัน
+  //   ⇒ กู้ด้วยปุ่มเกม N ครั้งแล้วยังเข้าไม่ถึง = ยอมตก "ตรงที่ยืนอยู่" (ตรรกะ nearPond เดิมก่อน v6.389)
+  //     ชั่วคราวเท่านั้น · เปลี่ยนแมพ (ไปล่าบอส/กลับมา) = รีเซ็ต แล้วลองกลับจุดเซฟใหม่
+  const SPOT_RESCUE_MAX = 3;   // กู้จุดเซฟเกิน 3 ครั้ง (~2-3 นาที) = ยอมถอยไปตกที่อื่น
+  let spotRescueN = 0, spotFbMap = '', spotFbSaid = false;
   // 🐛 v6.260 (ผู้ใช้อัดวิดีโอมา 2 รอบ: "ถึงจุดหมายเควสแล้ว เด้งรัวไม่หยุด"):
   //   หลักฐานจากคลิป — ตัวละคร **อยู่จุดเดิมเป๊ะ 16 วินาที** · `บอท: เปิด — 0 / ∞` (ไม่เหวี่ยงเลย) · toast เด้งซ้ำ
   //   สาเหตุ: สั่ง `navigate()` ไปจุดที่ A* หาเส้นไม่ได้ (ติดน้ำ/กำแพง) → เกมสแนปเป็น "ถึงแล้ว" ทันที
@@ -10986,11 +10993,13 @@
     const curMap = bossMapId();
     // 📍 v6.300 (ผู้ใช้ขอ): มี "จุดตกปลาที่บันทึกไว้" ของแมพนี้ → เดินไปจุดนั้นเป๊ะก่อน — สำคัญกว่า nearPond
     //   (nearPond ที่ sea_dock ติด true ตั้งแต่บนหาด → บอทยืนผิดจุดเหวี่ยงไม่ออก · จุดที่บันทึกเองอยู่บนสะพานจริง)
+    // 🔴 v6.406: เปลี่ยนแมพ = รีเซ็ตตัวนับกู้จุดเซฟ (แมพใหม่/กลับจากบอส = ลองกลับจุดเซฟใหม่)
+    if (curMap !== spotFbMap) { spotFbMap = curMap; spotRescueN = 0; spotFbSaid = false; }
     const spot = fishSpot(curMap);
-    if (spot) {
+    if (spot && spotRescueN < SPOT_RESCUE_MAX) {   // v6.406: ยังไม่ยอมแพ้จุดเซฟ (กู้ยังไม่ครบ N ครั้ง)
       const pp = bossPlayerXY();
       if (pp && Math.hypot(pp.x - spot.x, pp.y - spot.y) <= FISH_SPOT_TOL) {   // ถึงจุดที่บันทึกแล้ว = ตกปลาได้เลย
-        spotWalkStart = 0; pondWalkStart = 0; pondTryIdx = 0; pondStuckN = 0; pondLastPos = null; saveFishMap(curMap); return false;
+        spotWalkStart = 0; pondWalkStart = 0; pondTryIdx = 0; pondStuckN = 0; pondLastPos = null; spotRescueN = 0; spotFbSaid = false; saveFishMap(curMap); return false;
       }
       if (!spotWalkStart) spotWalkStart = now();
       // 🔴 v6.389 — **มีจุดที่ผู้ใช้บันทึกไว้ = ไปจุดนั้นอย่างเดียว ห้ามตกไปยืนจุดอื่นเด็ดขาด** (ผู้ใช้สั่ง 4 ส.ค. 2026)
@@ -11003,7 +11012,9 @@
       //     แล้วเริ่มนับใหม่ — เป็นวิธีเดียวที่หลุดจาก "ติดบนสะพาน" ได้จริง (รีโหลดไม่ช่วย ตำแหน่งยังเดิม · v6.328)
       if (now() - spotWalkStart > 45000) {
         spotWalkStart = now();
-        logWarn(`📍 เดินไปจุดที่บันทึก (${spot.x},${spot.y}) ไม่ถึงใน 45 วิ — กดปุ่มกู้ของเกมแล้วลองใหม่ (ไม่ไปยืนจุดอื่นแทน)`);
+        spotRescueN++;   // v6.406: นับครั้งที่กู้ — ครบ SPOT_RESCUE_MAX แล้วรอบหน้าจะถอยไปตกที่อื่น
+        logWarn(`📍 เดินไปจุดที่บันทึก (${spot.x},${spot.y}) ไม่ถึงใน 45 วิ (ครั้งที่ ${spotRescueN}/${SPOT_RESCUE_MAX}) — กดปุ่มกู้ของเกมแล้วลองใหม่`);
+        if (spotRescueN >= SPOT_RESCUE_MAX && isOn('tgOn') && isOn('tgWarn')) void tgSend(`📍 <b>เข้าจุดตกปลาที่บันทึกไม่ได้ ${SPOT_RESCUE_MAX} ครั้ง</b> — บอทจะตกที่อื่นชั่วคราว (กันหยุด) · จุดเซฟอาจใช้ไม่ได้แล้ว ลองบันทึกใหม่`);
         void tryMapRescueDeep('เดินไปจุดตกปลาที่บันทึกไว้ไม่สำเร็จเกิน 45 วิ');
         return true;
       }
@@ -11013,7 +11024,14 @@
         if (now() - lastSpotSay > 30000) { lastSpotSay = now(); logInfo(`📍 เดินไปจุดตกปลาที่บันทึกไว้ (${spot.x},${spot.y}) — แมพ ${curMap}`); }
       }
       return true;
-    } else if (spotWalkStart) spotWalkStart = 0;   // ไม่มีจุดบันทึกแล้ว (ถูกล้าง) = รีเซ็ต
+    } else {
+      // v6.406: จุดเซฟเข้าไม่ถึงเกิน N ครั้ง (spotRescueN ครบ) → ตกที่อื่นชั่วคราว (ตกไปตรรกะ nearPond ด้านล่าง)
+      if (spot && spotRescueN >= SPOT_RESCUE_MAX && !spotFbSaid) {
+        spotFbSaid = true;
+        logWarn(`📍 เข้าจุดเซฟไม่ได้ ${SPOT_RESCUE_MAX} ครั้ง — ตกปลาตรงที่ยืนอยู่ชั่วคราว (กันบอทหยุด) · เปลี่ยนแมพแล้วจะลองกลับจุดเซฟใหม่`);
+      }
+      if (spotWalkStart) spotWalkStart = 0;   // ไม่มีจุดบันทึก/ถอยไปตกที่อื่น = รีเซ็ตตัวจับเวลาเดินจุดเซฟ
+    }
     const fz = bossFishingZone();
     // v6.260: ถึงบ่อแล้ว = ล้างสถานะการไล่จุดเป้าหมายทั้งหมด (ไม่งั้นรอบหน้าเริ่มจากจุดสำรองที่ค้างไว้)
     if (near === true) { pondWalkStart = 0; pondTryIdx = 0; pondStuckN = 0; pondLastPos = null; saveFishMap(curMap); return false; }   // อยู่ริมบ่อแล้ว — จำแมพนี้เป็น "แมพตกปลา"
