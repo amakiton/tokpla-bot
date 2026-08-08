@@ -75,13 +75,27 @@
 
 | อาการ | หลักฐาน | ตัวจับ | ตัวแก้ |
 |---|---|---|---|
-| **แท็บตาย** (สคริปต์หยุดสนิท) | 7 ส.ค. 6.5 ชม. · hb ค้าง · ไม่มี log/reload | v6.402 (freeze/discard → `/reloads`) | 🔴 **ต้องตั้ง Chrome VPS** (ยังไม่ทำ) |
+| **แท็บตาย** (สคริปต์หยุดสนิท) | 7 ส.ค. 6.5 ชม. · hb ค้าง · ไม่มี log/reload | v6.402 (freeze/discard → `/reloads`) | 🔴 **ต้องตั้ง Edge บน VPS** (ยังไม่ทำ) |
 | **เข้าจุดเซฟไม่ได้→หยุดเอง** | 8 ส.ค. 5 ชม. · แท็บยังรัน ยิงแจ้งเตือน | v6.399 🔔 | ✅ v6.406 แก้แล้ว |
 
+🔴 **เบราว์เซอร์บน VPS คือ Microsoft Edge ไม่ใช่ Google Chrome** (ยืนยัน 8 ส.ค. จาก `navigator.userAgentData.brands`
+= `Microsoft Edge, Chromium` · เจ้าของยืนยันว่าใช้ Edge เปิดเกมมาตลอด) — เอกสารเดิมจดว่า Chrome **ผิด**
+⇒ `chrome.exe` ไม่มีบนเครื่องนั้น · `taskkill /IM chrome.exe` ไม่แตะอะไรเลย (โปรเซสชื่อ `msedge.exe`)
+⇒ **คำสั่ง/พาธ/หน้า settings ทุกอย่างต้องใช้ของ Edge** (`edge://…`) ไม่ใช่ `chrome://…`
+
+**ผู้ต้องสงสัยอันดับ 1 ของอาการแท็บตาย = Edge "Sleeping tabs"** (ดีฟอลต์: หลับแท็บที่ไม่ได้โฟกัสหลัง 5 นาที)
+หลักฐานสด 8 ส.ค. 23:20 น.: `heartbeat` ค้าง **354 วิ** (ต้องเต้นทุก 30 วิ) · log ค้างที่ 23:11:19
+⇒ ช่วงเงียบ ~5.5 นาที **ตรงกับตัวจับเวลาของ Sleeping tabs พอดี**
+
 **ตัวแก้แท็บตาย (งานเจ้าของที่ VPS — ยังไม่ทำ):**
-1. ปิด Memory Saver (`chrome://settings/performance`)
-2. ปักหมุดแท็บเกม (Pin) · อย่าให้แท็บอื่นบัง
-3. เปิด Chrome ด้วย `--disable-features=IntensiveWakeUpThrottling` `--disable-backgrounding-occluded-windows` `--disable-renderer-backgrounding`
+1. `edge://settings/system` → ปิด **"Save resources with sleeping tabs"** + **"Efficiency mode"**
+   (ทางเลือกเบากว่า: "Never put these sites to sleep" → เพิ่ม `game.fishbonecast.com`)
+2. ปักหมุดแท็บเกม (Pin) · อย่าให้แท็บอื่นบัง · อย่าย่อหน้าต่าง Edge ทิ้งไว้
+3. เปิด Edge ด้วย `--disable-features=IntensiveWakeUpThrottling,CalculateNativeWinOcclusion`
+   `--disable-backgrounding-occluded-windows` `--disable-renderer-backgrounding`
+   · พาธมักเป็น `C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`
+   · ตรวจว่าติดจริงที่ `edge://version` → บรรทัด **Command Line**
+   · ⚠️ flags ติดเฉพาะตอนเริ่มโปรเซสใหม่ — ต้องปิด Edge ให้หมดก่อน ไม่งั้นถูกทิ้งเงียบ ๆ
 4. ถ้ายังตาย (`/reloads` ไม่โชว์ freeze/discard = ไม่ใช่ discard) → ต้องมี watchdog นอกเบราว์เซอร์
 
 ## 🟡 งานย่อยที่ค้าง (ไม่ด่วน)
