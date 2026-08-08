@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.406
+// @version      6.407
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -56,7 +56,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.406';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.407';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -5360,7 +5360,10 @@
       //   d = ระยะจากสมอบีต (−600..+600ms) · null ถ้ายังไม่ล็อก — ไฟต์หน้าจะได้ดูว่าเป๊ะเกาะบีตจริงไหม
       if (fb && tapWait.ang != null) {
         const dfl = (beatLockSlot != null) ? (((tapWait.slot - beatLockSlot + 1800) % 1200) - 600) : null;
-        tapAngPush({ a: tapWait.ang, v: tapWait.vel, f: fb, b: snapBossName || '', d: dfl });
+        // 🕐 v6.407: เก็บ timestamp + สถานะล็อก ด้วย — เพื่อ **แยกวิเคราะห์รายไฟต์** ว่าล็อกเบี้ยว
+        //   ทางเดียวกันทุกไฟต์ (systematic → ปรับศูนย์แก้ได้) หรือกระจายมั่ว (jitter → แก้แบบนั้นไม่ช่วย)
+        //   ⚠️ เก็บอย่างเดียว ไม่แตะตรรกะการเล็ง/ตี — ปลอดภัยกับระบบไฟต์
+        tapAngPush({ a: tapWait.ang, v: tapWait.vel, f: fb, b: snapBossName || '', d: dfl, t: Date.now(), pr: beatPrecise ? 1 : 0 });
       }
       const settleGap = lastSettleAt ? now() - lastSettleAt : 0;
       lastSettleAt = now();
