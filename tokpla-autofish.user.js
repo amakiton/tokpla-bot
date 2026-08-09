@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.409
+// @version      6.410
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -56,7 +56,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.409';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.410';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -6104,6 +6104,38 @@
   function saveBossState() { try { W.localStorage.setItem(BOSS_STATE_KEY, JSON.stringify({ phase: bossPhase, home: bossHome, ts: Date.now() })); } catch {} }
   function clearBossState() { try { W.localStorage.removeItem(BOSS_STATE_KEY); } catch {} }
 
+  // 🛒 v6.410 — เกมเพิ่ม **หน้าต่างยืนยันก่อนตัดเงิน** (จับได้สดด้วย MutationObserver 9/8/69):
+  //     กด "ซื้อเลย!" ในตะกร้า = แค่ **เปิดหน้าต่างยืนยัน** ("ซื้อ เหยื่อสาหร่ายจันทรา ไหม?
+  //     6,415,791→6,390,691 −25,100 · [ยกเลิก] [ซื้อเลย!]") — **ยังไม่ตัดเงิน**
+  //     ต้องกด "ซื้อเลย!" ตัวที่อยู่ **ในหน้าต่างยืนยัน** อีกครั้ง เงินถึงจะถูกตัดจริง
+  //   🔴 กับดัก: ตอนหน้าต่างเปิดจะมีปุ่ม "ซื้อเลย!" **2 ตัว** (ตะกร้า + ยืนยัน) และ `btnByText` คืน
+  //     **ตัวตะกร้า** เสมอ (ตัวแรกใน DOM) ⇒ บอทเดิมกดวนแต่ตัวเดิม = เปิดหน้าต่างซ้ำไม่รู้จบ
+  //     ⇒ อาการที่เห็นจริง: "ซื้อไม่สำเร็จ" ทุก ๆ 8 วิ (timeout รอข้อความสำเร็จที่ไม่มีวันมา)
+  //     ⇒ ต้องเจาะจงหาปุ่มยืนยัน "จากในกล่อง" เท่านั้น ห้ามใช้ btnByText ทั้งหน้า
+  const buyConfirmBox = () => [...document.querySelectorAll('div[class*="inset-0"]')].find((d) =>
+    !isBotUI(d) && /z-\[\d+\]/.test(d.className || '') && /ไหม\?/.test(d.textContent || ''));
+  async function confirmPurchase(ms = 3500) {
+    const box = await waitFor(buyConfirmBox, ms, 120);
+    if (!box) return false;                    // ไม่มีหน้าต่างยืนยัน = เกมรุ่นเก่า (ตัดเงินไปแล้ว) — ไม่ถือว่าพัง
+    const yes = [...box.querySelectorAll('button')]
+      .find((b) => /^ซื้อเลย/.test((b.textContent || '').trim()) && !b.disabled);
+    if (!yes) return false;
+    fireClick(yes);
+    return true;
+  }
+  // 📌 รวม "ยืนยัน + รอผล" ไว้ที่เดียว — จุดซื้อทั้ง 7 จุด (เหยื่อ/เหยื่อหลายแพ็ค/ยาฟื้นเลือด/ต้มปลา/
+  //   กาแฟ/ยารวม/ยาทั่วไป) เรียกตัวนี้เหมือนกันหมด จะได้ไม่มีจุดไหนตกหล่นเวลาเกมเปลี่ยนขั้นตอนซื้ออีก
+  //   ผ่อน '✅ ซื้อสำเร็จ!' → /ซื้อสำเร็จ/ ให้ทนการเปลี่ยนอิโมจิ/เครื่องหมายท้ายของเกม
+  async function buyResult(ms = 8000) {
+    await confirmPurchase();
+    return waitFor(() => {
+      const t = document.body.innerText;
+      if (/ซื้อสำเร็จ/.test(t)) return 'ok';
+      if (t.includes('❌')) return 'fail';
+      return null;
+    }, ms);
+  }
+
   // 👹 v6.134: ซื้อเหยื่อจุดอ่อนบอสให้พร้อม "ก่อน" เดินเข้าถ้ำ — ในถ้ำบอสไม่มีร้าน ซื้อไม่ได้
   //   (เดิม bossFight แค่ "สลับ" ไปขั้นจุดอ่อน ถ้าไม่มีในกระเป๋า = ตีด้วยเหยื่อผิด ไม่ได้ดาเมจ x1.5)
   //   1 แพ็ค (100 ชิ้น) พอตีบอส 1 ตัว (~110 วิ) เหลือเผื่อรอบถัดไป · ราคาถูก (ขั้น2 = ~1,200🪙)
@@ -6125,7 +6157,7 @@
     if (/เหรียญไม่พอ/.test(buy.textContent || '')) return 'broke';   // เกมบอกเอง = เงินไม่พอจริง
     if (buy.disabled) return 'busy';
     fireClick(buy);
-    const done = await waitFor(() => { const t = document.body.innerText; if (t.includes('✅ ซื้อสำเร็จ!')) return 'ok'; if (t.includes('❌')) return 'fail'; return null; }, 8000);
+    const done = await buyResult();
     if (done === 'ok') { const c = baitUnit(r.tier) * baitPack(r.tier); profit.life.baitCost += c; dayAdd('baitCost', c); saveProfit(); return 'ok'; }
     return done === 'fail' ? 'fail' : 'busy';                    // ไม่มีคำตอบใน 8 วิ = ถือว่าร้านไม่ตอบ (ลองใหม่ได้)
   }
@@ -6189,7 +6221,7 @@
         let done = null;
         if (buy && !buy.disabled) {
           fireClick(buy);
-          done = await waitFor(() => { const t = document.body.innerText; if (t.includes('✅ ซื้อสำเร็จ!')) return 'ok'; if (t.includes('❌')) return 'fail'; return null; }, 8000);
+          done = await buyResult();
         }
         if (done === 'ok') { bought++; busyRetry = 0; await sleep(BAIT_BUY_GAP_MS); continue; }
         if (done === 'fail') { logWarn('❤️ ร้านปฏิเสธการซื้อยา (❌) — หยุดตุนรอบนี้'); break; }
@@ -6251,7 +6283,7 @@
       const buy = btnByText('ซื้อเลย!') || btnByText('เหรียญไม่พอ');
       if (!buy || buy.disabled || /เหรียญไม่พอ/.test(buy.textContent)) { say('🍲 เงินไม่พอซื้อต้มปลาร้อน — ข้าม'); return; }
       fireClick(buy);
-      const done = await waitFor(() => { const t = document.body.innerText; if (t.includes('✅ ซื้อสำเร็จ!')) return 'ok'; if (t.includes('❌')) return 'fail'; return null; }, 8000);
+      const done = await buyResult();
       if (done !== 'ok') return;
       bumpStewBought();
       profit.life.potionCost += STEW_PRICE; dayAdd('potionCost', STEW_PRICE); saveProfit(); refreshProfit();
@@ -9155,12 +9187,7 @@
       }
       fireClick(buy);
 
-      const done = await waitFor(() => {
-        const t = document.body.innerText;
-        if (t.includes('✅ ซื้อสำเร็จ!')) return 'ok';
-        if (t.includes('❌')) return 'fail';
-        return null;
-      }, 8000);
+      const done = await buyResult();   // 🛒 v6.410: กดยืนยันในหน้าต่างยืนยันให้เอง แล้วค่อยรอผล
       if (done === 'ok') buyLogPush();   // 🛑 v6.182: นับเข้าเบรกเกอร์กันซื้อรัว (เฉพาะที่ซื้อสำเร็จจริง)
       say(done === 'ok'
         ? `✅ ซื้อ ${want.name} ${packs} แพ็ค (${packs * wantPack} ชิ้น · ${(want.unit * wantPack * packs).toLocaleString()} 🪙)`
@@ -9290,12 +9317,7 @@
         await closeShop(); return false;
       }
       fireClick(buy);
-      const done = await waitFor(() => {
-        const t = document.body.innerText;
-        if (t.includes('✅ ซื้อสำเร็จ!')) return 'ok';
-        if (t.includes('❌')) return 'fail';
-        return null;
-      }, 8000);
+      const done = await buyResult();
       if (done === 'ok') {
         profit.life.coffeeCost = (profit.life.coffeeCost || 0) + COFFEE_PRICE;
         dayAdd('coffeeCost', COFFEE_PRICE);   // 📅 v6.378
@@ -9517,12 +9539,7 @@
         say('🧪 เหรียญไม่พอซื้อยา — พัก 3 นาที'); await closeShop(); return;
       }
       fireClick(buy);
-      const done = await waitFor(() => {
-        const t = document.body.innerText;
-        if (t.includes('✅ ซื้อสำเร็จ!')) return 'ok';
-        if (t.includes('❌')) return 'fail';
-        return null;
-      }, 8000);
+      const done = await buyResult();
       if (done === 'ok') {
         profit.life.potionCost = (profit.life.potionCost || 0) + spent;
         saveProfit(); refreshProfit();
@@ -10504,7 +10521,7 @@
       const buy = btnByText('ซื้อเลย!') || btnByText('เหรียญไม่พอ');
       if (!buy || buy.disabled || /เหรียญไม่พอ/.test(buy.textContent)) { await closeShop(); return false; }
       fireClick(buy);
-      const done = await waitFor(() => { const t = document.body.innerText; if (t.includes('✅ ซื้อสำเร็จ!')) return 'ok'; if (t.includes('❌')) return 'fail'; return null; }, 8000);
+      const done = await buyResult();
       await sleep(400); await closeShop();
       // เกมล่าสุด: ซื้อแล้วต้อง "กดใช้" จากกระเป๋าถึงได้บัฟ
       ok = done === 'ok' ? await useConsumable(nameRe) : false;
