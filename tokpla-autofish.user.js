@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.408
+// @version      6.409
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -56,7 +56,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.408';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.409';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -2065,6 +2065,25 @@
   //     (ผลส่องยืนยันว่ามีจริง เช่น `button.tk-chip "🦴194"` · `[aria="เลือกเหยื่อ"] "60"`)
   const btnByTextLoose = (s) =>
     [...document.querySelectorAll('button')].find((b) => !isBotUI(b) && (b.textContent || '').includes(s)) || null;
+
+  // 🕐 v6.409 — เกมใหม่ "เปิดกรอบก่อน แล้วค่อยเรนเดอร์รายการ" (async mount) — วัดสดบน VPS 9/8/69:
+  //     กดเปิดร้าน → aria `ปิดร้าน` โผล่ที่ ~150ms **แต่การ์ดสินค้ายังไม่มา** (`div.tk-inner` = 1 = ตะกร้าเปล่า)
+  //     รายการโผล่จริงที่ ~450ms · และถ้ากด "สลับแท็บ" ตอนรายการยังไม่ขึ้น จะช้าได้ถึง ~1,600ms
+  //   ⇒ `sleep(300)` ตายตัวของเดิมจึงอ่านได้ **0 แถว** เป็นประจำ → "หาเหยื่อขั้น N ไม่เจอ" → ซื้อเหยื่อไม่ได้
+  //     → เหยื่อหมดทุกขั้น → กดตกปลาไม่ติด → **บอทหยุดเอง** (อาการจริง 8-9/8/69)
+  // 📌 ไม่ใช่ selector พัง! `tk-inner` ยังเป็นตัวเดิม (ยืนยันสด: เปิดร้านนิ่งแล้วนับได้ 23 แถว)
+  //   ⇒ กันถาวรด้วยการ **เลิกเดาเวลา** — รอ "การ์ดสินค้าจริง" โผล่ก่อนค่อยอ่าน (รอเงื่อนไข ไม่ใช่รอนาฬิกา)
+  //   ใช้ textContent (ไม่ใช่ innerText) เพราะ poll ถี่ — innerText บังคับคำนวณ layout ทุกครั้ง
+  const shopItemCards = () => [...document.querySelectorAll('div[class*="tk-inner"]')].filter((r) =>
+    !isBotUI(r) && (/ขั้น\s*\d+/.test(r.textContent || '')
+      || [...r.querySelectorAll('button')].some((b) => /ใส่ตะกร้า/.test(b.textContent || ''))));
+  const shopHasItems = () => shopItemCards().length > 0;
+  const shopWaitItems = (ms = 5000) => waitFor(shopHasItems, ms, 120);
+  // รอ "แถวขั้นที่ต้องการ" โดยเฉพาะ — กันอ่านโดนรายการของแท็บเก่าที่ยังค้างอยู่ตอนเพิ่งสลับแท็บ
+  //   `(?!\d)` กัน "ขั้น 1" ไปแมตช์ "ขั้น 11"
+  const baitRowSeen = (tier) => [...document.querySelectorAll('div[class*="tk-inner"]')].some((r) =>
+    !isBotUI(r) && new RegExp('ขั้น\\s*' + tier + '(?!\\d)').test(r.textContent || ''));
+  const baitRowWait = (tier, ms = 5000) => waitFor(() => baitRowSeen(tier), ms, 120);
 
   // 🎣 ระบบ "ตกปลาอัตโนมัติ" ของเกม (ปุ่มเดียวสลับ ตกปลาอัตโนมัติ ↔ หยุดตกอัตโนมัติ · aria-label ทั้งคู่)
   //   เกมย้ายกลไกตก (จังหวะฮุบ/มินิเกมดึง) ไปวาดบน canvas ที่บอทอ่านไม่ได้ตั้งแต่เวอร์ชันล่าสุด
@@ -6142,7 +6161,8 @@
     if (!isOn('bossHpPotion') || !isOn('bossHpPotionBuy')) return;
     const keep = clamp(cfg.bossHpPotionKeep || 2, 1, HP_POTION_HOLD_MAX);
     try {
-      await shopTab('🧪 ยา'); await sleep(350);
+      await shopTab('🧪 ยา');
+      await waitFor(() => !!hpPotionStock().row, 3000, 150);   // 🕐 v6.409: รอแถวยาเรนเดอร์จริง (เดิม sleep 350 = คาบเส้น)
       const { row, stock } = hpPotionStock();
       if (!row) { logWarn('❤️ หา "กาแฟเข้ม" ในร้านไม่เจอ — ข้ามการตุนยา (เกมอาจเปลี่ยนชื่อ/ย้ายแท็บ)'); return; }
       // 🐛 v6.277 (เห็นสด 16:26:04 — ทั้งรอบไม่ได้ซื้อยาเลยสักขวด):
@@ -8542,7 +8562,17 @@
   let shopTabMissAt = 0;
   const shopTab = async (label) => {
     const t = findUiTab(label) || btnByText(label);   // เผื่อรูปแบบเดิมยังใช้ได้
-    if (t) { fireClick(t); await sleep(300); return true; }
+    // 🕐 v6.409: เดิม sleep(300) ตายตัว — เกมใหม่เรนเดอร์รายการของแท็บทีหลัง (ช้าได้ถึง ~1.6 วิ
+    //   ถ้ากดสลับตอนร้านเพิ่งเปิด) ⇒ ผู้เรียกอ่านต่อทันทีจะได้ 0 แถว · รอ "การ์ดโผล่จริง" แทนการเดาเวลา
+    //   ✅ ยืนยันการสลับด้วย class `tk-btn-primary` = "แท็บที่ถูกเลือก" (วัดสด 9/8/69: สลับแล้ว class ย้ายจริง)
+    //   เช็คคู่กัน 2 อาการ: (ก) รายการยังไม่เรนเดอร์ (ข) ยังเห็นรายการของ "แท็บเก่า" ค้างอยู่
+    //   ⇒ ผู้เรียกทุกจุด (เหยื่อ/ยา/กาแฟ/ต้มปลา) ได้ความถูกต้องพร้อมกัน ไม่ต้องแก้ทีละที่
+    if (t) {
+      fireClick(t); await sleep(150);
+      const picked = () => /tk-btn-primary/.test(t.className || '');
+      if (!await waitFor(() => picked() && shopHasItems(), 4000, 120)) await shopWaitItems(1500);
+      return true;
+    }
     if (now() - shopTabMissAt > 60000) {             // ฟ้อง 1 ครั้ง/นาที — เดิมเงียบสนิทจนวนลูปไม่มีใครรู้
       shopTabMissAt = now();
       logWarn(`🏪 หาแท็บ "${tabWordOf(label)}" ไม่เจอ (เกมเปลี่ยนชื่อ/อิโมจิแท็บ?) — งานที่ต้องใช้แท็บนี้จะไม่สำเร็จ`);
@@ -8598,7 +8628,10 @@
   async function openBagUI() {
     await ensureMenuOpen();
     const b = qBtn('กระเป๋า');
-    if (b) { fireClick(b); return true; }
+    // 🕐 v6.409: เดิม "กดแล้ว return true ทันที" — เกมใหม่เรนเดอร์การ์ดช้ากว่ากรอบ ~450ms (วัดสด)
+    //   ผู้เรียกที่อ่านต่อเลยจึงเห็นกระเป๋าว่าง → นับของผิด/ขายปลาไม่ได้ (ผู้เรียกบางจุดใช้ sleep ตายตัว 500-700ms
+    //   ซึ่งคาบเส้นพอดี) ⇒ รอของจริงตรงนี้จุดเดียว ผู้เรียกทุกจุดได้ประโยชน์
+    if (b) { fireClick(b); await waitFor(() => !!readBagCount() || readBag().length > 0, 3000, 120); return true; }
     gameHotkey('KeyB', 66);
     const ok = !!await waitFor(() => !!readBagCount(), 2000, 150);
     if (ok) logInfo('🔤 เปิดกระเป๋าด้วยคีย์ลัด B (ปุ่มในแผงเมนูไม่มี)');
@@ -8932,11 +8965,15 @@
   async function openShop() {
     await ensureMenuOpen();
     const s = qBtn('ร้านค้านักตกปลา');
-    if (!s) { gameHotkey('KeyP', 80); const ok = !!await waitFor(() => !!qBtn('ปิดร้าน'), 2500, 150); if (ok) logInfo('🔤 เปิดร้านด้วยคีย์ลัด P (ปุ่มในแผงเมนูไม่มี)'); return ok; }
+    if (!s) { gameHotkey('KeyP', 80); const ok = !!await waitFor(() => !!qBtn('ปิดร้าน'), 2500, 150); if (ok) { logInfo('🔤 เปิดร้านด้วยคีย์ลัด P (ปุ่มในแผงเมนูไม่มี)'); await shopWaitItems(); } return ok; }
     fireClick(s);
     // v6.105: ยืนยันด้วย aria "ปิดร้าน" (มีเฉพาะตอนร้านเปิดจริง · ชนกับ UI บอทไม่ได้)
     //   เดิมรอ btnByText('🪱 เหยื่อ') = ข้อความ ซึ่งไปแมตช์หัวข้อแผงบอท → คืน true ทั้งที่ร้านยังไม่เปิด
-    return !!await waitFor(() => qBtn('ปิดร้าน'), 4000);
+    if (!await waitFor(() => qBtn('ปิดร้าน'), 4000)) return false;
+    // 🕐 v6.409: กรอบร้านโผล่ก่อนรายการ ~300ms — ต้องรอการ์ดสินค้าจริง ไม่งั้นผู้เรียกอ่านได้ 0 แถว
+    //   (ดูคำอธิบายการวัดสดที่ shopItemCards) · ไม่รอ = อาการ "หาเหยื่อขั้น N ไม่เจอ" ที่ทำบอทหยุดเอง
+    await shopWaitItems();
+    return true;
   }
 
   async function closeShop() {
@@ -9035,6 +9072,9 @@
     try {
       if (!await openShop()) { say('เปิดร้านไม่สำเร็จ'); return; }
       await shopTab('🪱 เหยื่อ');
+      // 🕐 v6.409: ยืนยันด้วย "แถวขั้นที่ต้องการโผล่จริง" ก่อนอ่าน — แท็บเหยื่อเพิ่งสลับมาอาจยังโชว์ของแท็บเก่า
+      //   (ถ้าไม่โผล่จริงใน 5 วิ ค่อยปล่อยให้ตกไปเข้าทางฟ้อง baitRowMiss ที่มีหลักฐานครบอยู่แล้ว)
+      await baitRowWait(targetBait());
 
       const want = BAIT_TIERS.find((b) => b.tier === targetBait());
       say(`ซื้อ ${want.name}...`);
