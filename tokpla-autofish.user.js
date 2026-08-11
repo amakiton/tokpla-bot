@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.412
+// @version      6.413
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -56,7 +56,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.412';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.413';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -12240,6 +12240,17 @@
     //   `saveLog(true)` = flush ทันที ไม่รอ throttle (หลังหยุดแล้วอาจไม่มีอะไรมาทริกให้เซฟอีก)
     stopReason = reason || '';
     stopAt = Date.now();
+    // 🔁 v6.413: "กดตกปลาไม่ติด" = อาการชั่วคราวที่รีโหลดมักแก้ได้ → เปิด episode ให้ heartbeatWatch กู้เอง
+    //   เหตุอื่น (เงินหมด/กระเป๋าเต็ม/login/ครบลิมิต/ครบเวลา/ทดสอบจบ) = รีโหลดไม่ช่วย → ล้าง episode ทิ้ง
+    //   ตั้งเวลาเริ่มเฉพาะครั้งแรกของ episode (ไม่ทับ) เพื่อให้เว้นจังหวะ ~15 นาทีถึงลองครั้งแรก
+    try {
+      if (/กดตกปลาไม่ติด/.test(reason || '')) {
+        if (!+(W.localStorage.getItem('tokpla_recover_tries') || 0) && !+(W.localStorage.getItem('tokpla_recover_at') || 0))
+          W.localStorage.setItem('tokpla_recover_at', String(Date.now()));
+      } else {
+        W.localStorage.removeItem('tokpla_recover_tries'); W.localStorage.removeItem('tokpla_recover_at');
+      }
+    } catch {}
     try { logWarn(`🛑 บอทหยุดเอง — ${reason}`); saveLog(true); } catch {}
     if (cfg.tgStop) void tgSend(`🛑 <b>บอทหยุดแล้ว</b>
 ${esc(reason)}
@@ -12386,6 +12397,8 @@ ${esc(reason)}
         lastProgressAt = now();
         clearPersistedBreak();   // ตกได้ = ไม่ได้พักอยู่ ล้างพักที่จำไว้
         try { W.localStorage.removeItem('tokpla_bot_reload_count'); } catch {}   // ตกได้ = หายค้างแล้ว
+        // 🔁 v6.413: ตกได้ = กู้สำเร็จจริง (ไม่ใช่แค่ hb เต้น) → ปิด episode กู้อัตโนมัติ + รีเซ็ตตัวนับ
+        try { W.localStorage.removeItem('tokpla_recover_tries'); W.localStorage.removeItem('tokpla_recover_at'); } catch {}
         updateBadge();
         if (cfg.tgEvery > 0 && casts % cfg.tgEvery === 0) {
           void tgSend(`📊 ตกไปแล้ว <b>${casts}</b> ครั้ง${earned > 0 ? ` · ขายได้ ${earned.toLocaleString()} 🪙` : ''} · กำไรสุทธิสะสม ${signed(lifeNet())} 🪙`);
@@ -15195,11 +15208,38 @@ ${esc(reason)}
   //   6 ส.ค.: บอทหยุด 19:15 (ส่ง TG ครั้งเดียว) แล้วดับยาว 3 ชม. 37 นาที พลาดบอส 19:30 · 20:00 · 22:30
   //   ⇒ ตราบใดที่บอท "เคยรันในหน้านี้" แล้วยังปิดอยู่ ให้ย้ำทุก 30 นาที พร้อมบอกว่าพลาดรอบไหนไปแล้วบ้าง
   const OFF_NAG_MS = 30 * 60000;
+  // 🔁 v6.413 — กู้อัตโนมัติหลังหยุดเพราะ "กดตกปลาไม่ติด" (อาการชั่วคราวที่มักหายเมื่อรีโหลด)
+  //   เหตุจริง 10 ส.ค.: หยุดเอง 19:37 หลังไฟต์บอส charge → ดับยาว 15.6 ชม. · การรีโหลดตอน 00:04 เคลียร์อาการแล้ว
+  //   แต่บอทไม่กลับมาเพราะ self-stop ล้างธง resume (หยุดตั้งใจ = ไม่ auto-resume) ⇒ ต้องรอคนมากดเอง
+  //   ⇒ ให้ heartbeatWatch ลองรีโหลด+เปิดใหม่เป็นระยะ (มีเพดาน) แล้วค่อยยอมแพ้ · ยังหยุดจริงถ้าเหตุอื่น (login/เงินหมด)
+  const RECOVER_MAX = 5, RECOVER_EVERY_MS = 15 * 60000;   // สูงสุด 5 ครั้ง เว้น ~15 นาที (~75 นาที) แล้วเลิกกู้ รอคนเช็ค
   let offSince = 0, offNagAt = 0;
   function heartbeatWatch() {
     const t = Date.now();
     if (!enabled) {
       hbPrev = 0;
+      // 🔁 v6.413: กู้อัตโนมัติ — ทำงานแม้ `everEnabled` เป็นเท็จ (เช่นหน้าโหลดใหม่เองแล้วบอทไม่ resume)
+      //   ตราบใดที่ `tokpla_recover_at` ถูกตั้ง = มี episode "หยุดเพราะกดตกปลาไม่ติด" ค้างอยู่
+      //   ⇒ ครอบเคสจริง 10 ส.ค.: หน้าเว็บโหลดใหม่ตอน 00:04 (everEnabled=false) แต่ marker ยังอยู่ → กู้ได้
+      try {
+        const rat = +(W.localStorage.getItem('tokpla_recover_at') || 0);
+        const rtries = +(W.localStorage.getItem('tokpla_recover_tries') || 0);
+        if (rat && rtries < RECOVER_MAX && t - rat >= RECOVER_EVERY_MS) {
+          W.localStorage.setItem('tokpla_recover_tries', String(rtries + 1));
+          W.localStorage.setItem('tokpla_recover_at', String(t));
+          W.localStorage.setItem('tokpla_bot_resume', '1');       // ให้ autoResumeAfterReload เปิดบอทเองหลังรีโหลด
+          W.localStorage.removeItem('tokpla_bot_reload_count');   // นี่คือการกู้ตั้งใจ(เว้น 15 นาที) ไม่ใช่วนรัว → รีเซ็ตตัวนับของ doReload
+          logWarn(`🔁 กู้บอทอัตโนมัติ ครั้งที่ ${rtries + 1}/${RECOVER_MAX} — รีโหลดแล้วเปิดใหม่ (หยุดเพราะ: ${stopReason || 'กดตกปลาไม่ติด'})`);
+          if (isOn('tgOn')) void tgSend(`🔁 <b>กู้บอทอัตโนมัติ ครั้งที่ ${rtries + 1}/${RECOVER_MAX}</b> — รีโหลดแล้วเปิดใหม่`);
+          setTimeout(() => { try { W.location.reload(); } catch {} }, 1500);
+          return;
+        }
+        if (rat && rtries >= RECOVER_MAX) {   // ครบเพดานแล้วยังไม่ฟื้น = เลิกกู้ ปล่อยให้ nag เตือนคนแทน (tries ล้างเมื่อตกได้จริง)
+          W.localStorage.removeItem('tokpla_recover_at');
+          logWarn(`🔁 กู้บอทอัตโนมัติครบ ${RECOVER_MAX} ครั้งแล้วยังไม่ฟื้น — เลิกกู้ รอเช็คเอง (Alt+B / /on)`);
+          if (isOn('tgOn')) void tgSend(`🔴 <b>กู้บอทอัตโนมัติไม่สำเร็จ</b> (${RECOVER_MAX} ครั้ง) — ต้องเช็คเอง`);
+        }
+      } catch {}
       if (everEnabled) {                       // ปิดตั้งแต่ยังไม่เคยเปิด = ไม่ใช่เรื่องผิดปกติ
         if (!offSince) { offSince = stopAt || t; offNagAt = t; }
         if (t - offSince >= OFF_NAG_MS && t - offNagAt >= OFF_NAG_MS) {
