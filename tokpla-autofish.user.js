@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.413
+// @version      6.414
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -56,7 +56,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.413';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.414';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -394,6 +394,7 @@
     // 🥁 v6.408: สมอจังหวะขยับเข้าหากึ่งกลางหน้าต่าง "เป๊ะ" ระหว่างไฟต์ + ประตูหนีแบบ "ดีเยอะ"
     //   ปิด = กลับไปพฤติกรรม v6.407 (แช่สมอที่ "เป๊ะ" ตัวแรกถาวร) — สวิตช์ถอยกลับทันทีถ้าไฟต์แย่ลง
     beatCenter: true,
+    beatGate: true,              // 🥁 v6.414: หลังล็อกบีตให้กดเฉพาะช่วง ±70ms รอบบีต · ปิด = "สาดรัวทุกจังหวะ" (บอสไม่มีบีต ทุกตี=0.86 เท่ากันอยู่แล้ว จึงควรกดถี่สุด) — ใช้ A/B วัดว่ากดถี่คุ้มกว่าแม่นไหม
     bossBaitTier: 2,             // 👹 เหยื่อ "จุดอ่อนบอส" ระหว่างตี (วิดีโอ: มัดอ้วนขั้น2/กุ้งฝอยขั้น4 = ดาเมจ x1.5) · 0 = ไม่สลับ
     bossStatKeep: 20,            // 📊 v6.195: เก็บสถิติล่าบอสกี่ "ครั้งล่าสุด" (ring buffer · 0 = ปิดการเก็บ)
     bossIntervalMin: 180,        // 🔮 v6.211: บอสมาทุกกี่นาที (ข้อมูลจริง = 3 ชม.) — ใช้ทำนายรอบถัดไปตอนอ่านเวลาจาก DOM ไม่ได้
@@ -486,6 +487,8 @@
     energyManage: false,         // จัดการพลังงานเชิงรุก (พักเมื่อถึงเกณฑ์ล่าง กลับมาตกเมื่อถึงเกณฑ์บน)
     energyRestAt: 20,            // พักเมื่อพลังงานเหลือ ≤ กี่ %
     energyResumeAt: 80,          // กลับมาตกเมื่อพลังงานฟื้นถึง ≥ กี่ %
+    bossEnergyTarget: 55,        // ⚡ v6.414: ใกล้รอบบอส → ตุนพลังให้ถึง % นี้ก่อนเข้าไฟต์ (กันตายกลางไฟต์เพราะพลังหมด) · 0 = ปิด
+    bossEnergyLeadMin: 12,       // ⚡ v6.414: เริ่มตุนพลังเมื่อเหลือถึงรอบบอส ≤ กี่นาที
     energySit: true,             // นั่งพัก (ท่าทาง) ระหว่างรอพลังฟื้น
 
     autoQuest: false,            // เก็บเควสรายวันอัตโนมัติ (รางวัลพลังงาน ⚡)
@@ -1669,6 +1672,15 @@
             ? ' — สมอขยับตามค่าเฉลี่ยของ "เป๊ะ" ระหว่างไฟต์ + ปลดล็อกเมื่อเป๊ะ < 40% ใน 20 กดล่าสุด'
             : ' — แช่สมอที่ "เป๊ะ" ตัวแรกถาวรแบบ v6.407')
           + `\nใช้: <code>/beatcenter on</code> · <code>/beatcenter off</code>`);
+        break;
+      }
+      // 🥁 v6.414: สลับ "ล็อกบีต (แม่น)" ↔ "สาดรัว (ถี่)" — ใช้ A/B วัดว่าอันไหนดาเมจ/นาที สูงกว่า
+      case 'beatgate': case 'gate': {
+        const a = (args[0] || '').toLowerCase();
+        if (a === 'on' || a === 'off') { cfg.beatGate = a === 'on'; saveCfg(); }
+        reply(`🥁 โหมดกดบอส: <b>${isOn('beatGate') ? 'ล็อกบีต (กดเฉพาะ ±70ms — เน้นแม่น)' : 'สาดรัว (กดทุกจังหวะ — เน้นถี่)'}</b>`
+          + `\n(config เกม: ไม่มีบีต 0.86 ≈ เป๊ะ 0.88 · บอสไม่มีบีตควรสาดรัว)`
+          + `\nใช้: <code>/beatgate on</code> (ล็อก) · <code>/beatgate off</code> (สาด)`);
         break;
       }
       // 🧭 v6.247: ตรวจ/แก้ "ถ้ำบอสที่รู้จัก" ด้วยมือ — เกมหมุนเวียนถ้ำ ถ้าบอทเรียนช้าจะได้ใส่เองทัน
@@ -5532,6 +5544,9 @@
     // 🥁 v6.391: ยังไม่เคยได้ "เป๊ะ" → เลื่อนจุดยิงไปตาม BEAT_PROBES เพื่อ **ไล่หาบีตจริง**
     //   และบีบหน้าต่างให้แคบลงเมื่อแม่นแล้ว (±70ms) — ยิงห่าง 110ms จากบีตจริงยังหลุด "เป๊ะ" (±150) ได้ถ้าสมอเพี้ยนนิดเดียว
     const beatOkNow = () => {
+      // 🥁 v6.414: ปิด beatGate = "สาดรัวทุกจังหวะ" — ไม่รอบีต กดทุกครั้งที่ orb พร้อม (อัตราการกดสูงสุด)
+      //   config เกม: ไม่มีบีต 0.86 ≈ เป๊ะ 0.88 · บอสไม่มีบีตทุกตีเท่ากัน ⇒ กดถี่ = ดาเมจมากกว่า · A/B เทียบกับโหมดล็อกได้
+      if (!isOn('beatGate')) return true;
       if (beatLockSlot == null && !beatStartedAt) return true;   // ยังวัดอยู่ = กดตามเดิม ไม่เปลี่ยนพฤติกรรม
       const slot = beatStartedAt ? (Date.now() - beatStartedAt) % BEAT_MS : Date.now() % BEAT_MS;
       const probe = (beatStartedAt || beatPrecise) ? 0 : BEAT_PROBES[beatProbeIdx % BEAT_PROBES.length];
@@ -6093,6 +6108,7 @@
       dmg: lastContrib.dmg, pct: lastContrib.pct,
       gauge: gaugePresses, hits, aoeDodges, aoeStalls, recenters, deaths,
       beatLockAtMs, gaugePreLock,   // 📊 v6.412: เทียบอัตราการกด ก่อน/หลังล็อกบีต ในไฟต์เดียวกัน
+      beatGate: isOn('beatGate'),   // 🥁 v6.414: ไฟต์นี้ล็อกบีต (true) หรือสาดรัว (false) — ใช้ A/B เทียบดาเมจ/นาที
       hpStart: hpStart != null ? Math.round(hpStart) : null,
       hpMin: hpMin <= 100 ? Math.round(hpMin) : null,
       hpEnd: hpEnd != null ? Math.round(hpEnd) : null,
@@ -12754,13 +12770,20 @@ ${esc(reason)}
           const e = energyPct();
           if (e !== null) {
             const sitBtn = () => qBtn('นั่งพัก');
-            if (!energyResting && e <= cfg.energyRestAt && !restBlocked) {
+            // ⚡ v6.414: ใกล้รอบบอส → ตุนพลังให้ถึง bossEnergyTarget ก่อนเข้าไฟต์ (กันตายกลางไฟต์ — เจอจริง 22:30 ตายที่พลัง 3%)
+            //   🔒 ปลอดภัย: การออกไปล่าบอส (departure-check บนสุดของ tick บรรทัด ~12369) พรีเอมต์การพักเสมอ ⇒ พักสูงแค่ไหนก็ "ไม่พลาดบอส"
+            //   ผู้ใช้ตั้ง energyResumeAt ต่ำ (25) → เข้าบอสด้วยพลังต่ำเป็นประจำ · อันนี้ยกเป้าเฉพาะช่วงใกล้บอส (hysteresis 8%)
+            const bossEnSoon = cfg.bossEnergyTarget > 0
+              && (() => { try { const m = bossTimerMin(); return m != null && m <= (cfg.bossEnergyLeadMin || 12); } catch { return false; } })();
+            const restStartAt = bossEnSoon ? Math.max(cfg.energyRestAt, cfg.bossEnergyTarget - 8) : cfg.energyRestAt;
+            const resumeAtPct = bossEnSoon ? Math.max(cfg.energyResumeAt, cfg.bossEnergyTarget) : cfg.energyResumeAt;
+            if (!energyResting && e <= restStartAt && !restBlocked) {
               energyResting = true;
               lastRestTick = now();   // v6.380: เริ่มจับเวลาพัก (ลงบัญชีทีละนาทีด้านล่าง)
               if (cfg.energySit && !energySat) { const b = sitBtn(); if (b) { fireClick(b); energySat = true; } }
-              say(`⚡ พลังเหลือ ${Math.round(e)}% — นั่งพักจนถึง ${cfg.energyResumeAt}%`);
-              if (cfg.tgPause) void tgSend(`⚡ พลังเหลือ ${Math.round(e)}% — บอทพักรอถึง ${cfg.energyResumeAt}% (ตกไปแล้ว ${casts} ครั้ง)`);
-            } else if (energyResting && e >= cfg.energyResumeAt) {
+              say(`⚡ พลังเหลือ ${Math.round(e)}% — นั่งพักจนถึง ${resumeAtPct}%${bossEnSoon ? ' (ตุนพลังก่อนบอส)' : ''}`);
+              if (cfg.tgPause) void tgSend(`⚡ พลังเหลือ ${Math.round(e)}% — บอทพักรอถึง ${resumeAtPct}%${bossEnSoon ? ' (ตุนก่อนบอส)' : ''} (ตกไปแล้ว ${casts} ครั้ง)`);
+            } else if (energyResting && e >= resumeAtPct) {
               energyResting = false;
               if (energySat) { const b = sitBtn(); if (b) fireClick(b); energySat = false; }   // ลุกขึ้น (ปุ่มเดียวสลับนั่ง/ลุก)
               say(`⚡ พลังฟื้นถึง ${Math.round(e)}% — ตกต่อ`);
