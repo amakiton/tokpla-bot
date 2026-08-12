@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.415
+// @version      6.416
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -56,7 +56,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.415';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.416';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1679,7 +1679,7 @@
       case 'beatgate': case 'gate': {
         const a = (args[0] || '').toLowerCase();
         if (a === 'on' || a === 'off') { cfg.beatGate = a === 'on'; saveCfg(); }
-        reply(`🥁 โหมดกดบอส: <b>${isOn('beatGate') ? 'ล็อกบีต (กดเฉพาะ ±70ms — เน้นแม่น)' : 'สาดรัว (กดทุกจังหวะ — เน้นถี่)'}</b>`
+        reply(`🥁 โหมดกดบอส: <b>${isOn('beatGate') ? `ล็อกบีต (กดเฉพาะ ±${clamp(cfg.beatWin || 70, 40, 150)}ms — เน้นแม่น)` : 'สาดรัว (กดทุกจังหวะ — เน้นถี่)'}</b>`
           + `\n(config เกม: ไม่มีบีต 0.86 ≈ เป๊ะ 0.88 · บอสไม่มีบีตควรสาดรัว)`
           + `\nใช้: <code>/beatgate on</code> (ล็อก) · <code>/beatgate off</code> (สาด)`);
         break;
