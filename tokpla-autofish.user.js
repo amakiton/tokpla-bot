@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.416
+// @version      6.417
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -56,7 +56,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.416';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.417';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -8825,19 +8825,34 @@
     // 🐟 v6.214 (ผู้ใช้ได้เบ็ดดรอปบอส "เจ้าดุกนรก"): เบ็ดบางคันมี "ดาเมจบอสในตัว" จากคำโปรย ("ตีบอสแรงขึ้น 15%")
     //   แยกจาก "หินดาเมจบอส +12%" ที่ติดเพิ่ม → ดาเมจบอสรวม = ในตัว + หิน (ดุกนรก = 15+12 = 27%)
     //   เดิมอ่านแค่หิน (12) → ยังเลือกดุกนรกถูก (12>6) แต่ค่าที่โชว์ไม่ครบ · อ่านครบ = แม่นยำ+log ชัด+เผื่อเบ็ดบอสในอนาคต
-    const d = { boss: null, fish: null, luck: null, crit: null };
-    let bossStone = null, bossBase = null;
+    // 🎣 v6.417 — **เกมเลิกใช้คำว่า "โบนัสปลา" แล้ว** (ยืนยันจากแผงจริง 12 ส.ค.)
+    //   สถิติเบ็ดที่ทำเงินตอนนี้: `โอกาสแรร์ +40% (ได้จริง 6%)` · `เงาวับ +20%` · `โชคปลาแรร์ +10%`
+    //   ⇒ regex เดิมหา "โบนัสปลา" ไม่เจอ → ทุกชิ้นได้ `ปลา–` → `best` เป็น null → **ฟาร์มด้วยเบ็ดบอสตลอด**
+    //   (log จริง 16:32: "ไม่มีเบ็ดชิ้นไหนมี โบนัสปลา เลย — ใช้ชิ้นเดิม" ทั้งที่คาร์บอนมีแรร์40/เงาวับ20/โชค10)
+    //   🔴 เสียเงินจริง: กำไรมาจากปลาแรร์/เงาวับเป็นหลัก (เงาวับ = ตัวคูณราคา ×10 ตาม shinyMultiplier)
+    //   ใช้ "ได้จริง" ก่อนถ้าเกมบอกมา (เกมโชว์ค่าที่หนีบเพดานแล้ว) · ไม่มีค่อยใช้ตัวเลขหน้าบัตร
+    const d = { boss: null, fish: null, luck: null, crit: null, rare: null, shiny: null };
+    let bossStone = null, bossBase = null, rareNom = null, rareReal = null;
     for (const e of document.querySelectorAll('div,span,p')) {
       if (isBotUI(e) || !e.offsetParent || e.children.length) continue;
       const t = (e.textContent || '').replace(/\s+/g, ' ').trim();
       if (t.length > 70) continue;
       let m = /ดาเมจบอส\s*\+?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) bossStone = parseFloat(m[1]);
       m = /ตีบอส[^0-9%]{0,15}?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) bossBase = parseFloat(m[1]);   // ดาเมจบอสในตัวเบ็ด (คำโปรย)
-      m = /โบนัสปลา\s*\+?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) d.fish = parseFloat(m[1]);
+      m = /โบนัสปลา\s*\+?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) d.fish = parseFloat(m[1]);   // เกมรุ่นเก่า (เก็บไว้เผื่อย้อนกลับ)
       m = /โชคปลาแรร์\s*\+?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) d.luck = parseFloat(m[1]);
       m = /คริติคอล\s*\+?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) d.crit = parseFloat(m[1]);
+      // 🎣 v6.417: สถิติชุดใหม่ · "โอกาสแรร์" ต้องไม่ไปชนกับ "โชคปลาแรร์" (คนละคำ — anchor ที่ต้นคำ)
+      m = /โอกาสแรร์\s*\+?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) rareNom = parseFloat(m[1]);
+      m = /ได้จริง\s*\+?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) rareReal = parseFloat(m[1]);
+      m = /เงาวับ\s*\+?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) d.shiny = parseFloat(m[1]);   // ชื่อเบ็ดมีคำว่า "เงาวับ" ได้ แต่ไม่มี % → ไม่แมตช์
     }
     if (bossStone != null || bossBase != null) d.boss = (bossStone || 0) + (bossBase || 0);
+    d.rare = rareReal != null ? rareReal : rareNom;
+    // 🎣 v6.417: ไม่มี "โบนัสปลา" แล้ว → ประกอบคะแนนฟาร์มจากสถิติที่ทำเงินจริง (แรร์ + เงาวับ + โชค)
+    //   ทั้งสามตัวดันไปทาง "ปลาแพง" เหมือนกัน ⇒ รวมกันเป็นตัวแทนความคุ้มของเบ็ดชิ้นนั้น
+    if (d.fish == null && (d.rare != null || d.shiny != null || d.luck != null))
+      d.fish = (d.rare || 0) + (d.shiny || 0) + (d.luck || 0);
     return d;
   }
 
@@ -8865,7 +8880,7 @@
       if (!c) continue;
       c.el.click(); await sleep(420);
       const d = rodDetail();
-      scored.push({ i, name: c.name, orb: c.orb, equipped: c.equipped, boss: d.boss, fish: d.fish, luck: d.luck, crit: d.crit, val: d[field] });
+      scored.push({ i, name: c.name, orb: c.orb, equipped: c.equipped, boss: d.boss, fish: d.fish, luck: d.luck, crit: d.crit, rare: d.rare, shiny: d.shiny, val: d[field] });
     }
     // ⚖️ v6.204 (ผู้ใช้เจอ "ล่าบอสเสร็จแล้วไม่เปลี่ยนเบ็ดกลับ"):
     //   v6.190 ตัดสินด้วยค่าเดียว + "เสมอ = คงของเดิม" → เบ็ดมังกร 2 ชิ้นโบนัสปลา 35% เท่ากัน
@@ -8880,7 +8895,8 @@
     const cmp = (a, b) => { const ra = rank(a), rb = rank(b); for (let k = 0; k < ra.length; k++) if (rb[k] !== ra[k]) return rb[k] - ra[k]; return 0; };
     const ordered = scored.slice().sort(cmp);
     const best = ordered.find((s) => (s.val ?? 0) > 0);
-    const stats = (s) => [`ปลา${s.fish ?? '–'}`, s.luck != null ? `โชค${s.luck}` : null, s.crit != null ? `คริ${s.crit}` : null, s.boss != null ? `บอส${s.boss}` : null].filter(Boolean).join('/');
+    const stats = (s) => [`ปลา${s.fish ?? '–'}`, s.rare != null ? `แรร์${s.rare}` : null, s.shiny != null ? `เงาวับ${s.shiny}` : null,
+      s.luck != null ? `โชค${s.luck}` : null, s.crit != null ? `คริ${s.crit}` : null, s.boss != null ? `บอส${s.boss}` : null].filter(Boolean).join('/');
     const brief = scored.map((s) => `${s.name}${s.orb ? `(${s.orb})` : ''}=${stats(s)}`).join(' · ');
     // ⚠️ v6.276: ปุ่ม "👹 จำเป็นเบ็ดบอส / 🎣 จำเป็นเบ็ดฟาร์ม" เขียน cfg.bossRodId/farmRodId ลง config
     //   แต่ **ไม่มีโค้ดไหนอ่านค่านั้นเลย** (grep แล้ว 0 จุด) — ผู้ใช้เห็นปุ่มขึ้น "จำไว้แล้ว: bb7590f6…" แล้วเข้าใจว่าล็อกได้
