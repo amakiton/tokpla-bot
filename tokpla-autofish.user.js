@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.417
+// @version      6.418
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -56,7 +56,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.417';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.418';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -396,6 +396,7 @@
     beatCenter: true,
     beatGate: true,              // 🥁 v6.414: หลังล็อกบีตให้กดเฉพาะช่วง ±beatWin รอบบีต · ปิด = "สาดรัวทุกจังหวะ" (บอสไม่มีบีต ทุกตี=0.86 เท่ากันอยู่แล้ว จึงควรกดถี่สุด) — ใช้ A/B วัดว่ากดถี่คุ้มกว่าแม่นไหม
     beatWin: 140,                // 🥁 v6.415: หน้าต่างกดหลังล็อกบีต (±ms) · config เกม "เป๊ะ" = ±150ms → 140 = กดถี่ขึ้นโดยยังเป๊ะ (เดิมแคบไป 70 = ทิ้งโอกาสกด) · จูนด้วย /beatwin (คุม 40-150)
+    meleeBomb: true,             // 💣 v6.418: บอส melee "กดค้าง = ปาระเบิด" (คู่มือบอส: แรงกว่าฟาดหลายเท่า · เหยื่อ 3 · คูลดาวน์ 2.5 วิ) · เดิมแตะอย่างเดียว = ตกอันดับ · ปิด = แตะฟาดอย่างเดียวแบบเดิม
     bossBaitTier: 2,             // 👹 เหยื่อ "จุดอ่อนบอส" ระหว่างตี (วิดีโอ: มัดอ้วนขั้น2/กุ้งฝอยขั้น4 = ดาเมจ x1.5) · 0 = ไม่สลับ
     bossStatKeep: 20,            // 📊 v6.195: เก็บสถิติล่าบอสกี่ "ครั้งล่าสุด" (ring buffer · 0 = ปิดการเก็บ)
     bossIntervalMin: 180,        // 🔮 v6.211: บอสมาทุกกี่นาที (ข้อมูลจริง = 3 ชม.) — ใช้ทำนายรอบถัดไปตอนอ่านเวลาจาก DOM ไม่ได้
@@ -1693,6 +1694,14 @@
           + `\nใช้: <code>/beatwin 140</code> · <code>/beatwin 70</code> (แคบเดิม)`);
         break;
       }
+      // 💣 v6.418: เปิด/ปิดการปาระเบิดตอนตีบอส melee (กดค้าง = แรงกว่าฟาดหลายเท่า)
+      case 'meleebomb': case 'bomb': {
+        const a = (args[0] || '').toLowerCase();
+        if (a === 'on' || a === 'off') { cfg.meleeBomb = a === 'on'; saveCfg(); }
+        reply(`💣 ปาระเบิด melee: <b>${isOn('meleeBomb') ? 'เปิด (กดค้างปาระเบิดทุก 2.5 วิ — แรงกว่าฟาดหลายเท่า)' : 'ปิด (แตะฟาดอย่างเดียว)'}</b>`
+          + `\nใช้: <code>/meleebomb on</code> · <code>/meleebomb off</code>`);
+        break;
+      }
       // 🧭 v6.247: ตรวจ/แก้ "ถ้ำบอสที่รู้จัก" ด้วยมือ — เกมหมุนเวียนถ้ำ ถ้าบอทเรียนช้าจะได้ใส่เองทัน
       case 'bosscaves': case 'caves': {
         const a = (args[0] || '').toLowerCase();
@@ -2961,6 +2970,9 @@
   //   ⇒ ค่านี้ไม่เคยเป็นตัวคุมอัตราตีเลย (ตัวคุมจริงคือการหลบ/เดิน/คูลดาวน์ — ดู `gapWhy` ข้างล่าง)
   //   เลือก 900ms เพราะได้ผลเท่ากันแต่คลิกน้อยลง ~4 เท่า (ดูเป็นบอทน้อยลง + โหลด CPU น้อยลง)
   const MELEE_GAP_MS = 900;
+  // 💣 v6.418: melee "ปาระเบิด" (กดค้าง) — คู่มือบอสยืนยัน: เหยื่อ 3 ชิ้น · คูลดาวน์ 2.5 วิ · แรงกว่าฟาดหลายเท่า
+  //   HOLD 600ms = แตะ(ฟาด) + ค้าง 0.5 วิ (ปาระเบิด) · เหยื่อไม่พอ = ได้แค่ฟาด ไม่กินเหยื่อฟรี (คู่มือ) = กดค้างปลอดภัยเสมอ
+  const MELEE_BOMB_CD = 2500, MELEE_BOMB_HOLD = 600;
   let meleeGapArm = null;   // เดิมคือแขน A/B — ตอนนี้ null เสมอ (คงฟิลด์ไว้ให้รายงานเก่าอ่านข้อมูลย้อนหลังได้)
   function meleeGapMs() { return MELEE_GAP_MS; }
   // 🔍 v6.360 — **"เวลาที่หายไประหว่างการตี" ไปไหนหมด** (คำถามที่ข้อมูลเดิมตอบไม่ได้)
@@ -5309,7 +5321,7 @@
     let dodgeHits = 0, walkHits = 0;   // ⚔️ v6.336: นับการตีที่ "แทรกระหว่างหลบ/เดิน" — พิสูจน์ว่าคืน DPS ได้จริงแค่ไหน
     let fightMap = '';   // 🧭 v6.247: ถ้ำที่สู้อยู่จริง (จำตอนเห็นบอส) — ใช้พากลับเข้าถ้ำ "ใบเดิม" หลังตาย
     // 👊 v6.252: โหมดตีของบอสรอบนี้ + ตัวนับไว้พิสูจน์ว่าระบบใหม่ทำงาน (ไฟต์ 19:29 ได้ 0.1% เพราะไม่รู้ว่าต้องเข้าประชิด)
-    let bossHitMode = null, meleeApproaches = 0, chargeShots = 0, meleeSaid = false;
+    let bossHitMode = null, meleeApproaches = 0, chargeShots = 0, meleeSaid = false, lastBombAt = 0, bombSaid = false;
     // ❤️ v6.270: ยาฟื้นเลือดระหว่างไฟต์ · ชื่อไอเทมในเกม = "กาแฟเข้ม" (potion_hp)
     //   ⚠️ ระวังชื่อชนกับ "กาแฟนักตกปลา" (ยาพลังงาน) — บั๊ก v6.267 มาจากตรงนี้เป๊ะ ใช้ชื่อเต็มเท่านั้น
     const HP_POTION_RE = /กาแฟเข้ม/;
@@ -6003,7 +6015,18 @@
         //   → ตีได้เฉพาะตอนอยู่ในถ้ำบอสจริงเท่านั้น
         if (!isBossMap(bossMapId())) { gapMark('อยู่นอกถ้ำ'); await sleep(200); continue; }
         if (bossDisabledNow()) { stunSkips++; gapMark('สตัน'); await sleep(120); continue; }
-        lastEngage = now(); lastBossPressAt = Date.now(); fireClick(orb); hits++;   // ไม่มีเกจ + ปุ่มกดได้ = เริ่มตีครั้งใหม่ (คลิก orb ตีบอส)
+        lastEngage = now(); lastBossPressAt = Date.now();
+        // 💣 v6.418 — melee "ปาระเบิด": ทุก 2.5 วิ กดค้าง 0.6 วิ = ฟาด + ระเบิด (แรงกว่าหลายเท่า) · ระหว่างคูลดาวน์แตะฟาดปกติ
+        //   เดิมแตะอย่างเดียว → ตกอันดับบน melee (ของเรา 8,669 vs อันดับ1 13,430 · ทิ้งระเบิดทั้งไฟต์)
+        //   ⚠️ กดค้างตอนอยู่ในระยะประชิดแล้วเท่านั้น (สาขานี้ = ยืนตีอยู่ ไม่ได้กำลังเดิน) · หลบ AoE จัดการก่อนถึงตรงนี้แล้ว
+        if (isOn('meleeBomb') && bossHitMode === 'melee' && now() - lastBombAt > MELEE_BOMB_CD) {
+          lastBombAt = now();
+          orbDown(orb); await sleep(MELEE_BOMB_HOLD); orbUp(orb);   // กดค้าง = ฟาด + ปาระเบิด
+          chargeShots++; hits++;
+          if (!bombSaid) { bombSaid = true; logInfo('💣 ปาระเบิด melee (กดค้าง 0.6 วิ ทุก 2.5 วิ) — แรงกว่าฟาดหลายเท่า'); }
+        } else {
+          fireClick(orb); hits++;   // แตะ = ฟาด (ไม่มีเกจ + ปุ่มกดได้ = ตีครั้งใหม่)
+        }
         gapNotePress(bossHitMode, snapBossName);   // 🔍 v6.360
         if (gabBlock) gabBlock.p++;                   // v6.235: นับด้วย ไม่งั้นคอลัมน์ "กด/วิ" ต่ำกว่าจริง
         if (!tapWait) tapWait = { at: now(), slot: (beatStartedAt ? (Date.now() - beatStartedAt) : Date.now()) % BEAT_MS };
