@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.414
+// @version      6.415
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -56,7 +56,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.414';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.415';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -394,7 +394,8 @@
     // 🥁 v6.408: สมอจังหวะขยับเข้าหากึ่งกลางหน้าต่าง "เป๊ะ" ระหว่างไฟต์ + ประตูหนีแบบ "ดีเยอะ"
     //   ปิด = กลับไปพฤติกรรม v6.407 (แช่สมอที่ "เป๊ะ" ตัวแรกถาวร) — สวิตช์ถอยกลับทันทีถ้าไฟต์แย่ลง
     beatCenter: true,
-    beatGate: true,              // 🥁 v6.414: หลังล็อกบีตให้กดเฉพาะช่วง ±70ms รอบบีต · ปิด = "สาดรัวทุกจังหวะ" (บอสไม่มีบีต ทุกตี=0.86 เท่ากันอยู่แล้ว จึงควรกดถี่สุด) — ใช้ A/B วัดว่ากดถี่คุ้มกว่าแม่นไหม
+    beatGate: true,              // 🥁 v6.414: หลังล็อกบีตให้กดเฉพาะช่วง ±beatWin รอบบีต · ปิด = "สาดรัวทุกจังหวะ" (บอสไม่มีบีต ทุกตี=0.86 เท่ากันอยู่แล้ว จึงควรกดถี่สุด) — ใช้ A/B วัดว่ากดถี่คุ้มกว่าแม่นไหม
+    beatWin: 140,                // 🥁 v6.415: หน้าต่างกดหลังล็อกบีต (±ms) · config เกม "เป๊ะ" = ±150ms → 140 = กดถี่ขึ้นโดยยังเป๊ะ (เดิมแคบไป 70 = ทิ้งโอกาสกด) · จูนด้วย /beatwin (คุม 40-150)
     bossBaitTier: 2,             // 👹 เหยื่อ "จุดอ่อนบอส" ระหว่างตี (วิดีโอ: มัดอ้วนขั้น2/กุ้งฝอยขั้น4 = ดาเมจ x1.5) · 0 = ไม่สลับ
     bossStatKeep: 20,            // 📊 v6.195: เก็บสถิติล่าบอสกี่ "ครั้งล่าสุด" (ring buffer · 0 = ปิดการเก็บ)
     bossIntervalMin: 180,        // 🔮 v6.211: บอสมาทุกกี่นาที (ข้อมูลจริง = 3 ชม.) — ใช้ทำนายรอบถัดไปตอนอ่านเวลาจาก DOM ไม่ได้
@@ -1681,6 +1682,15 @@
         reply(`🥁 โหมดกดบอส: <b>${isOn('beatGate') ? 'ล็อกบีต (กดเฉพาะ ±70ms — เน้นแม่น)' : 'สาดรัว (กดทุกจังหวะ — เน้นถี่)'}</b>`
           + `\n(config เกม: ไม่มีบีต 0.86 ≈ เป๊ะ 0.88 · บอสไม่มีบีตควรสาดรัว)`
           + `\nใช้: <code>/beatgate on</code> (ล็อก) · <code>/beatgate off</code> (สาด)`);
+        break;
+      }
+      // 🥁 v6.415: จูนหน้าต่างกดหลังล็อกบีต (±ms) — กว้าง = ถี่ขึ้นแต่เสี่ยงหลุด · แคบ = แม่นแต่ถี่น้อย
+      case 'beatwin': case 'win': {
+        const n = parseInt(args[0], 10);
+        if (!isNaN(n)) { cfg.beatWin = clamp(n, 40, 150); saveCfg(); }
+        reply(`🥁 หน้าต่างกดหลังล็อกบีต: <b>±${clamp(cfg.beatWin || 70, 40, 150)}ms</b>`
+          + `\n(เกมให้ "เป๊ะ" ถึง ±150ms · แคบ=แม่นถี่น้อย · กว้าง=ถี่เสี่ยงหลุด · แนะนำ 120-140)`
+          + `\nใช้: <code>/beatwin 140</code> · <code>/beatwin 70</code> (แคบเดิม)`);
         break;
       }
       // 🧭 v6.247: ตรวจ/แก้ "ถ้ำบอสที่รู้จัก" ด้วยมือ — เกมหมุนเวียนถ้ำ ถ้าบอทเรียนช้าจะได้ใส่เองทัน
@@ -5552,7 +5562,9 @@
       const probe = (beatStartedAt || beatPrecise) ? 0 : BEAT_PROBES[beatProbeIdx % BEAT_PROBES.length];
       const target = ((beatStartedAt ? 0 : beatLockSlot) + probe + BEAT_MS) % BEAT_MS;
       let d = Math.abs(slot - target); if (d > BEAT_MS / 2) d = BEAT_MS - d;
-      return d <= ((beatStartedAt || beatPrecise) ? 70 : 110);
+      // 🥁 v6.415: หน้าต่างล็อก ±beatWin (เดิมตายตัว 70) — เกมให้ "เป๊ะ" ถึง ±150ms → กว้างได้ถึง 140 = กดถี่ขึ้นโดยยังเป๊ะ
+      //   ช่วง probe (ยังไม่ล็อก) คง 110 ตามเดิม (ยังไล่หาบีตอยู่ ต้องระวังกว่า)
+      return d <= ((beatStartedAt || beatPrecise) ? clamp(cfg.beatWin || 70, 40, 150) : 110);
     };
     // 🛡️ v6.266: เกมปฏิเสธการกดตอน downed/stunned (โค้ดเกม: Promise.reject('downed'/'stunned'))
     //   กดตอนนั้น = เสียเปล่า + เสี่ยงตัดคอมโบ · scene มีธงพวกนี้ให้อ่านตรงๆ
@@ -6109,6 +6121,7 @@
       gauge: gaugePresses, hits, aoeDodges, aoeStalls, recenters, deaths,
       beatLockAtMs, gaugePreLock,   // 📊 v6.412: เทียบอัตราการกด ก่อน/หลังล็อกบีต ในไฟต์เดียวกัน
       beatGate: isOn('beatGate'),   // 🥁 v6.414: ไฟต์นี้ล็อกบีต (true) หรือสาดรัว (false) — ใช้ A/B เทียบดาเมจ/นาที
+      beatWin: clamp(cfg.beatWin || 70, 40, 150),   // 🥁 v6.415: หน้าต่างกดที่ใช้ไฟต์นี้ (±ms) — เทียบกับเป๊ะ%/ดาเมจ
       hpStart: hpStart != null ? Math.round(hpStart) : null,
       hpMin: hpMin <= 100 ? Math.round(hpMin) : null,
       hpEnd: hpEnd != null ? Math.round(hpEnd) : null,
