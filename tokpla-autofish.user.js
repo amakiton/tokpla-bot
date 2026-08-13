@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.422
+// @version      6.423
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -58,7 +58,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.422';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.423';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -963,6 +963,67 @@
     else tail.push('ยังไม่มีข้อมูลเมื่อวาน — พรุ่งนี้ถึงจะเทียบได้');
     return `📅 บัญชีรายวัน (${tKey})\n${rows.join('\n')}\n\nℹ️ ${tail.join(' · ')}\nℹ️ "ต่อชั่วโมง" หารด้วยเวลาที่บอทเดินจริง ไม่ใช่ 24 ชม. — เทียบวันที่ยังไม่จบได้อย่างเป็นธรรม`;
   }
+  // ⚡ v6.423 — **เครื่องมือตัดสินใจ "พลังงานคือคอขวดจริงไหม และเบ็ดประหยัดพลังคุ้มไหม"**
+  //   ที่มา: รายได้ ~98% มาจากการฟาร์ม (บอสให้ ~2%) ⇒ ตัวที่คุมรายได้คือ **จำนวน cast ต่อวัน**
+  //   แต่ตัวเลือกเบ็ดให้คะแนนจาก "มูลค่าต่อ cast" (แรร์/เงาวับ/โชค) อย่างเดียว — ไม่เคยดู "ประหยัดพลัง"
+  //   ⇒ ถ้าพลังคือคอขวด เบ็ดที่ประหยัดพลังอาจคุ้มกว่าเบ็ดที่แรร์สูงกว่านิดหน่อย
+  //   ⚠️ รายงานนี้ **ไม่เปลี่ยนพฤติกรรมอะไรเลย** — ให้ตัวเลขไว้ตัดสินใจก่อนแตะโค้ดเลือกเบ็ด
+  //     (บทเรียน melee ปาระเบิด v6.418→6.419: ตัวเลขบนกระดาษดูดี แต่ของจริงไม่คุ้ม ต้องวัดก่อน)
+  function energyReport() {
+    const o = loadDaily();
+    const keys = Object.keys(o).sort();
+    const rows = [];
+    let totRest = 0, totHr = 0, totCast = 0;
+    for (const k of keys.slice(-3)) {
+      const d = o[k];
+      const hr = Math.max(0, ((d.lastAt || 0) - (d.firstAt || 0)) / 3600000);
+      const pct = hr > 0.05 ? (d.restMin || 0) / (hr * 60) * 100 : null;
+      rows.push(`  ${k}  นั่งพัก ${String(d.restMin || 0).padStart(4)} นาที`
+        + (pct != null ? ` = ${pct.toFixed(0).padStart(2)}% ของเวลาเดิน` : '')
+        + ` · เหวี่ยง ${(d.casts || 0).toLocaleString()}`
+        + (hr > 0.05 ? ` (${Math.round((d.casts || 0) / hr)}/ชม.)` : ''));
+      if (hr > 0.5) { totRest += d.restMin || 0; totHr += hr; totCast += d.casts || 0; }
+    }
+    const restShare = totHr > 0 ? totRest / (totHr * 60) * 100 : null;
+    const out = [`⚡ พลังงาน = คอขวดของรายได้หรือเปล่า?`, '', '😴 เวลาที่เสียไปกับการนั่งพัก (3 วันล่าสุด)', ...rows];
+    if (restShare != null) {
+      out.push('', `รวม: นั่งพัก ${restShare.toFixed(0)}% ของเวลาที่บอทเดิน`);
+      out.push(restShare >= 15
+        ? `🔴 พลังเป็นคอขวดจริง — ถ้าลดเวลาพักได้ ${restShare.toFixed(0)}%→10% จะได้ cast เพิ่ม ~${Math.max(0, restShare - 10).toFixed(0)}%`
+        : `🟢 พักน้อย (<15%) — พลังยังไม่ใช่คอขวดหลัก การไล่ "ประหยัดพลัง" อาจไม่คุ้ม`);
+    } else out.push('', 'ยังไม่มีข้อมูลพอ (ต้องเดินอย่างน้อยครึ่งชั่วโมงต่อวัน)');
+    // 🎣 ค่าของเบ็ดจากผลสแกนล่าสุด (ไม่เปิดกระเป๋าใหม่ — กันไปกวนการฟาร์ม)
+    let scan = null;
+    try { scan = JSON.parse(W.localStorage.getItem('tokpla_rod_scan') || 'null'); } catch {}
+    out.push('', '🎣 เบ็ดที่สแกนไว้ล่าสุด (ปลา = แรร์+เงาวับ+โชค = มูลค่าต่อ cast · พลัง = ประหยัดพลัง)');
+    if (!scan || !scan.rods || !scan.rods.length) {
+      out.push('  (ยังไม่มีข้อมูล — จะเก็บอัตโนมัติครั้งถัดไปที่บอทสลับเบ็ด · v6.423+)');
+    } else {
+      const rods = scan.rods.slice().sort((a, b) => (b.energy || 0) - (a.energy || 0));
+      for (const r of rods) {
+        out.push(`  ${r.equipped ? '▶' : ' '} ${r.name}  ปลา ${r.fish ?? '–'}`
+          + ` · พลัง ${r.energy != null ? '-' + r.energy + '%' : '–'}`
+          + ` · เร็ว ${r.speed != null ? '+' + r.speed + '%' : '–'}`
+          + (r.boss != null ? ` · บอส ${r.boss}` : ''));
+      }
+      const cur = scan.rods.find((r) => r.equipped);
+      const bestE = rods.find((r) => (r.energy || 0) > 0);
+      if (cur && bestE && bestE.name !== cur.name) {
+        const dE = (bestE.energy || 0) - (cur.energy || 0);
+        const dF = (bestE.fish || 0) - (cur.fish || 0);
+        out.push('', `เทียบ "${cur.name}" (ใช้อยู่) → "${bestE.name}":`);
+        out.push(`  cast/วัน ${dE >= 0 ? '+' : ''}${dE.toFixed(1)}%  ·  มูลค่า/cast ${dF >= 0 ? '+' : ''}${dF.toFixed(1)} หน่วยคะแนนปลา`);
+        out.push(dE > 0 && dF < 0
+          ? `  ⚖️ แลกกัน — คุ้มก็ต่อเมื่อพลังเป็นคอขวดจริง (ดูตัวเลข % ด้านบน) · ต้อง A/B วัดจริงก่อนสลับถาวร`
+          : dE > 0 && dF >= 0 ? `  ✅ ดีกว่าทั้งสองแกน — สลับได้เลย` : `  ⛔ ไม่คุ้ม`);
+      } else if (cur && bestE && bestE.name === cur.name) {
+        out.push('', `✅ เบ็ดที่ใช้อยู่ ("${cur.name}") ประหยัดพลังสูงสุดอยู่แล้ว`);
+      }
+      out.push('', `(สแกนเมื่อ ${new Date(scan.at).toLocaleString('th-TH', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })})`);
+    }
+    out.push('', 'ℹ️ ตัวเลขนี้เป็น "ตัวช่วยตัดสินใจ" ไม่ใช่ข้อสรุป — บอทยังเลือกเบ็ดด้วยคะแนนปลาเหมือนเดิม');
+    return out.join('\n');
+  }
   function saveProfit() { if (restoring) return; try { W.localStorage.setItem(PROFIT_KEY, JSON.stringify({ v: PROFIT_V, life: profit.life, recs: profit.recs })); } catch {} }
 
   // 🎣 โหมดตกปลาที่ "มีผลจริง" — ระหว่างทดสอบเหยื่อบังคับเป็น 'bot' เสมอ (เทสต์ต้องเหวี่ยง+เล่นมินิเกมเอง
@@ -1718,6 +1779,11 @@
         reply(`🐕 Watchdog ping: <b>${isOn('watchdogPing') ? 'เปิด' : 'ปิด'}</b> (ยิงไป <code>127.0.0.1:${WATCHDOG_PORT}</code> ทุก 30 วิ)`
           + `\nแท็บตาย = ไม่มี ping → watchdog บน VPS รีสตาร์ต Edge เอง · ต้องรัน <code>tokpla-watchdog.ps1</code> บน VPS ด้วย`
           + `\nใช้: <code>/watchdog on</code> · <code>/watchdog off</code>`);
+        break;
+      }
+      // ⚡ v6.423: "พลังงานคือคอขวดไหม + เบ็ดประหยัดพลังคุ้มไหม" — ตัวเลขล้วน ไม่เปลี่ยนพฤติกรรม
+      case 'energy': case 'en': {
+        reply(`<code>${esc(energyReport())}</code>`);
         break;
       }
       // ⚡ v6.421: เรียกดูผล A/B ชาร์จได้ทุกเมื่อ — เดิมรายงานเด้งเฉพาะตอน "จบไฟต์ charge" เท่านั้น
@@ -3698,7 +3764,19 @@
     } catch {}
     return null;
   }
-  let bossNowLabelSeen = false;   // v6.169: กัน log ซ้ำทุก 5 วิ ตอนป้าย "ถึงรอบบอสแล้ว" ค้างอยู่
+  // 🔇 v6.423 — **ตัวกันสแปมเดิม (ธง boolean) ใช้ไม่ได้จริง เพราะป้ายของเกม "กะพริบ"**
+  //   วัดสด 14 ส.ค.: log 1,500 บรรทัด มี 772 บรรทัด (51%) เป็นข้อความป้ายนี้ ⇒ ring log ครอบคลุมแค่ 209 นาที
+  //   ต้นเหตุ: ธงถูก **รีเซ็ตทุกครั้งที่สแกนไม่เจอป้าย** (บรรทัดท้ายฟังก์ชัน) → เจอ/ไม่เจอสลับกัน = log ใหม่ทุก ~16 วิ
+  //   ผลเสียจริง: ประวัติวินิจฉัยสั้นลงครึ่งหนึ่ง — วันนี้เกือบไล่ไม่ทันทั้งเคส "แท็บตาย 16:24" และ "พลาดรอบ 20:00"
+  //   แก้: throttle ตาม **เวลาจริง** (ทนการกะพริบ) + log ทันทีเมื่อ "เหตุผลเปลี่ยน" (armed/disarmed) เพื่อไม่กลืนข้อมูลสำคัญ
+  //   ใช้ Date.now() ไม่ใช่ now() — perf.now() รีเซ็ตตอนรีโหลด (บทเรียน v6.176) · รีโหลดแล้ว log ครั้งแรกใหม่ = ตั้งใจ
+  const BOSS_LABEL_LOG_MS = 5 * 60000;
+  let bossNowLabelAt = 0, bossNowLabelKind = '';
+  const bossNowLabelSay = (kind, msg) => {
+    if (kind === bossNowLabelKind && Date.now() - bossNowLabelAt < BOSS_LABEL_LOG_MS) return;
+    bossNowLabelKind = kind; bossNowLabelAt = Date.now();
+    logInfo(msg);
+  };
   function bossTimerDom() {
     // ⏱️ v6.362: ทุกครั้งที่อ่านตัวนับได้ ให้ตรึงเป็นเวลาสัมบูรณ์ไว้ก่อน (จุดเดียว ครอบคลุมทุกผู้เรียก)
     try { const s = bossTimerSec(); if (s != null) setBossAnchor(s, 'ตัวนับบนจอ'); } catch {}
@@ -3745,14 +3823,15 @@
     //   → คืน null (ไม่รู้) แทน 0 · การล่าจะกลับมาได้เมื่อเห็น "ตัวนับรอบใหม่จริง" เท่านั้น
     //   (บอสโผล่ตรงหน้าในถ้ำยังตีได้ตามปกติ — bossFightHere ดูตัวบอสจริง ไม่ผ่านป้ายนี้)
     if (sawNowLabel && !bossArmed) {
-      if (!bossNowLabelSeen) { bossNowLabelSeen = true; logInfo('🐯 ป้าย "ถึงรอบบอสแล้ว" ค้างอยู่ แต่รอบนี้ล่าไปแล้ว → ไม่เชื่อป้าย (รอตัวนับรอบใหม่)'); }
+      bossNowLabelSay('disarmed', '🐯 ป้าย "ถึงรอบบอสแล้ว" ค้างอยู่ แต่รอบนี้ล่าไปแล้ว → ไม่เชื่อป้าย (รอตัวนับรอบใหม่)');
       return null;
     }
     if (sawNowLabel) {
-      if (!bossNowLabelSeen) { bossNowLabelSeen = true; logInfo('🐯 ป้าย "ถึงรอบบอสแล้ว" + ไม่มีตัวนับถอยหลังบนจอ → ถือว่าถึงเวลาบอส'); }
+      bossNowLabelSay('armed', '🐯 ป้าย "ถึงรอบบอสแล้ว" + ไม่มีตัวนับถอยหลังบนจอ → ถือว่าถึงเวลาบอส');
       return 0;
     }
-    bossNowLabelSeen = false;
+    // v6.423: **ไม่รีเซ็ตตัวนับเวลาตรงนี้อีกแล้ว** — การไม่เจอป้าย 1 เฟรมไม่ใช่ "เหตุการณ์ใหม่"
+    //   (การรีเซ็ตคือต้นเหตุที่ทำให้ log ท่วม 51% ของ ring)
     return null;
   }
 
@@ -8991,7 +9070,14 @@
     //   (log จริง 16:32: "ไม่มีเบ็ดชิ้นไหนมี โบนัสปลา เลย — ใช้ชิ้นเดิม" ทั้งที่คาร์บอนมีแรร์40/เงาวับ20/โชค10)
     //   🔴 เสียเงินจริง: กำไรมาจากปลาแรร์/เงาวับเป็นหลัก (เงาวับ = ตัวคูณราคา ×10 ตาม shinyMultiplier)
     //   ใช้ "ได้จริง" ก่อนถ้าเกมบอกมา (เกมโชว์ค่าที่หนีบเพดานแล้ว) · ไม่มีค่อยใช้ตัวเลขหน้าบัตร
-    const d = { boss: null, fish: null, luck: null, crit: null, rare: null, shiny: null };
+    // ⚡ v6.423 — **อ่าน "ประหยัดพลัง/เหวี่ยงเร็ว/ประหยัดเหยื่อ" ด้วย (เดิมไม่เคยอ่านเลย)**
+    //   ทำไมสำคัญ: รายได้ 98% มาจากการฟาร์ม และการฟาร์มติดคอขวดที่ **พลังงาน**
+    //   (log สด: "🩺 ไม่ได้เหวี่ยงเบ็ดเลย 15-20 นาที — นั่งพักรอพลังฟื้น")
+    //   เบ็ดในเกมมีค่าพวกนี้จริง (คาร์บอนถัก: ประหยัดพลัง 8.8% · เหวี่ยงเร็วขึ้น 16% · ประหยัดเหยื่อ 1.9%)
+    //   ⇒ ประหยัดพลัง 8.8% ≈ ตกได้เพิ่ม ~8.8% ≈ +550k 🪙/วัน (เทียบรางวัลบอสทั้งวัน = 144k)
+    //   ⚠️ **เฟสนี้บันทึกอย่างเดียว ยังไม่เอาไปคิดคะแนนเลือกเบ็ด** — ต้องวัดก่อนว่าคอขวดจริงแค่ไหน
+    //     (บทเรียน melee ปาระเบิด: ตัวเลขบนกระดาษดูดี แต่ของจริงไม่คุ้ม · ดู [[tokpla-boss-damage-per-bait]])
+    const d = { boss: null, fish: null, luck: null, crit: null, rare: null, shiny: null, energy: null, speed: null, baitSave: null };
     let bossStone = null, bossBase = null, rareNom = null, rareReal = null;
     for (const e of document.querySelectorAll('div,span,p')) {
       if (isBotUI(e) || !e.offsetParent || e.children.length) continue;
@@ -9006,6 +9092,10 @@
       m = /โอกาสแรร์\s*\+?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) rareNom = parseFloat(m[1]);
       m = /ได้จริง\s*\+?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) rareReal = parseFloat(m[1]);
       m = /เงาวับ\s*\+?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) d.shiny = parseFloat(m[1]);   // ชื่อเบ็ดมีคำว่า "เงาวับ" ได้ แต่ไม่มี % → ไม่แมตช์
+      // ⚡ v6.423: ค่าที่กระทบ "จำนวน cast ต่อวัน" (คนละแกนกับค่าที่กระทบ "มูลค่าต่อ cast")
+      m = /ประหยัดพลัง(?:งาน)?\s*\+?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) d.energy = parseFloat(m[1]);
+      m = /เหวี่ยงเร็ว(?:ขึ้น)?\s*\+?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) d.speed = parseFloat(m[1]);
+      m = /(?:ประหยัดเหยื่อ|ไม่เปลืองเหยื่อ)\s*\+?(\d+(?:\.\d+)?)\s*%/.exec(t); if (m) d.baitSave = parseFloat(m[1]);
     }
     if (bossStone != null || bossBase != null) d.boss = (bossStone || 0) + (bossBase || 0);
     d.rare = rareReal != null ? rareReal : rareNom;
@@ -9040,8 +9130,14 @@
       if (!c) continue;
       c.el.click(); await sleep(420);
       const d = rodDetail();
-      scored.push({ i, name: c.name, orb: c.orb, equipped: c.equipped, boss: d.boss, fish: d.fish, luck: d.luck, crit: d.crit, rare: d.rare, shiny: d.shiny, val: d[field] });
+      scored.push({ i, name: c.name, orb: c.orb, equipped: c.equipped, boss: d.boss, fish: d.fish, luck: d.luck, crit: d.crit, rare: d.rare, shiny: d.shiny,
+        energy: d.energy, speed: d.speed, baitSave: d.baitSave, val: d[field] });   // ⚡ v6.423: เก็บค่าที่กระทบ "จำนวน cast" ด้วย (ยังไม่ใช้ตัดสิน — ดู /energy)
     }
+    // ⚡ v6.423: จำผลสแกนไว้ให้ `/energy` ใช้ — ไม่ต้องเปิดกระเป๋าใหม่ (เปิดกระเป๋า = แตะ DOM เกม เสี่ยงกวนการฟาร์ม)
+    try {
+      W.localStorage.setItem('tokpla_rod_scan', JSON.stringify({ at: Date.now(), kind,
+        rods: scored.map((s) => ({ name: s.name, equipped: !!s.equipped, fish: s.fish, rare: s.rare, shiny: s.shiny, luck: s.luck, boss: s.boss, energy: s.energy, speed: s.speed, baitSave: s.baitSave })) }));
+    } catch {}
     // ⚖️ v6.204 (ผู้ใช้เจอ "ล่าบอสเสร็จแล้วไม่เปลี่ยนเบ็ดกลับ"):
     //   v6.190 ตัดสินด้วยค่าเดียว + "เสมอ = คงของเดิม" → เบ็ดมังกร 2 ชิ้นโบนัสปลา 35% เท่ากัน
     //   ชิ้นที่ใส่อยู่ (เบ็ดบอส) เลยชนะแบบเสมอทุกครั้ง = ฟาร์มด้วยเบ็ดบอสตลอด
@@ -9056,7 +9152,8 @@
     const ordered = scored.slice().sort(cmp);
     const best = ordered.find((s) => (s.val ?? 0) > 0);
     const stats = (s) => [`ปลา${s.fish ?? '–'}`, s.rare != null ? `แรร์${s.rare}` : null, s.shiny != null ? `เงาวับ${s.shiny}` : null,
-      s.luck != null ? `โชค${s.luck}` : null, s.crit != null ? `คริ${s.crit}` : null, s.boss != null ? `บอส${s.boss}` : null].filter(Boolean).join('/');
+      s.luck != null ? `โชค${s.luck}` : null, s.crit != null ? `คริ${s.crit}` : null, s.boss != null ? `บอส${s.boss}` : null,
+      s.energy != null ? `พลัง-${s.energy}%` : null, s.speed != null ? `เร็ว+${s.speed}%` : null].filter(Boolean).join('/');   // ⚡ v6.423
     const brief = scored.map((s) => `${s.name}${s.orb ? `(${s.orb})` : ''}=${stats(s)}`).join(' · ');
     // ⚠️ v6.276: ปุ่ม "👹 จำเป็นเบ็ดบอส / 🎣 จำเป็นเบ็ดฟาร์ม" เขียน cfg.bossRodId/farmRodId ลง config
     //   แต่ **ไม่มีโค้ดไหนอ่านค่านั้นเลย** (grep แล้ว 0 จุด) — ผู้ใช้เห็นปุ่มขึ้น "จำไว้แล้ว: bb7590f6…" แล้วเข้าใจว่าล็อกได้
