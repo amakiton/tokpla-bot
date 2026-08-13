@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.423
+// @version      6.424
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -58,7 +58,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.423';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.424';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -856,7 +856,12 @@
   //   เก็บแค่ 3 วัน (วันนี้ + เมื่อวาน + เผื่อข้ามคืน) — ไม่ให้ localStorage บวม
   const DAILY_KEY = 'tokpla_daily';
   const dayKey = (ms) => { const d = new Date(ms == null ? Date.now() : ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
-  const newDay = () => ({ revenue: 0, baitCost: 0, casts: 0, catches: 0, coffeeCost: 0, potionCost: 0, bossFights: 0, bossKills: 0, shards: 0, restMin: 0, coinFirst: null, coinLast: null, firstAt: Date.now(), lastAt: Date.now() });
+  // ⏱️ v6.424: `t*` = งบเวลารายวัน (นาที) — ตอบว่า "วันนึงหมดไปกับอะไร" ⇒ รู้ว่าควรไปเล็งตรงไหน
+  //   ที่มา: 12 ส.ค. 332 cast/ชม. · 13 ส.ค. 527 cast/ชม. (ต่างกัน 59%) ทั้งที่พักพลังแค่ 1-3% ทั้งคู่
+  //   ⇒ เวลาหายไปกับ "อย่างอื่น" ที่ไม่มีใครวัดไว้ · ดัน 390→527 ทุกวัน ≈ +2 ล้าน 🪙/วัน (14 เท่าของรางวัลบอสทั้งวัน)
+  const newDay = () => ({ revenue: 0, baitCost: 0, casts: 0, catches: 0, coffeeCost: 0, potionCost: 0, bossFights: 0, bossKills: 0, shards: 0, restMin: 0,
+    tFish: 0, tMenu: 0, tBoss: 0, tRest: 0, tOff: 0, tDead: 0,
+    coinFirst: null, coinLast: null, firstAt: Date.now(), lastAt: Date.now() });
   // 💵 v6.388: ยอดเหรียญจริงจาก HUD — `[aria="ยอดเหรียญ (แตะดูยอด)"]` (ยืนยันจากผลส่อง 4/8/2026)
   //   สำรอง: aria ที่ขึ้นต้นด้วย "ยอดเหรียญ" (เกมอาจแก้คำในวงเล็บ) — ห้ามผูกกับอิโมจิ 🪙 (บทเรียนซ้ำรอบที่ 7)
   function readCoins() {
@@ -1022,6 +1027,74 @@
       out.push('', `(สแกนเมื่อ ${new Date(scan.at).toLocaleString('th-TH', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })})`);
     }
     out.push('', 'ℹ️ ตัวเลขนี้เป็น "ตัวช่วยตัดสินใจ" ไม่ใช่ข้อสรุป — บอทยังเลือกเบ็ดด้วยคะแนนปลาเหมือนเดิม');
+    return out.join('\n');
+  }
+  // ⏱️ v6.424 — **งบเวลารายวัน: "วันนึงหมดไปกับอะไร"**
+  //   ทำไมต้องมี: `/energy` (v6.423) พิสูจน์แล้วว่าพลังงาน **ไม่ใช่** คอขวด (พักแค่ 2% ของเวลาเดิน)
+  //   แต่อัตราเหวี่ยงต่างกัน 59% ระหว่างวัน (332 vs 527 cast/ชม.) ⇒ เวลาหายไปกับอย่างอื่นที่ไม่เคยวัด
+  //   ⇒ เก็บข้อมูลล้วน ๆ ไม่แตะพฤติกรรม (แพตเทิร์นเดียวกับ v6.423 ที่ได้ผล: วัดก่อน แล้วค่อยตัดสินใจ)
+  //   🔑 จุดสำคัญ: จับ "ช่วงที่สคริปต์ไม่ได้รัน" ด้วย — ถ้าตัวจับเวลาขาดหายไปเกิน 2.5 นาที
+  //     แปลว่าแท็บตาย/รีโหลด ⇒ downtime โผล่ในบัญชีเอง (เดิมมองไม่เห็นเลยถ้าไม่ไปไล่ log ทีละบรรทัด)
+  let tbLastAt = 0;
+  function tbBucket() {
+    if (!enabled) return 'tOff';
+    if (energyResting || pauseUntil > now() || breakUntil > now()) return 'tRest';
+    if (bossPhase !== 'idle') return 'tBoss';
+    if (busy || orchestrating) return 'tMenu';
+    return 'tFish';
+  }
+  function timeBudgetTick() {
+    const t = Date.now();
+    if (!tbLastAt) { tbLastAt = t; return; }
+    const dt = t - tbLastAt;
+    if (dt < 50000) return;                      // ยังไม่ครบนาที (ตัวเรียกทุก 30 วิ)
+    tbLastAt = t;
+    const mins = Math.round(dt / 60000) || 1;
+    // ห่างเกิน 2.5 นาที = สคริปต์ไม่ได้ทำงานช่วงนั้น (เกณฑ์เดียวกับ HB_GAP_MS ที่ใช้จับแท็บตาย)
+    if (dt > 150000) { dayAdd('tDead', mins); return; }
+    dayAdd(tbBucket(), mins);
+  }
+  function timeBudgetReport() {
+    const o = loadDaily();
+    const keys = Object.keys(o).sort().slice(-3);
+    if (!keys.length) return '⏱️ ยังไม่มีข้อมูลงบเวลา — เริ่มเก็บตั้งแต่ v6.424 (รอสัก 1 ชม.)';
+    const B = [['tFish', '🎣 ตกปลา'], ['tMenu', '🏪 ร้าน/กระเป๋า/จดหมาย'], ['tBoss', '👹 ล่าบอส'],
+      ['tRest', '😴 พักพลัง'], ['tOff', '⏹ บอทปิดอยู่'], ['tDead', '💀 สคริปต์ไม่ได้รัน']];
+    const out = ['⏱️ งบเวลารายวัน — วันนึงหมดไปกับอะไร'];
+    for (const k of keys) {
+      const d = o[k];
+      const tot = B.reduce((s, [f]) => s + (d[f] || 0), 0);
+      if (!tot) continue;
+      const hr = tot / 60;
+      out.push('', `📅 ${k}  (เก็บได้ ${hr.toFixed(1)} ชม. · เหวี่ยง ${(d.casts || 0).toLocaleString()}`
+        + (hr > 0.05 ? ` = ${Math.round((d.casts || 0) / hr)}/ชม.` : '') + ')');
+      for (const [f, name] of B) {
+        const v = d[f] || 0;
+        if (!v) continue;
+        const pct = Math.round(v / tot * 100);
+        out.push(`  ${name.padEnd(22)} ${String(v).padStart(4)} นาที  ${String(pct).padStart(3)}%  ${'█'.repeat(Math.max(0, Math.round(pct / 4)))}`);
+      }
+      // 🎣 อัตราเหวี่ยง "เฉพาะตอนที่ควรกำลังตก" = ตัวเลขที่บอกความเร็วจริงของการตกปลา
+      //   (แยกจาก cast/ชม. รวม ซึ่งถูกเจือด้วยเวลาไปร้าน/ล่าบอส/ดับ)
+      if ((d.tFish || 0) > 10 && (d.casts || 0) > 0) {
+        out.push(`  → ตอนตกจริง ${Math.round((d.casts || 0) / ((d.tFish || 1) / 60))} เหวี่ยง/ชม.`);
+      }
+    }
+    // 💡 ชี้เป้าอัตโนมัติ — เล็งตัวที่กินเวลามากสุดที่ "ไม่ใช่การตกปลา"
+    const last = o[keys[keys.length - 1]];
+    if (last) {
+      const tot = B.reduce((s, [f]) => s + (last[f] || 0), 0);
+      const waste = B.filter(([f]) => f !== 'tFish').map(([f, n]) => ({ f, n, v: last[f] || 0 })).sort((a, b) => b.v - a.v)[0];
+      if (tot > 60 && waste && waste.v > 0) {
+        const pct = Math.round(waste.v / tot * 100);
+        out.push('', `💡 ตัวกินเวลาที่ไม่ใช่การตกปลา อันดับ 1 วันนี้: ${waste.n} (${pct}%)`);
+        if (waste.f === 'tDead') out.push('   → แท็บตาย/รีโหลด — เช็ค watchdog.log บน VPS (ควรเป็น 0% ถ้า watchdog ทำงาน)');
+        else if (waste.f === 'tMenu') out.push('   → ไปร้าน/กระเป๋าบ่อยหรือช้า — ลดรอบขาย/ซื้อทีละมาก ๆ น่าจะได้ cast เพิ่ม');
+        else if (waste.f === 'tBoss') out.push('   → รางวัลบอส ~2% ของรายได้ (v6.422) · ถ้ากินเวลามากกว่านี้เยอะ ต้องชั่งว่าคุ้มไหม');
+        else if (waste.f === 'tOff') out.push('   → บอทถูกปิดอยู่ (สั่งเอง/หยุดเพราะ error) — ดู /log');
+      }
+    }
+    out.push('', 'ℹ️ สุ่มอ่านสถานะนาทีละครั้ง · "สคริปต์ไม่ได้รัน" = ตัวจับเวลาขาดเกิน 2.5 นาที (แท็บตาย/รีโหลด)');
     return out.join('\n');
   }
   function saveProfit() { if (restoring) return; try { W.localStorage.setItem(PROFIT_KEY, JSON.stringify({ v: PROFIT_V, life: profit.life, recs: profit.recs })); } catch {} }
@@ -1779,6 +1852,11 @@
         reply(`🐕 Watchdog ping: <b>${isOn('watchdogPing') ? 'เปิด' : 'ปิด'}</b> (ยิงไป <code>127.0.0.1:${WATCHDOG_PORT}</code> ทุก 30 วิ)`
           + `\nแท็บตาย = ไม่มี ping → watchdog บน VPS รีสตาร์ต Edge เอง · ต้องรัน <code>tokpla-watchdog.ps1</code> บน VPS ด้วย`
           + `\nใช้: <code>/watchdog on</code> · <code>/watchdog off</code>`);
+        break;
+      }
+      // ⏱️ v6.424: "วันนึงหมดไปกับอะไร" — ตัวเลขล้วน ไม่เปลี่ยนพฤติกรรม
+      case 'time': case 'tb': {
+        reply(`<code>${esc(timeBudgetReport())}</code>`);
         break;
       }
       // ⚡ v6.423: "พลังงานคือคอขวดไหม + เบ็ดประหยัดพลังคุ้มไหม" — ตัวเลขล้วน ไม่เปลี่ยนพฤติกรรม
@@ -15769,6 +15847,8 @@ ${esc(reason)}
   setInterval(gameEventWatch, 3000);     // เฝ้าเหตุการณ์เกม (เลเวลอัพ/สภาพอากาศ) -> แจ้ง TG
   setInterval(() => { if (enabled) persistEnabled(); }, 30000);   // heartbeat: ต่ออายุ "ยังรันอยู่" ทุก 30 วิ (ให้ freshness check ผ่านหลังรีเฟรช)
   setInterval(heartbeatWatch, HB_EVERY_MS);   // 🫀 v6.396: จับ "ช่วงที่สคริปต์ไม่ได้ทำงาน" ให้ได้ทันทีที่ฟื้น
+  // ⏱️ v6.424: งบเวลารายวัน — ต้องมี interval ของตัวเอง (heartbeatWatch return ก่อนถ้าบอทปิด = จะนับ tOff ไม่ได้)
+  setInterval(timeBudgetTick, HB_EVERY_MS);
   // 🔊 v6.402 — keepalive: เสียงเงียบกัน Chrome discard/freeze แท็บพื้นหลัง (มิติที่ "น่าจะ" ทำบอทตายเงียบหลายชม.)
   //   `keepTabAlive` เดิมปลอม document.hidden แค่กันป๊อบอัพเกม · Chrome ใช้ "แท็บพื้นหลังจริง" ตัดสิน discard ไม่สน hidden ปลอม
   //   สื่อที่กำลังเล่น (แม้ gain 0 = เงียบสนิท) = สัญญาณเดียวที่ Chrome ไม่ discard/throttle แท็บ · autoplay ต้องมี gesture → เริ่มตอนคลิกแรก
