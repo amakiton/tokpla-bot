@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.420
+// @version      6.421
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -58,7 +58,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.420';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.421';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -1720,6 +1720,13 @@
           + `\nใช้: <code>/watchdog on</code> · <code>/watchdog off</code>`);
         break;
       }
+      // ⚡ v6.421: เรียกดูผล A/B ชาร์จได้ทุกเมื่อ — เดิมรายงานเด้งเฉพาะตอน "จบไฟต์ charge" เท่านั้น
+      //   ⇒ อยากรู้ว่าการทดลองเก็บข้อมูลได้จริงไหมต้องนั่งรอไฟต์ + ต้องบังเอิญเห็นข้อความพอดี
+      //   นี่คือเหตุผลหนึ่งที่อคติ "แขน full 0 บล็อก" ซ่อนอยู่ได้นาน — ไม่มีใครเรียกดูระหว่างทางได้
+      case 'chargeab': case 'chab': {
+        reply(`<code>${esc(chargeABReport())}</code>`);
+        break;
+      }
       // 🧭 v6.247: ตรวจ/แก้ "ถ้ำบอสที่รู้จัก" ด้วยมือ — เกมหมุนเวียนถ้ำ ถ้าบอทเรียนช้าจะได้ใส่เองทัน
       case 'bosscaves': case 'caves': {
         const a = (args[0] || '').toLowerCase();
@@ -3170,6 +3177,31 @@
   try { if (chabRing.length) chabFightNo = Math.max(...chabRing.map((b) => b.f || 0)) + 1; } catch {}
   const chabSave = () => { try { W.localStorage.setItem(CHAB_KEY, JSON.stringify(chabRing.slice(-400))); } catch {} };
   const chabFightsDone = () => new Set(chabRing.map((b) => b.f)).size;
+  // 🐛 v6.421 — **อคติเชิงระบบ: แขน "ชาร์จเต็ม" ถูกทิ้งทุกบล็อก ไม่ใช่ข้อมูลน้อย**
+  //   หลักฐานสด 13 ส.ค.: `tokpla_charge_ab` มี 18 บล็อกจาก 6 ไฟต์ — **แขน tap 18 · แขน full 0**
+  //   ต้นเหตุ: `GAB_TICK_MAX` (1500ms) คือเส้นแบ่ง "ตีจริง (act)" กับ "ช่องว่าง (gap)"
+  //   แต่ชาร์จเต็มกดครั้งละ `BOSS_CHARGE_MS + 150` = **~1,950ms > 1,500** ⇒ ทุกจังหวะของแขน full
+  //   ถูกนับเป็น "ช่องว่าง" ⇒ `act` แทบไม่ขึ้น ⇒ โดน `ช่วงสั้นเกิน`/`หลบเกินครึ่ง` ตัดทิ้ง **ทุกบล็อก**
+  //   ส่วนแขน tap (250ms) รอดทุกครั้ง ⇒ เก็บอีกกี่ไฟต์ก็ได้แขนเดียว = เทียบไม่ได้ตลอดกาล
+  //   ผลที่ตามมา: ครบ 6 ไฟต์ → `chargeABWinner()` เจอ `!f.n` → คืน 'full' (ดีฟอลต์ปลอดภัย)
+  //   ⇒ **โหมด charge ใช้ท่าที่ไม่เคยวัดเลย** ทั้งที่เป็นโหมดที่อ่อนสุด (ส่วนร่วม 4.7% vs cast 10.5%)
+  //   แก้: เส้นแบ่งต้องยาวกว่า "การกด 1 ครั้งที่ตั้งใจ" ไม่ใช่ค่าคงที่ตัวเดียวใช้ทุกการทดลอง
+  //   · อิงจาก BOSS_CHARGE_MS จริง (เกมปรับผ่าน tuning.raidChargeFullMs ได้ → ตามอัตโนมัติ)
+  //   · +900ms เผื่อ overhead/latency แต่ยังสั้นกว่าการหลบจริง (หลบ/บอสหาย ≥ 3 วิ) = ยังจับ gap ได้ถูก
+  const chabTickMax = () => BOSS_CHARGE_MS + 900;
+  // 🧹 รีเซ็ตครั้งเดียว: ข้อมูลเก่าเก็บมาด้วยกติกาที่ลำเอียง (แขนเดียว) — เทียบกับของใหม่ไม่ได้ ต้องเริ่มนับใหม่
+  //   เงื่อนไขแคบ ๆ กันล้างข้อมูลดี: ต้อง "ผ่านมา ≥3 ไฟต์แล้วยังไม่มีแขน full สักบล็อก" = อคติจริง ไม่ใช่บังเอิญ
+  const CHAB_FIX_KEY = 'tokpla_charge_ab_fix';
+  let chabWasReset = false;
+  try {
+    if (W.localStorage.getItem(CHAB_FIX_KEY) !== '1') {
+      if (chabRing.length && chabFightsDone() >= 3 && !chabRing.some((b) => b.m === 'full')) {
+        chabRing = []; chabFightNo = 0; chabWasReset = true;
+        try { W.localStorage.removeItem(CHAB_KEY); } catch {}
+      }
+      W.localStorage.setItem(CHAB_FIX_KEY, '1');
+    }
+  } catch {}
   // 🐛 v6.360 — **การทดลองนี้เก็บข้อมูลได้ 0 บล็อกจาก 4 ไฟต์** (อ่านสด `tokpla_charge_ab` = ว่างเปล่า)
   //   ตัวกรองด้านล่างตัดทิ้งหมด (ส่วนใหญ่คือ `gap > act/2` เพราะบอสโหมด charge ทำให้ต้องหลบเยอะ)
   //   ผลที่ตามมาแย่กว่าการไม่มีข้อมูล: `chabFightsDone()` ไม่มีวันถึง 6 ⇒ **สลับแขนไปเรื่อยๆ ตลอดกาล**
@@ -3178,17 +3210,19 @@
   //   แก้ 2 ชั้น: ① จดสาเหตุที่ทิ้ง (จะได้รู้ว่าเก็บไม่ได้เพราะอะไร) ② ทิ้งติดกันหลายครั้ง = **หยุดทดลอง ใช้ชาร์จเต็ม**
   let chabDrop = {}, chabDropRun = 0;
   const CHAB_DROP_STOP = 8;                              // ทิ้งติดกันเท่านี้ = การทดลองนี้เก็บไม่ได้จริง เลิกสลับ
-  const chabDropped = (why) => { chabDrop[why] = (chabDrop[why] || 0) + 1; chabDropRun++; };
+  // 🔍 v6.421: จดสาเหตุทิ้ง **แยกรายแขน** — บั๊กอคติข้างบนมองไม่เห็นมา 60 เวอร์ชันเพราะรวมสาเหตุไว้ก้อนเดียว
+  //   ("ช่วงสั้นเกิน 12" ไม่บอกว่าเป็นของแขนไหน · ถ้าแยกไว้ตั้งแต่แรกจะเห็นทันทีว่าโดนเฉพาะ full)
+  const chabDropped = (why, m) => { const k = (m ? m + '/' : '') + why; chabDrop[k] = (chabDrop[k] || 0) + 1; chabDropRun++; };
   function chabCloseBlock() {
     if (!chabBlock) return;
     const b = chabBlock; chabBlock = null;
-    const dt = now() - b.last; if (dt <= GAB_TICK_MAX) b.act += dt; else b.gap += dt;
+    const dt = now() - b.last; if (dt <= chabTickMax()) b.act += dt; else b.gap += dt;
     const d1 = readBossContribution().dmg;
-    if (b.d0 == null || d1 == null) return chabDropped('อ่านดาเมจไม่ได้');   // ข้อมูลผิดแย่กว่าข้อมูลน้อย
+    if (b.d0 == null || d1 == null) return chabDropped('อ่านดาเมจไม่ได้', b.m);   // ข้อมูลผิดแย่กว่าข้อมูลน้อย
     const d = d1 - b.d0;
-    if (d < 0 || d >= 200000) return chabDropped('ดาเมจผิดช่วง');
-    if (b.act < 5000) return chabDropped('ช่วงสั้นเกิน');                   // ตีจริงสั้นเกิน เทียบไม่แฟร์
-    if (b.gap > b.act * 0.5) return chabDropped('หลบ/หายเกินครึ่ง');        // ตาย/หลบ/บอสหาย = ทิ้ง
+    if (d < 0 || d >= 200000) return chabDropped('ดาเมจผิดช่วง', b.m);
+    if (b.act < 5000) return chabDropped('ช่วงสั้นเกิน', b.m);                   // ตีจริงสั้นเกิน เทียบไม่แฟร์
+    if (b.gap > b.act * 0.5) return chabDropped('หลบ/หายเกินครึ่ง', b.m);        // ตาย/หลบ/บอสหาย = ทิ้ง
     chabDropRun = 0;
     chabRing.push({ m: b.m, d, ms: Math.round(b.act), p: b.p, f: b.f });
     chabSave();
@@ -3214,7 +3248,9 @@
   function chargeABReport() {
     const f = chabStats('full'), t = chabStats('tap');
     const line = (nm, s) => `${nm}: ${s.n} ช่วง · ดาเมจ ${Math.round(s.d).toLocaleString()} · ${Math.round(s.ms / 1000)} วิ · ${s.dps.toFixed(1)} dmg/วิ · กด ${s.p}`;
-    return `⚡ A/B ชาร์จ (${chabFightsDone()} ไฟต์)\n${line('ชาร์จเต็ม', f)}\n${line('แตะสั้น', t)}`
+    return `⚡ A/B ชาร์จ (${chabFightsDone()} ไฟต์ · เส้นแบ่ง act/gap ${chabTickMax()}ms)\n${line('ชาร์จเต็ม', f)}\n${line('แตะสั้น', t)}`
+      + (chabWasReset ? `\n🧹 v6.421 รีเซ็ตข้อมูลเก่าแล้ว (เก็บได้แต่แขน "แตะสั้น" เพราะเส้นแบ่งเวลาสั้นกว่าการชาร์จ 1 ครั้ง = เทียบไม่ได้)` : '')
+      + (!f.n || !t.n ? `\n⏳ ยังไม่ครบสองแขน (ชาร์จเต็ม ${f.n} · แตะสั้น ${t.n}) — ยังฟันธงไม่ได้` : '')
       + `\n→ ตอนนี้ใช้: ${chabStalled() ? 'ชาร์จเต็ม (หยุดทดลองแล้ว)' : chargeABWinner() === 'tap' ? 'แตะสั้น' : 'ชาร์จเต็ม'}`
       + chabDropReport();   // 🐛 v6.360: ถ้าเก็บไม่ได้เลย ต้องเห็นจากรายงาน ไม่ใช่เงียบจนคิดว่ายังวัดอยู่
   }
@@ -3228,7 +3264,7 @@
       chabBlock = { idx, m: ['full', 'tap'][(idx + chabFightNo) % 2], t0: now(), last: now(), act: 0, gap: 0, d0: readBossContribution().dmg, p: 0, f: chabFightNo };
     } else {
       const dt = now() - chabBlock.last;
-      if (dt <= GAB_TICK_MAX) chabBlock.act += dt; else chabBlock.gap += dt;
+      if (dt <= chabTickMax()) chabBlock.act += dt; else chabBlock.gap += dt;   // v6.421: ต้องยาวกว่าการชาร์จ 1 ครั้ง ไม่งั้นแขน full ถูกนับเป็น "ช่องว่าง" ทั้งบล็อก
       chabBlock.last = now();
     }
     return chabBlock.m;
