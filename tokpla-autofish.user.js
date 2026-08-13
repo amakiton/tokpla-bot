@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.421
+// @version      6.422
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -58,7 +58,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.421';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.422';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -3528,7 +3528,8 @@
       { h: 'wait', w: 4, g: (r) => r.waitSec != null ? r.waitSec : '-' },
       // 🎯 v6.355: bait = ขั้นที่ใช้ · ✓/✗ = ตรงจุดอ่อนไหม · src = ใครติดให้ (P=บอทติดล่วงหน้า · c=ติดมาก่อน · S=สลับตอนไฟต์)
       { h: 'bait', w: 6, right: false, g: (r) => (r.baitUsed ?? '-') + ((r.weakTiers || []).length ? ((r.weakTiers || []).includes(r.baitUsed) ? '✓' : '✗') : '') + (r.baitPre === 1 ? 'P' : r.baitPre === 2 ? 'c' : r.baitPre === 3 ? 'S' : '') },
-      { h: 'coin', w: 8, g: (r) => r.reward && r.reward.coins ? r.reward.coins.toLocaleString() : '-' },   // 🎁 v6.206
+      // 🎁 v6.206 · v6.422: ต่อท้าย `*N` เมื่อผูกมาหลายฉบับ = อ่านได้ทันทีว่าตัวเลขนี้ไม่ใช่ของไฟต์เดียว
+      { h: 'coin', w: 9, g: (r) => r.reward && r.reward.coins ? (r.reward.coins.toLocaleString() + ((r.reward.mails || 0) > 1 ? '*' + r.reward.mails : '')) : '-' },
     ];
     const rows = arr.slice().reverse();   // ใหม่สุดอยู่บน
     const header = cols.map((c) => pad(c.h, c.w, c.right === false ? false : true)).join(' ');
@@ -3544,9 +3545,17 @@
           + [r.reward.coins ? `${r.reward.coins.toLocaleString()} 🪙` : null, items.length ? items.join(' + ') : null].filter(Boolean).join(' · ');
       });
     const totCoin = arr.reduce((s, r) => s + ((r.reward && r.reward.coins) || 0), 0);
+    // 🎁 v6.422: เฉลี่ยต้องคิดจากไฟต์ที่ผูกได้ **1 ฉบับต่อ 1 ไฟต์** เท่านั้น — ไฟต์ที่รวมหลายฉบับทำค่าเฉลี่ยพองจนอ่านผิด
+    //   (ก่อนแก้: ไฟต์เดียวกินยอด 63% ของทั้งตาราง เพราะบังเอิญเปิดกล่องจดหมายที่มีของค้าง 20 ฉบับตอนนั้น)
+    const clean = arr.filter((r) => r.reward && r.reward.coins && (r.reward.mails || 1) === 1);
+    const avgClean = clean.length ? Math.round(clean.reduce((s, r) => s + r.reward.coins, 0) / clean.length) : 0;
+    const orph = bossOrphanGet();
     return `📊 เทียบรายไฟต์ล่าบอส (${arr.length} ครั้ง · ใหม่→เก่า) · ฆ่า ${kills}/${arr.length}`
-      + (totCoin ? ` · รางวัลรวม ${totCoin.toLocaleString()} 🪙` : '') + '\n'
-      + `res: k=ฆ่า t=หมดเวลา m=ไม่มา · gg=กดเกจ dg=หลบAoE di=ตาย hp=HPต่ำสุด sec=วินาที t2f=วิกว่าจะตีนัดแรกหลังบอสโผล่ wait=วิที่รอในถ้ำกว่าบอสจะโผล่ bait=ขั้นเหยื่อ(✓ตรงจุดอ่อน · P=บอทติดล่วงหน้า c=ติดมาก่อน S=สลับตอนไฟต์) coin=เหรียญรางวัล\n\n`
+      + (totCoin ? ` · รางวัลรวม ${totCoin.toLocaleString()} 🪙` : '')
+      + (avgClean ? ` · เฉลี่ย ${avgClean.toLocaleString()} 🪙/ไฟต์ (จาก ${clean.length} ไฟต์ที่ผูกได้ 1:1)` : '')
+      + ((orph.coins || orph.mails) ? `\n📬 รางวัลค้างเก่าที่จับคู่ไฟต์ไม่ได้: ${(orph.coins || 0).toLocaleString()} 🪙 · ${orph.mails || 0} ฉบับ (เข้ากระเป๋าแล้ว แต่ไม่รู้ว่าของไฟต์ไหน จึงไม่นับรวมในตาราง)` : '')
+      + '\n'
+      + `res: k=ฆ่า t=หมดเวลา m=ไม่มา · gg=กดเกจ dg=หลบAoE di=ตาย hp=HPต่ำสุด sec=วินาที t2f=วิกว่าจะตีนัดแรกหลังบอสโผล่ wait=วิที่รอในถ้ำกว่าบอสจะโผล่ bait=ขั้นเหยื่อ(✓ตรงจุดอ่อน · P=บอทติดล่วงหน้า c=ติดมาก่อน S=สลับตอนไฟต์) coin=เหรียญรางวัล (*N = รวมจากจดหมาย N ฉบับ ไม่ใช่ของไฟต์เดียว)\n\n`
       + header + '\n' + sep + '\n' + body
       + (rw.length ? `\n\n🎁 รางวัลที่ได้รับรายไฟต์\n${rw.join('\n')}` : '\n\n🎁 (ยังไม่มีข้อมูลรางวัล — จะเก็บตั้งแต่ไฟต์ถัดไป)');
   }
@@ -6724,8 +6733,32 @@
     }
     return '';
   }
+  // 📅 v6.422: แปลงวันเวลาไทยในจดหมายเป็น ms — "11 ส.ค. 2569 19:35 น." (พ.ศ. → ค.ศ.)
+  //   ใช้เวลาเครื่อง (VPS ตั้งเวลาไทยอยู่แล้ว · ตรงกับ hhmmOf ที่ระบบอื่นใช้)
+  const TH_MON = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+  function thaiDateMs(txt) {
+    try {
+      const m = /(\d{1,2})\s*(ม\.ค\.|ก\.พ\.|มี\.ค\.|เม\.ย\.|พ\.ค\.|มิ\.ย\.|ก\.ค\.|ส\.ค\.|ก\.ย\.|ต\.ค\.|พ\.ย\.|ธ\.ค\.)\s*(\d{4})\D{0,6}(\d{1,2}):(\d{2})/.exec(txt);
+      if (!m) return null;
+      const mi = TH_MON.indexOf(m[2]);
+      if (mi < 0) return null;
+      const be = +m[3], ce = be > 2400 ? be - 543 : be;   // 2569 = พ.ศ. ⇒ 2026
+      const d = new Date(ce, mi, +m[1], +m[4], +m[5]);
+      return isNaN(d.getTime()) ? null : d.getTime();
+    } catch { return null; }
+  }
   function parseReward(txt) {
     const out = { coins: 0, items: [], bones: 0, shards: 0, fashion: 0 };
+    // 🎁 v6.422 — **จดหมายบอกอยู่แล้วว่าเป็นรางวัลของไฟต์ไหน** (เดิมไม่เคยอ่าน → ผูกรางวัลมั่วให้ไฟต์ล่าสุดเสมอ)
+    //   ข้อความจริง: "🏆 ปราบพญาอานนท์สำเร็จ!ใหม่11 ส.ค. 2569 19:35 น.⏳ เหลือ 30 วัน ... ทำดาเมจไป 63266 (13.9%)"
+    //   ⇒ เลขดาเมจคือกุญแจที่แน่นที่สุด (ตรงกับ `dmg` ที่บอทบันทึกเองแบบ exact) · เวลา+ชื่อบอสเป็นตัวสำรอง
+    try {
+      const bm = /ปราบ\s*(.+?)\s*สำเร็จ/.exec(txt);
+      if (bm) out.mboss = bm[1].trim().slice(0, 30);
+      const dm = /ทำดาเมจไป\s*([\d,]+)/.exec(txt);
+      if (dm) out.mdmg = parseInt(dm[1].replace(/,/g, ''), 10) || 0;
+      out.mat = thaiDateMs(txt);
+    } catch {}
     // 🆕 v6.324: เกมใหม่จ่ายของนอกเหนือเหรียญ/ไอเทม — บันทึกแยกไว้ให้ครบ (เดิมหลุดหมด ไม่มีใครรู้ว่าได้เท่าไร)
     //   ข้อความจริงจากจดหมายบอส 31/7: "เข้ากระเป๋าให้แล้ว: เศษบอส x2 + เศษเจ้าเปลวใต้พิภพ x2 + แต้มแฟชัน x8" + "🦴 ก้างปลา 1"
     //   • ก้างปลา = สกุลเงินกาชา + ใช้ซื้อ "ขายขยะออโต้"/ตั๋วพับจอ  • เศษบอส = แลกของที่ตู้เศษบอส  • แต้มแฟชัน = ร้านแฟชัน
@@ -6768,25 +6801,66 @@
     }
     return out;
   }
-  // ผูกรางวัลเข้ากับ "ไฟต์ล่าสุด" ในสถิติ (recordBossFight เขียนไปก่อนแล้ว รางวัลมาทีหลัง)
-  function updateLastBossReward(r) {
+  // 🎁 v6.422 — **ผูกรางวัล "รายฉบับ" เข้ากับไฟต์ที่ตรงกันจริง**
+  //   บั๊กเดิม (`updateLastBossReward`): เปิดจดหมายทีเดียวหลายฉบับแล้ว **บวกรวมทั้งกองใส่ไฟต์ล่าสุด**
+  //   หลักฐานจริง: ไฟต์ 11/08 19:35 บันทึก `coins 515,100 · mails 20` = **63% ของยอดรวมทั้ง 20 ไฟต์**
+  //   ทั้งที่รางวัลจริงของไฟต์นั้น ~25,755 · ที่เหลือคือของค้างจากไฟต์เก่าที่ยังไม่ได้กดรับ
+  //   ⇒ ตาราง `/bossstats` เทียบรายไฟต์ไม่ได้เลย (ยอดพองเฉพาะไฟต์ที่บังเอิญเปิดกล่องพอดี)
+  //   แก้: จับคู่จาก **เลขดาเมจในจดหมาย** (ตรงกับ `dmg` แบบ exact) → สำรองด้วยเวลา+ชื่อบอส
+  //   ที่จับคู่ไม่ได้ (ของค้างจากไฟต์ที่หลุด ring 20 ไฟต์ไปแล้ว) → ลงบัญชี "ค้างเก่า" แยก **ไม่โยนใส่ไฟต์ไหน**
+  //   (เงินเข้ากระเป๋าจริงจึงยังนับครบ แต่ไม่ไปบิดสถิติรายไฟต์)
+  const BOSS_ORPHAN_KEY = 'tokpla_boss_reward_orphan';
+  function bossOrphanAdd(o) {
+    try {
+      const cur = JSON.parse(W.localStorage.getItem(BOSS_ORPHAN_KEY) || '{}');
+      for (const k of ['coins', 'mails', 'shards', 'bones', 'fashion']) cur[k] = (cur[k] || 0) + (o[k] || 0);
+      cur.at = Date.now();
+      W.localStorage.setItem(BOSS_ORPHAN_KEY, JSON.stringify(cur));
+    } catch {}
+  }
+  const bossOrphanGet = () => { try { return JSON.parse(W.localStorage.getItem(BOSS_ORPHAN_KEY) || '{}'); } catch { return {}; } };
+  // หาไฟต์ที่ตรงกับจดหมาย 1 ฉบับ — คืน null ถ้าไม่มั่นใจ (ผูกมั่ว = ข้อมูลผิด ซึ่งแย่กว่าไม่มีข้อมูล)
+  function matchFightForMail(arr, e) {
+    // ① เลขดาเมจ = กุญแจหลัก (บอทบันทึก dmg เอง · จดหมายบอกเลขเดียวกัน)
+    let cands = e.mdmg ? arr.filter((r) => r.dmg === e.mdmg) : [];
+    if (cands.length > 1 && e.mat) cands = cands.slice().sort((a, b) => Math.abs((a.ts || 0) - e.mat) - Math.abs((b.ts || 0) - e.mat));
+    let rec = cands[0] || null;
+    // ดาเมจซ้ำข้ามวันเป็นไปได้ — ถ้าเวลาห่างเกินวันนึงถือว่าไม่ใช่ใบเดียวกัน
+    if (rec && e.mat && Math.abs((rec.ts || 0) - e.mat) > 24 * 3600000) rec = null;
+    // ② สำรอง: เวลาใกล้กัน (±15 นาที) + ชื่อบอสตรง
+    if (!rec && e.mat) rec = arr.find((r) => Math.abs((r.ts || 0) - e.mat) <= 15 * 60000 && (!e.mboss || (r.bossName || '') === e.mboss)) || null;
+    return rec;
+  }
+  function attachBossRewards(entries, extraCoins) {
     try {
       const arr = loadBossStats();
-      const last = arr[arr.length - 1];
-      if (!last) return;
-      if (Date.now() - (last.ts || 0) > 15 * 60000) return;   // ห่างเกินไป = ไม่ใช่รางวัลของไฟต์นี้ อย่าผูกมั่ว
-      // 🦴 v6.358: เดิมรับ bones/shards/fashion เข้ามาแล้ว **ทิ้งทั้งหมด** เก็บแค่ coins/items/mails
-      //   ⇒ "เศษบอสต่อไฟต์" ซึ่งเป็นทรัพยากรเดียวที่ผู้ใช้ตั้งเป้า (อัปเกรด rod9 80 · armor 60 · float9 50)
-      //     ถูก parse ได้ถูกต้องแล้วแต่ไม่เคยถูกบันทึก = วัดความคืบหน้าไม่ได้เลย
-      const rw = last.reward || (last.reward = { coins: 0, items: [], mails: 0, raw: [], shards: 0, bones: 0, fashion: 0 });
-      rw.coins += r.coins || 0;
-      rw.mails += r.mails || 0;
-      rw.shards = (rw.shards || 0) + (r.shards || 0);
-      rw.bones = (rw.bones || 0) + (r.bones || 0);
-      rw.fashion = (rw.fashion || 0) + (r.fashion || 0);
-      for (const it of (r.items || [])) rw.items.push(it);
-      for (const t of (r.raw || [])) if (rw.raw.length < 6) rw.raw.push(t.slice(0, 160));
-      W.localStorage.setItem(BOSS_STATS_KEY, JSON.stringify(arr));
+      const orphan = { coins: 0, mails: 0, shards: 0, bones: 0, fashion: 0 };
+      let matched = 0;
+      for (const e of (entries || [])) {
+        const rec = arr.length ? matchFightForMail(arr, e) : null;
+        if (!rec) {
+          orphan.coins += e.coins || 0; orphan.mails += 1;
+          orphan.shards += e.shards || 0; orphan.bones += e.bones || 0; orphan.fashion += e.fashion || 0;
+          continue;
+        }
+        // 🦴 v6.358: bones/shards/fashion ต้องเก็บด้วย — "เศษบอสต่อไฟต์" คือทรัพยากรที่ผู้ใช้ตั้งเป้า (rod9 80 · armor 60 · float9 50)
+        const rw = rec.reward || (rec.reward = { coins: 0, items: [], mails: 0, raw: [], shards: 0, bones: 0, fashion: 0 });
+        rw.coins += e.coins || 0;
+        rw.mails = (rw.mails || 0) + 1;
+        rw.shards = (rw.shards || 0) + (e.shards || 0);
+        rw.bones = (rw.bones || 0) + (e.bones || 0);
+        rw.fashion = (rw.fashion || 0) + (e.fashion || 0);
+        for (const it of (e.items || [])) rw.items.push(it);
+        if (e.raw && rw.raw.length < 6) rw.raw.push(String(e.raw).slice(0, 160));
+        matched++;
+      }
+      // ส่วนต่างจาก HUD ที่ parse ไม่ได้ = รู้ว่าเงินเข้าเท่าไร แต่ไม่รู้ของไฟต์ไหน ⇒ ห้ามเดาว่าเป็นของไฟต์ล่าสุด
+      if (extraCoins > 0) orphan.coins += extraCoins;
+      if (matched) W.localStorage.setItem(BOSS_STATS_KEY, JSON.stringify(arr));
+      if (orphan.mails || orphan.coins) {
+        bossOrphanAdd(orphan);
+        if (orphan.mails) bossEvent(`📬 รางวัล ${orphan.mails} ฉบับจับคู่ไฟต์ไม่ได้ (ของค้างจากไฟต์เก่า) — ลงบัญชี "ค้างเก่า" ไม่ปนสถิติรายไฟต์`);
+      }
     } catch (e) { logErr('บันทึกรางวัลบอสล้มเหลว', e); }
   }
 
@@ -6798,6 +6872,7 @@
     mailClaiming = true; busy = true;
     let claimed = 0;
     const got = { coins: 0, items: [], raw: [], mails: 0, bones: 0, shards: 0, fashion: 0 };   // 🎁 v6.206 · v6.324: + ก้างปลา/เศษบอส/แต้มแฟชัน
+    const mailEntries = [];   // 🎁 v6.422: รายฉบับ (ไว้ผูกกับไฟต์ที่ตรงกันจริง — ห้ามรวมกองใส่ไฟต์ล่าสุด)
     const coinBefore = coinsNow();
     try {
       if (ob) { fireClick(ob); await sleep(900); }     // เปิดจดหมายจาก victory dialog
@@ -6805,7 +6880,13 @@
         const b = mailClaimBtns()[0];
         if (!b) break;
         const txt = mailRowText(b);                     // ต้องอ่านก่อนกด — กดแล้วข้อความหาย
-        if (txt) { got.raw.push(txt); const p = parseReward(txt); got.coins += p.coins; got.items.push(...p.items); got.bones += p.bones || 0; got.shards += p.shards || 0; got.fashion += p.fashion || 0; }
+        if (txt) {
+          got.raw.push(txt);
+          const p = parseReward(txt);
+          got.coins += p.coins; got.items.push(...p.items); got.bones += p.bones || 0; got.shards += p.shards || 0; got.fashion += p.fashion || 0;
+          // 🎁 v6.422: เก็บ "รายฉบับ" ไว้ด้วย — ยอดรวมใช้แจ้งเตือน แต่การลงสถิติต้องผูกทีละใบกับไฟต์ที่ตรงกัน
+          mailEntries.push({ coins: p.coins, items: p.items, shards: p.shards, bones: p.bones, fashion: p.fashion, mboss: p.mboss, mdmg: p.mdmg, mat: p.mat, raw: txt });
+        }
         fireClick(b); claimed++; got.mails++;
         await sleep(400);
       }
@@ -6821,7 +6902,9 @@
         //   (parse อาจจับเลขผิดตัวจากข้อความหลาย 🪙 · ส่วนต่าง HUD วัดเหรียญที่เข้าจริง)
         await sleep(500);
         const coinAfter = coinsNow();
+        const parsedCoins = got.coins;   // v6.422: จำยอดที่ "อ่านจากจดหมายได้จริง" ไว้ก่อนถูก HUD ทับ
         if (coinBefore != null && coinAfter != null && coinAfter - coinBefore > got.coins) got.coins = coinAfter - coinBefore;
+        const extraCoins = Math.max(0, got.coins - parsedCoins);   // ส่วนที่ HUD บอกว่าเข้ามาแต่แกะไม่ได้ว่าของใบไหน
         const items = [...new Set(got.items)];
         // ☕ v6.327: ได้กาแฟนักตกปลาเข้ากระเป๋า (จากลุงหยัด/รางวัล) → ปลดล็อกการใช้กาแฟกระเป๋าแม้ร้านคูลดาวน์
         if (/กาแฟนักตกปลา/.test(got.raw.join(' ')) || items.some((i) => /กาแฟนักตกปลา/.test(i))) bagCoffeeHint = true;
@@ -6834,7 +6917,7 @@
           .filter(Boolean).join(' · ') || '(อ่านรายละเอียดไม่ได้)';
         say(`📬 รับรางวัลบอส ${claimed} ใบ — ${detail}`);
         bossEvent(`🎁 รางวัล ${claimed} ใบ: ${detail}`);
-        updateLastBossReward({ coins: got.coins, items, mails: got.mails, raw: got.raw, bones: got.bones, shards: got.shards, fashion: got.fashion });
+        attachBossRewards(mailEntries, extraCoins);   // 🎁 v6.422: ผูกทีละฉบับกับไฟต์ที่ตรงกัน (ที่เหลือลงบัญชี "ค้างเก่า")
         if (isOn('tgOn')) void tgSend(`📬 <b>รับรางวัลบอส</b> ${claimed} ใบ\n${esc(detail)}`);
       }
     } catch (e) { logErr('รับรางวัลบอสล้มเหลว', e); }
