@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.419
+// @version      6.420
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -13,6 +13,8 @@
 // @grant        GM_xmlhttpRequest
 // @connect      api.telegram.org
 // @connect      enhajkbbpdviekpbqwud.supabase.co
+// @connect      127.0.0.1
+// @connect      localhost
 // @run-at       document-idle
 // @noframes
 // ==/UserScript==
@@ -56,7 +58,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.419';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.420';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -401,6 +403,9 @@
     //   ⇒ เมื่อเหยื่อคือคอขวด (ตุน ~300 · ไฟต์ใช้เกิน) ระเบิดแปลงเหยื่อเป็นดาเมจแย่กว่าแตะ → หลักฐานสด: หมึกยักษ์ท่าเรือ 3 ไฟต์
     //   ระเบิด 75 ลูก (01:47) ได้ 8,570 dmg/นาที = กลางช่วงแตะล้วน (8,368-8,816) เป๊ะ · charges ขึ้นแต่ดาเมจไม่ขึ้น = HANDOFF สั่งปิด
     //   โค้ดระเบิดยังอยู่ครบ (เปิดกลับ /meleebomb on ได้) · ปิด = แตะฟาดอย่างเดียว (พิสูจน์แล้วว่าคุ้มเหยื่อกว่า)
+    watchdogPing: true,          // 🐕 v6.420: ยิง ping เบา ๆ ออก localhost ทุก heartbeat (30 วิ) ให้ watchdog นอกเบราว์เซอร์รู้ว่า "ยังไม่ตาย"
+    //   แท็บตาย = heartbeatWatch หยุด = ไม่มี ping → watchdog บน VPS รีสตาร์ต Edge เอง (ตัวแก้จริงของ "แท็บตายเงียบ" · v6.413 กู้ได้แค่ตอนแท็บยังรัน)
+    //   fire-and-forget ผ่าน GM_xmlhttpRequest (ข้าม mixed-content เพราะรันใน context userscript) · port ที่ localhost ไม่มีคนฟัง = onerror เงียบ ไม่กระทบตกปลา · ปิดด้วย /watchdog off
     bossBaitTier: 2,             // 👹 เหยื่อ "จุดอ่อนบอส" ระหว่างตี (วิดีโอ: มัดอ้วนขั้น2/กุ้งฝอยขั้น4 = ดาเมจ x1.5) · 0 = ไม่สลับ
     bossStatKeep: 20,            // 📊 v6.195: เก็บสถิติล่าบอสกี่ "ครั้งล่าสุด" (ring buffer · 0 = ปิดการเก็บ)
     bossIntervalMin: 180,        // 🔮 v6.211: บอสมาทุกกี่นาที (ข้อมูลจริง = 3 ชม.) — ใช้ทำนายรอบถัดไปตอนอ่านเวลาจาก DOM ไม่ได้
@@ -1704,6 +1709,15 @@
         if (a === 'on' || a === 'off') { cfg.meleeBomb = a === 'on'; saveCfg(); }
         reply(`💣 ปาระเบิด melee: <b>${isOn('meleeBomb') ? 'เปิด (กดค้างปาระเบิดทุก 2.5 วิ — แรงกว่าฟาดหลายเท่า)' : 'ปิด (แตะฟาดอย่างเดียว)'}</b>`
           + `\nใช้: <code>/meleebomb on</code> · <code>/meleebomb off</code>`);
+        break;
+      }
+      // 🐕 v6.420: เปิด/ปิดการยิง ping ออก localhost ให้ watchdog นอกเบราว์เซอร์ (ตัวแก้ "แท็บตายเงียบ")
+      case 'watchdog': case 'wd': {
+        const a = (args[0] || '').toLowerCase();
+        if (a === 'on' || a === 'off') { cfg.watchdogPing = a === 'on'; saveCfg(); }
+        reply(`🐕 Watchdog ping: <b>${isOn('watchdogPing') ? 'เปิด' : 'ปิด'}</b> (ยิงไป <code>127.0.0.1:${WATCHDOG_PORT}</code> ทุก 30 วิ)`
+          + `\nแท็บตาย = ไม่มี ping → watchdog บน VPS รีสตาร์ต Edge เอง · ต้องรัน <code>tokpla-watchdog.ps1</code> บน VPS ด้วย`
+          + `\nใช้: <code>/watchdog on</code> · <code>/watchdog off</code>`);
         break;
       }
       // 🧭 v6.247: ตรวจ/แก้ "ถ้ำบอสที่รู้จัก" ด้วยมือ — เกมหมุนเวียนถ้ำ ถ้าบอทเรียนช้าจะได้ใส่เองทัน
@@ -15268,6 +15282,16 @@ ${esc(reason)}
   const HB_KEY = 'tokpla_bot_hb';
   const HB_EVERY_MS = 30000;
   const HB_GAP_MS = 150000;   // 5 เท่าของจังหวะปกติ — เผื่อ throttle เล็กน้อยของแท็บพื้นหลัง ไม่ให้ฟ้องมั่ว
+  const WATCHDOG_PORT = 9111;   // 🐕 v6.420: watchdog บน VPS ฟัง ping ที่ http://127.0.0.1:9111/hb — ต้องตรงกับ tokpla-watchdog.ps1
+  // 🐕 ยิงสัญญาณ "ยังมีชีวิต" ออกนอกเบราว์เซอร์ — fire-and-forget · error เงียบ (พอร์ตไม่มีคนฟัง = ไม่เป็นไร)
+  //   ใช้ GM_xmlhttpRequest (ไม่ใช่ fetch) เพราะรันใน context userscript = ข้าม mixed-content (หน้า https → http://127.0.0.1 ได้)
+  function watchdogPing(t) {
+    if (!isOn('watchdogPing')) return;
+    try {
+      if (typeof GM_xmlhttpRequest !== 'function') return;
+      GM_xmlhttpRequest({ method: 'GET', url: `http://127.0.0.1:${WATCHDOG_PORT}/hb?t=${t}`, timeout: 2500, onload() {}, onerror() {}, ontimeout() {} });
+    } catch {}
+  }
   // (ใช้ `hhmmOf` ที่มีอยู่แล้วตั้งแต่ v6.314 — อย่าประกาศซ้ำ)
   // รอบบอสตามตารางที่ตกอยู่ในช่วง [a,b] — ใช้บอกว่า "ที่หายไปนั้นทำให้พลาดอะไร"
   function bossRoundsBetween(a, b) {
@@ -15351,6 +15375,7 @@ ${esc(reason)}
     }
     hbPrev = t;
     try { W.localStorage.setItem(HB_KEY, String(t)); } catch {}
+    watchdogPing(t);   // 🐕 v6.420: บอก watchdog นอกเบราว์เซอร์ว่ายังรันอยู่ (แท็บตาย = ฟังก์ชันนี้ไม่ถูกเรียก = ไม่มี ping = watchdog รีสตาร์ต)
   }
 
   function recoveryWatch() {

@@ -3,6 +3,34 @@
 > **อ่านก่อนแก้บั๊กเสมอ** — กันแก้ซ้ำ/ถอยหลัง · เพิ่มรายการใหม่ไว้บนสุดทุกครั้งที่ bump เวอร์ชัน
 > รูปแบบ: เวอร์ชัน → สิ่งที่เปลี่ยน → เหตุผล/บั๊กต้นเหตุ
 
+## v6.420 — 🐕 watchdog แก้ "แท็บตายเงียบ" (บอทยิง ping ออก VPS · ตายแล้วรีสตาร์ต Edge เอง)
+
+### ปัญหา: แท็บตายสนิท = บอทกู้ตัวเองไม่ได้
+
+v6.413 กู้ได้เฉพาะตอนแท็บ "ยังรันโค้ด" (กดตกปลาไม่ติดชั่วคราว) · แต่ถ้าแท็บถูก Edge Sleeping Tabs สั่งหลับ / renderer ค้าง = **ไม่มีโค้ดรัน** = สั่งตัวเองฟื้นไม่ได้ (มือที่จะกดปุ่มตายไปพร้อมแท็บ) → ต้องมี "คนนอกเบราว์เซอร์" มากู้
+
+### แก้: heartbeat ping → watchdog นอกเบราว์เซอร์
+
+- **บอท:** ทุก heartbeat (30 วิ · เฉพาะตอนรันจริง) ยิง `GM_xmlhttpRequest GET http://127.0.0.1:9111/hb` (fire-and-forget)
+  - `@connect 127.0.0.1` + `@connect localhost` · flag `watchdogPing` (default on) · คำสั่ง `/watchdog on|off`
+  - ใช้ GM_xmlhttpRequest (ไม่ใช่ fetch) = รันใน context userscript → ข้าม mixed-content (https → http://127.0.0.1 ได้)
+  - พอร์ตไม่มีคนฟัง = onerror เงียบ ไม่กระทบตกปลา (async · ไม่บล็อกลูป)
+- **VPS (`tools/vps-watchdog/`):** `tokpla-watchdog.ps1` ฟัง ping · ไม่มี ping 4 นาที (และเว้นจากรีสตาร์ตก่อน ≥10 นาที) = ปิด-เปิด Edge ไป `/play` → บอท auto-resume (enabled=1 + resumeFlag=1 ที่มีอยู่แล้ว)
+  - `install-watchdog.ps1` ตั้ง Scheduled Task (at logon · สิทธิ์สูงสุด · รีสตาร์ตเอง · ไม่รันซ้อน) + ปิด Edge **Sleeping Tabs** ที่ policy (`SleepingTabsEnabled=0` = แก้ต้นเหตุ)
+  - **กัน false restart:** watchdog ไม่รีสตาร์ตจนกว่าจะเคยได้ ping ≥1 ครั้ง → ปลอดภัยตอนทยอยอัปเดตบอท · ถ้า Edge ไม่รันเลยก็เปิดให้ (เช่นเพิ่งรีบูต)
+
+### ทำไม ping-out ไม่ใช่ DevTools remote-debugging
+
+Edge/Chrome รุ่นใหม่ **บล็อก `--remote-debugging-port` บนโปรไฟล์ default** (ต้องใช้โปรไฟล์แยก = Tampermonkey/login หายหมด) → อ่าน hb จาก localStorage ผ่าน DevTools ทำไม่ได้กับเครื่องที่ตั้งบอทไว้แล้ว · ping-out เชื่อถือได้กว่าและไม่แตะโปรไฟล์
+
+### แก้ทั้งต้นเหตุ + อาการ
+
+- **ต้นเหตุ:** policy ปิด Sleeping Tabs (ป้องกันแท็บหลับตั้งแต่แรก)
+- **อาการ:** watchdog = ตาข่ายกันตก เผื่อยังตายด้วยเหตุอื่น (renderer crash/discard)
+
+node --check + check-order (421 ฟังก์ชัน) ผ่าน · PowerShell AST parse ผ่านทั้ง 2 ไฟล์ · smoke test: watchdog รับ ping + path ถูกต้องจริง
+⚠️ .ps1 ต้องเป็น **UTF-8 with BOM** (PowerShell 5.1 อ่าน UTF-8 ไม่มี BOM เป็น ANSI → ภาษาไทย mojibake → parse พัง) · เอกสาร: `tools/vps-watchdog/README.md`
+
 ## v6.419 — 🚫 melee "ปาระเบิด" (v6.418) พิสูจน์สดแล้ว "ไม่คุ้ม" → default OFF
 
 ### ยืนยันจากไฟต์จริง (เช็คสด 13 ส.ค. · ห้ามเดา)
