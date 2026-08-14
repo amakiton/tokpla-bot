@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.424
+// @version      6.425
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -58,7 +58,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.424';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.425';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -860,7 +860,7 @@
   //   ที่มา: 12 ส.ค. 332 cast/ชม. · 13 ส.ค. 527 cast/ชม. (ต่างกัน 59%) ทั้งที่พักพลังแค่ 1-3% ทั้งคู่
   //   ⇒ เวลาหายไปกับ "อย่างอื่น" ที่ไม่มีใครวัดไว้ · ดัน 390→527 ทุกวัน ≈ +2 ล้าน 🪙/วัน (14 เท่าของรางวัลบอสทั้งวัน)
   const newDay = () => ({ revenue: 0, baitCost: 0, casts: 0, catches: 0, coffeeCost: 0, potionCost: 0, bossFights: 0, bossKills: 0, shards: 0, restMin: 0,
-    tFish: 0, tMenu: 0, tBoss: 0, tRest: 0, tOff: 0, tDead: 0,
+    tFish: 0, tMenu: 0, tBoss: 0, tRest: 0, tOff: 0, tDead: 0, tCasts: 0, tCastPrev: null,
     coinFirst: null, coinLast: null, firstAt: Date.now(), lastAt: Date.now() });
   // 💵 v6.388: ยอดเหรียญจริงจาก HUD — `[aria="ยอดเหรียญ (แตะดูยอด)"]` (ยืนยันจากผลส่อง 4/8/2026)
   //   สำรอง: aria ที่ขึ้นต้นด้วย "ยอดเหรียญ" (เกมอาจแก้คำในวงเล็บ) — ห้ามผูกกับอิโมจิ 🪙 (บทเรียนซ้ำรอบที่ 7)
@@ -1051,8 +1051,22 @@
     tbLastAt = t;
     const mins = Math.round(dt / 60000) || 1;
     // ห่างเกิน 2.5 นาที = สคริปต์ไม่ได้ทำงานช่วงนั้น (เกณฑ์เดียวกับ HB_GAP_MS ที่ใช้จับแท็บตาย)
-    if (dt > 150000) { dayAdd('tDead', mins); return; }
-    dayAdd(tbBucket(), mins);
+    dayAdd(dt > 150000 ? 'tDead' : tbBucket(), mins);
+    // 🐛 v6.425 — **ต้องนับ "เหวี่ยงที่เกิดในช่วงที่วัดได้จริง" แยกจากยอดทั้งวัน**
+    //   บั๊กของ v6.424: รายงานเอา `casts` ทั้งวัน (นับตั้งแต่ 00:00) ไปหารด้วยหน้าต่างงบเวลา
+    //   ซึ่งเริ่มนับตอนติดตั้งสคริปต์ ⇒ **อัตราพองเกินจริง** · เคสจริง 14 ส.ค.:
+    //     วันมี 13.26 ชม./6,597 cast = 497/ชม. · แต่งบเวลาเก็บได้ 10.32 ชม. ⇒ รายงานโชว์ 638/ชม. (+28%)
+    //   ⇒ ตัวเลขที่ใช้ตัดสินใจต้องมาจากหน้าต่างเดียวกันทั้งเศษและส่วน
+    try {
+      const o = loadDaily(), k = dayKey();
+      const d = o[k];
+      if (d) {
+        const c = d.casts || 0;
+        if (d.tCastPrev != null && c >= d.tCastPrev) d.tCasts = (d.tCasts || 0) + (c - d.tCastPrev);
+        d.tCastPrev = c;                          // เก็บใน localStorage ⇒ รีโหลดแล้วนับต่อได้ ไม่นับซ้ำ
+        W.localStorage.setItem(DAILY_KEY, JSON.stringify(o));
+      }
+    } catch {}
   }
   function timeBudgetReport() {
     const o = loadDaily();
@@ -1066,8 +1080,13 @@
       const tot = B.reduce((s, [f]) => s + (d[f] || 0), 0);
       if (!tot) continue;
       const hr = tot / 60;
-      out.push('', `📅 ${k}  (เก็บได้ ${hr.toFixed(1)} ชม. · เหวี่ยง ${(d.casts || 0).toLocaleString()}`
-        + (hr > 0.05 ? ` = ${Math.round((d.casts || 0) / hr)}/ชม.` : '') + ')');
+      // v6.425: ใช้ `tCasts` (เหวี่ยงในหน้าต่างที่วัดได้) — `casts` ทั้งวันจะทำให้อัตราพองถ้างบเวลาเก็บไม่เต็มวัน
+      const cw = d.tCasts != null ? d.tCasts : null;
+      const dayHr = Math.max(0, ((d.lastAt || 0) - (d.firstAt || 0)) / 3600000);
+      out.push('', `📅 ${k}  (งบเวลาเก็บได้ ${hr.toFixed(1)} ชม. จากวันที่ผ่านไป ${dayHr.toFixed(1)} ชม.)`);
+      out.push(`  เหวี่ยงทั้งวัน ${(d.casts || 0).toLocaleString()}`
+        + (dayHr > 0.05 ? ` = ${Math.round((d.casts || 0) / dayHr)}/ชม.` : '')
+        + (cw != null ? ` · ในช่วงที่วัด ${cw.toLocaleString()}${hr > 0.05 ? ` = ${Math.round(cw / hr)}/ชม.` : ''}` : ''));
       for (const [f, name] of B) {
         const v = d[f] || 0;
         if (!v) continue;
@@ -1076,8 +1095,10 @@
       }
       // 🎣 อัตราเหวี่ยง "เฉพาะตอนที่ควรกำลังตก" = ตัวเลขที่บอกความเร็วจริงของการตกปลา
       //   (แยกจาก cast/ชม. รวม ซึ่งถูกเจือด้วยเวลาไปร้าน/ล่าบอส/ดับ)
-      if ((d.tFish || 0) > 10 && (d.casts || 0) > 0) {
-        out.push(`  → ตอนตกจริง ${Math.round((d.casts || 0) / ((d.tFish || 1) / 60))} เหวี่ยง/ชม.`);
+      if ((d.tFish || 0) > 10 && cw > 0) {
+        out.push(`  → ตอนตกจริง ${Math.round(cw / ((d.tFish || 1) / 60))} เหวี่ยง/ชม.  (เศษและส่วนมาจากหน้าต่างเดียวกัน)`);
+      } else if ((d.tFish || 0) > 10) {
+        out.push(`  → (ยังคิด "ตอนตกจริง" ไม่ได้ — ต้องรอข้อมูลรอบใหม่หลัง v6.425)`);
       }
     }
     // 💡 ชี้เป้าอัตโนมัติ — เล็งตัวที่กินเวลามากสุดที่ "ไม่ใช่การตกปลา"
