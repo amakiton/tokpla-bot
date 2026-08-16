@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.428
+// @version      6.429
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -58,7 +58,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.428';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.429';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -7326,11 +7326,21 @@
   //   วิธีแยก: เทียบตำแหน่งกับปุ่ม "ฝาก →" ที่อยู่กลางจอระหว่างสองคอลัมน์ (ทนกว่าผูก class Tailwind)
   //   · สำรอง: คอลัมน์กระเป๋าใช้ `border-r` · คอลัมน์คลังใช้ `border-l` (ยืนยัน DOM จริง 16 ส.ค.)
   //   · แยกไม่ออกทั้งสองทาง = คืนทุกใบ (พฤติกรรมเดิม — ดีกว่าไม่ฝากอะไรเลย)
+  // 🏬 v6.429 — **หาปุ่ม "ฝาก" ให้ได้ทั้งสอง layout** (จอกว้าง = "ฝาก →" กลางจอ · จอแคบ = ปุ่มในป๊อบอัพจำนวน)
+  //   log จริงจากบอท 17 ส.ค. 02:00: `ปุ่มฝาก→=ไม่เจอ` ทั้งที่ `popupจำนวน=มี` ⇒ ชื่อปุ่มไม่มี "→"
+  //   ⚠️ ต้องกัน **"ฝากของ"** (ปุ่มคุย NPC ที่ใช้เปิดคลัง) — ถ้าจับตัวนี้จะวนเปิดคลังซ้ำไม่จบ
+  //   ⚠️ และกัน "ถอน" (ทิศตรงข้าม) · onlyVisible=true = ไม่สนใจ disabled (ใช้ตอน log วินิจฉัย)
+  const DEPOSIT_RE = /^ฝาก(\s*→)?$|^ฝาก\s*\d|^→?\s*ฝาก(เลย|ทั้งหมด)?$|ฝาก\s*→/;
+  const findDepositBtn = (anyState) => [...document.querySelectorAll('button')].find((b) => {
+    const t = (b.textContent || '').trim();
+    if (!DEPOSIT_RE.test(t) || /ฝากของ|ถอน/.test(t)) return false;
+    return npcVisible(b) && !isBotUI(b) && (anyState || !b.disabled);
+  });
   let stoSplitHow = 'ยังไม่ได้เรียก';   // 🔍 v6.428: วิธีที่ใช้แยกฝั่งรอบล่าสุด — ใส่ใน log วินิจฉัย
   const storageBagCards = () => {
     const cards = readBag().filter((c) => npcVisible(c.el));
     if (!cards.length) { stoSplitHow = 'ไม่เห็นการ์ดเลย'; return cards; }
-    const dep = [...document.querySelectorAll('button')].find((b) => /ฝาก\s*→/.test(b.textContent || '') && npcVisible(b));
+    const dep = findDepositBtn(true);
     if (dep) {
       const r = dep.getBoundingClientRect(), mid = r.left + r.width / 2;
       const left = [], right = [];
@@ -7417,9 +7427,9 @@
       const _all = readBag().filter((c) => npcVisible(c.el));
       const _bag = storageBagCards();
       const _elig = _bag.filter((c) => c.rarity != null && rarityRank(c.rarity) >= stoMin && (c.count - c.lockedCount) > 0);
-      const _depAny = [...document.querySelectorAll('button')].find((b) => /ฝาก\s*→/.test(b.textContent || '') && npcVisible(b));
+      const _depAny = findDepositBtn(true);
       logInfo(`🔍 คลัง: เห็นการ์ด ${_all.length} ใบ · ฝั่งกระเป๋า ${_bag.length} · เข้าเกณฑ์ฝาก(${cfg.npcStorageRarity}+) ${_elig.length}`
-        + ` · แยกโดย=${stoSplitHow} · ปุ่มฝาก→=${_depAny ? (_depAny.disabled ? 'เจอ/กดไม่ได้' : 'เจอ/กดได้') : 'ไม่เจอ'}`
+        + ` · แยกโดย=${stoSplitHow} · ปุ่มฝาก=${_depAny ? (_depAny.disabled ? 'เจอ/กดไม่ได้' : 'เจอ/กดได้') : 'ไม่เจอ'}`
         + (_elig.length ? ` · ใบแรก="${_elig[0].species}" ×${_elig[0].count} [${_elig[0].rarity}]` : ''));
       let stoFailSaid = false;   // 🔍 v6.428: log รายละเอียด "ฝากไม่ได้" ใบแรกครั้งเดียว (กันท่วม ring)
       let fullSig = 0;   // 🏬 v6.223: กด "ฝาก →" ไม่ได้กี่ใบติด (คลังเต็ม = ปุ่มถูก disable/เกมขึ้น "เต็ม")
@@ -7451,7 +7461,7 @@
         : [...document.querySelectorAll('button')].find((b) => /^ทั้งหมด$/.test((b.textContent || '').trim()) && npcVisible(b));
       if (pick) { fireClick(pick); await sleep(250); }
       const sel = [...document.querySelectorAll('button')].find((b) => /^เลือก\s*\d+\s*(ตัว|ชิ้น)/.test((b.textContent || '').trim()) && npcVisible(b)); if (sel) { fireClick(sel); await sleep(400); }
-      const dep = [...document.querySelectorAll('button')].find((b) => /ฝาก\s*→/.test(b.textContent || '') && npcVisible(b) && !b.disabled);
+      const dep = findDepositBtn(false);
       // 🏬 v6.223: เลือกจำนวน ≤100 แล้วยังกด "ฝาก →" ไม่ได้ = คลังเต็ม (ไม่ใช่ปัญหากอง >100 ที่ ครึ่ง แก้แล้ว)
       //   เดิม continue เฉยๆ → ปลาใบเดิมถูกเลือกซ้ำทุกรอบ = วน 40 รอบเปล่า → กลับไปกระเป๋าเต็ม → วนไปเมืองไม่จบ
       // 🐛 v6.237: กด "ฝาก →" ไม่ได้ 3 ใบติด จะสรุปว่า "คลังเต็ม" ได้เฉพาะเมื่อ**ช่องว่างหมดจริง**
@@ -7461,11 +7471,22 @@
         //   ถ้าเจอแต่ disabled = แตะการ์ดแล้วเกมไม่ได้เลือกให้ (คลิกไม่ติด / เป็นใบฝั่งคลัง / toggle ปิดไปแล้ว)
         if (!stoFailSaid) {
           stoFailSaid = true;
-          const anyDep = [...document.querySelectorAll('button')].find((b) => /ฝาก\s*→/.test(b.textContent || '') && npcVisible(b));
+          const anyDep = findDepositBtn(true);
           const cr = card.el.getBoundingClientRect();
-          logInfo(`🔍 ฝากไม่ได้ใบแรก "${cardKey(card)}" ×${card.count} [${card.rarity}] · ปุ่มฝาก→=${anyDep ? (anyDep.disabled ? 'เจอ/disabled' : 'เจอ/กดได้') : 'ไม่เจอ'}`
+          logInfo(`🔍 ฝากไม่ได้ใบแรก "${cardKey(card)}" ×${card.count} [${card.rarity}] · ปุ่มฝาก=${anyDep ? (anyDep.disabled ? 'เจอ/disabled' : 'เจอ/กดได้') : 'ไม่เจอ'}`
             + ` · popupจำนวน=${pick ? 'มี' : 'ไม่มี'} · ปุ่มเลือกN=${sel ? 'มี' : 'ไม่มี'} · การ์ดอยู่ x=${Math.round(cr.left)}`
             + ` · ปุ่มอยู่ x=${anyDep ? Math.round(anyDep.getBoundingClientRect().left) : '-'}`);
+          // 🔍 v6.429 — **ให้บอทบอกชื่อปุ่มจริงมาเอง** (เลิกเดาจากหน้าจอเครื่องอื่น)
+          //   16-17 ส.ค.: ผมเปิด /play ด้วยหน้าต่างกว้าง 1368px เห็นหน้าคลังเป็น 2 คอลัมน์ + ปุ่ม "ฝาก →"
+          //   แต่ log จริงจากบอทบอก: การ์ดอยู่ x=25 · ปุ่ม "ฝาก →" **ไม่มีในหน้าเลย** · popup เลือกจำนวน **มี**
+          //   ⇒ แท็บบอทเรนเดอร์เป็น layout จอแคบ (ตัวที่ `sm:hidden` ซ่อนบนจอกว้าง) = คนละ flow คนละชื่อปุ่ม
+          //   ⇒ v6.426 (แยกซ้าย/ขวา) จึงไม่มีผลอะไรเลย — โหมดนี้ไม่มีสองคอลัมน์ให้แยกตั้งแต่ต้น
+          //   📌 บทเรียน: "ดู DOM สด" ต้องดู**จากเครื่องที่บอทรันจริง** — ขนาดหน้าต่างเปลี่ยน = คนละ DOM
+          const btns = [...document.querySelectorAll('button')]
+            .filter((b) => npcVisible(b) && !isBotUI(b))
+            .map((b) => `${(b.textContent || '').trim().slice(0, 18) || '(ว่าง)'}${b.disabled ? '✖' : ''}`)
+            .slice(0, 18);
+          logInfo(`🔍 ปุ่มที่เห็นตอนนี้ (${btns.length}): ${btns.join(' | ')}`);
         }
         npcCloseQtyPopup(); await sleep(250);
         skipCards.add(cardKey(card));   // 🐛 v6.256: ข้ามใบนี้ไปเลย ไม่งั้นรอบหน้าเจอใบเดิมซ้ำจนเลิกทั้งทริป
