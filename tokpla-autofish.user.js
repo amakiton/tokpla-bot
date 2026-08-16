@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.427
+// @version      6.428
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -58,7 +58,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.427';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.428';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -7326,9 +7326,10 @@
   //   วิธีแยก: เทียบตำแหน่งกับปุ่ม "ฝาก →" ที่อยู่กลางจอระหว่างสองคอลัมน์ (ทนกว่าผูก class Tailwind)
   //   · สำรอง: คอลัมน์กระเป๋าใช้ `border-r` · คอลัมน์คลังใช้ `border-l` (ยืนยัน DOM จริง 16 ส.ค.)
   //   · แยกไม่ออกทั้งสองทาง = คืนทุกใบ (พฤติกรรมเดิม — ดีกว่าไม่ฝากอะไรเลย)
+  let stoSplitHow = 'ยังไม่ได้เรียก';   // 🔍 v6.428: วิธีที่ใช้แยกฝั่งรอบล่าสุด — ใส่ใน log วินิจฉัย
   const storageBagCards = () => {
     const cards = readBag().filter((c) => npcVisible(c.el));
-    if (!cards.length) return cards;
+    if (!cards.length) { stoSplitHow = 'ไม่เห็นการ์ดเลย'; return cards; }
     const dep = [...document.querySelectorAll('button')].find((b) => /ฝาก\s*→/.test(b.textContent || '') && npcVisible(b));
     if (dep) {
       const r = dep.getBoundingClientRect(), mid = r.left + r.width / 2;
@@ -7337,10 +7338,14 @@
         const cr = c.el.getBoundingClientRect();
         (cr.left + cr.width / 2 < mid ? left : right).push(c);
       }
-      if (right.length) return left;   // มีของฝั่งขวาจริง = สองคอลัมน์ → ซ้ายคือกระเป๋า (ว่างก็คือว่างจริง)
+      if (right.length) { stoSplitHow = `ตำแหน่ง(ซ้าย ${left.length}/ขวา ${right.length})`; return left; }   // มีของฝั่งขวาจริง = สองคอลัมน์ → ซ้ายคือกระเป๋า
+      stoSplitHow = `ตำแหน่ง-ล้มเหลว(ทุกใบอยู่ซ้ายปุ่ม ${left.length})`;
+    } else {
+      stoSplitHow = 'ไม่เจอปุ่มฝาก→';
     }
     const byL = cards.filter((c) => c.el.closest('[class*="border-l"]'));
-    if (byL.length) return cards.filter((c) => !byL.includes(c));   // เจอคอลัมน์คลัง = ที่เหลือคือกระเป๋า
+    if (byL.length) { stoSplitHow += ` → border-l(คลัง ${byL.length})`; return cards.filter((c) => !byL.includes(c)); }
+    stoSplitHow += ' → แยกไม่ได้ คืนทุกใบ';
     return cards;
   };
   const npcDismissCatchPopup = () => { const c = [...document.querySelectorAll('button')].find((b) => /^ตกต่อ/.test((b.textContent || '').trim())); if (c) fireClick(c); };   // ปิด popup ผลตกปลาที่ค้างบัง
@@ -7407,6 +7412,16 @@
       const gotCards = await waitFor(() => storageBagCards().some((c) => c.rarity != null), 4000, 200);   // v6.426: นับเฉพาะฝั่งกระเป๋า (ของในคลังไม่ใช่สัญญาณว่าแผงพร้อม)
       if (!gotCards) { say('🏬 เปิดคลังแล้วแต่การ์ดปลาไม่โผล่ — ข้ามรอบนี้'); return 0; }
       const stoMin = rarityRank(cfg.npcStorageRarity);
+      // 🔍 v6.428 — **log วินิจฉัยครั้งเดียวต่อทริป** (v6.426 แก้แล้วแต่ log เดิมบอกไม่ได้ว่าแก้ติดไหม)
+      //   ต้องรู้ 3 อย่างก่อนจะเดาสาเหตุอื่น: แยกฝั่งได้ไหม · เหลือกี่ใบเข้าเกณฑ์ · ปุ่มฝากอยู่สถานะไหน
+      const _all = readBag().filter((c) => npcVisible(c.el));
+      const _bag = storageBagCards();
+      const _elig = _bag.filter((c) => c.rarity != null && rarityRank(c.rarity) >= stoMin && (c.count - c.lockedCount) > 0);
+      const _depAny = [...document.querySelectorAll('button')].find((b) => /ฝาก\s*→/.test(b.textContent || '') && npcVisible(b));
+      logInfo(`🔍 คลัง: เห็นการ์ด ${_all.length} ใบ · ฝั่งกระเป๋า ${_bag.length} · เข้าเกณฑ์ฝาก(${cfg.npcStorageRarity}+) ${_elig.length}`
+        + ` · แยกโดย=${stoSplitHow} · ปุ่มฝาก→=${_depAny ? (_depAny.disabled ? 'เจอ/กดไม่ได้' : 'เจอ/กดได้') : 'ไม่เจอ'}`
+        + (_elig.length ? ` · ใบแรก="${_elig[0].species}" ×${_elig[0].count} [${_elig[0].rarity}]` : ''));
+      let stoFailSaid = false;   // 🔍 v6.428: log รายละเอียด "ฝากไม่ได้" ใบแรกครั้งเดียว (กันท่วม ring)
       let fullSig = 0;   // 🏬 v6.223: กด "ฝาก →" ไม่ได้กี่ใบติด (คลังเต็ม = ปุ่มถูก disable/เกมขึ้น "เต็ม")
       // 🐛 v6.256 (ผู้ใช้เจอสด 20:27 — กระเป๋าเต็ม 345/350 ระบายไม่ออก): ลูปนี้หยิบ "การ์ดใบแรกที่เข้าเงื่อนไข"
       //   ใหม่ทุกรอบ · ถ้าใบนั้นกด "ฝาก →" ไม่ได้ (ปลาล็อก/ปุ่มไม่เรนเดอร์) → continue แล้ว **เจอใบเดิมซ้ำ**
@@ -7442,6 +7457,16 @@
       // 🐛 v6.237: กด "ฝาก →" ไม่ได้ 3 ใบติด จะสรุปว่า "คลังเต็ม" ได้เฉพาะเมื่อ**ช่องว่างหมดจริง**
       //   ไม่งั้นสาเหตุอื่น (ปุ่มยังไม่เรนเดอร์ / ปลาถูกล็อก / popup ซ้อน) จะถูกแปะป้ายผิดแล้วพักระบบฝากฟรีๆ 30 นาที
       if (!dep) {
+        // 🔍 v6.428: "ไม่เจอปุ่ม" กับ "เจอแต่กดไม่ได้" คนละสาเหตุกันคนละเรื่อง — เดิม log พูดเหมือนกันหมด ("ล็อกอยู่?")
+        //   ถ้าเจอแต่ disabled = แตะการ์ดแล้วเกมไม่ได้เลือกให้ (คลิกไม่ติด / เป็นใบฝั่งคลัง / toggle ปิดไปแล้ว)
+        if (!stoFailSaid) {
+          stoFailSaid = true;
+          const anyDep = [...document.querySelectorAll('button')].find((b) => /ฝาก\s*→/.test(b.textContent || '') && npcVisible(b));
+          const cr = card.el.getBoundingClientRect();
+          logInfo(`🔍 ฝากไม่ได้ใบแรก "${cardKey(card)}" ×${card.count} [${card.rarity}] · ปุ่มฝาก→=${anyDep ? (anyDep.disabled ? 'เจอ/disabled' : 'เจอ/กดได้') : 'ไม่เจอ'}`
+            + ` · popupจำนวน=${pick ? 'มี' : 'ไม่มี'} · ปุ่มเลือกN=${sel ? 'มี' : 'ไม่มี'} · การ์ดอยู่ x=${Math.round(cr.left)}`
+            + ` · ปุ่มอยู่ x=${anyDep ? Math.round(anyDep.getBoundingClientRect().left) : '-'}`);
+        }
         npcCloseQtyPopup(); await sleep(250);
         skipCards.add(cardKey(card));   // 🐛 v6.256: ข้ามใบนี้ไปเลย ไม่งั้นรอบหน้าเจอใบเดิมซ้ำจนเลิกทั้งทริป
         if (++fullSig >= 3) {
@@ -15973,6 +15998,13 @@ ${esc(reason)}
     const rt = gearTierOf('rod');
     if (rt && (cfg.rodTier || 0) < rt) { cfg.rodTier = rt; saveCfg(); logInfo(`🎣 ตั้งค่า "เบ็ดขั้นที่ใช้" ตามของที่ใส่อยู่จริง: ขั้น ${rt} (กันบังคับเบ็ดลากลงขั้นต่ำ)`); }
   } catch {}
+
+  // 🔖 v6.428 — **ประทับเวอร์ชันที่ "รันอยู่จริง" ลง localStorage + log ตอนบูต**
+  //   16 ส.ค.: แก้ v6.426/6.427 ไปแล้ว แต่พอบอทยังพังเหมือนเดิม **แยกไม่ออกเลย**ว่า
+  //   "แก้ผิดจุด" หรือ "โค้ดใหม่ยังไม่ได้รัน" (Tampermonkey อัปไฟล์แล้ว แต่หน้าเกมไม่ได้รีโหลด = โค้ดเก่ายังอยู่ในหน่วยความจำ)
+  //   ⇒ ต่อจากนี้เช็คได้จากระยะไกลผ่าน /api/config โดยไม่ต้องแย่ง session เกม
+  try { W.localStorage.setItem('tokpla_bot_ver', BOT_VER); W.localStorage.setItem('tokpla_bot_ver_at', String(Date.now())); } catch {}
+  logInfo(`🤖 บอท v${BOT_VER} เริ่มทำงาน (โค้ดที่รันอยู่จริง)`);
 
   autoResumeAfterReload();
 
