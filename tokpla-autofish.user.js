@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.425
+// @version      6.426
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -58,7 +58,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.425';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.426';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -7313,6 +7313,36 @@
     const m = gameTextMatch(/คลังว่างอีก\s*([\d,]+)\s*ช่อง/);
     return m ? parseInt(m[1].replace(/,/g, ''), 10) : null;
   };
+  // 🏬 v6.426 — **หน้าคลังมี 2 คอลัมน์: "กระเป๋า" ซ้าย · "คลัง" ขวา — การ์ดหน้าตาเหมือนกันเป๊ะ**
+  //   `readBag()` กวาด `button[aria-label]` ทั้ง document ⇒ ได้ของในกระเป๋า **ปนกับของที่ฝากไว้แล้ว**
+  //   (`npcVisible` กรองได้แค่ layout มือถือที่ `sm:hidden` — แยกสองคอลัมน์ไม่ออก)
+  //   ⇒ ฝากใบแรกเสร็จ ปลาย้ายไปคลัง → รอบถัดไป find() ไปโดนใบ **ฝั่งคลัง** ชื่อเดียวกัน
+  //     → แตะแล้วปุ่มที่สว่างคือ "← ถอน" ไม่ใช่ "ฝาก →" → เหมาว่า "ล็อกอยู่?" → `skipCards` จำ **ด้วยชื่อ**
+  //     ⇒ ใบฝั่งกระเป๋าชื่อเดียวกันโดนแบนตามไปด้วย → ครบ 3 ใบติดก็เลิกทั้งทริป
+  //   🔴 ผลจริง 16 ส.ค. 2026: กระเป๋า 8 ชนิด มี **7 ชนิดที่มีอยู่ในคลังแล้ว**
+  //     ⇒ log "🏬 มี 3 → 6 ชนิดที่ฝากไม่ได้ (ล็อกอยู่?) แต่คลังยังว่าง 157 ช่อง" · ฝาก 0 ทุกทริป
+  //     ⇒ ระบายของไม่ออกเลย → กระเป๋าตัน **น้ำหนัก** (6.0k/5.8k กก. ทั้งที่ช่องใช้แค่ 178/535)
+  //     ⇒ เกมห้ามเหวี่ยง → บอทเห็นว่า "เกมค้าง" → รีโหลด 3 ครั้ง → **หยุดตัวเอง 2 ชม. 35 นาที**
+  //   วิธีแยก: เทียบตำแหน่งกับปุ่ม "ฝาก →" ที่อยู่กลางจอระหว่างสองคอลัมน์ (ทนกว่าผูก class Tailwind)
+  //   · สำรอง: คอลัมน์กระเป๋าใช้ `border-r` · คอลัมน์คลังใช้ `border-l` (ยืนยัน DOM จริง 16 ส.ค.)
+  //   · แยกไม่ออกทั้งสองทาง = คืนทุกใบ (พฤติกรรมเดิม — ดีกว่าไม่ฝากอะไรเลย)
+  const storageBagCards = () => {
+    const cards = readBag().filter((c) => npcVisible(c.el));
+    if (!cards.length) return cards;
+    const dep = [...document.querySelectorAll('button')].find((b) => /ฝาก\s*→/.test(b.textContent || '') && npcVisible(b));
+    if (dep) {
+      const r = dep.getBoundingClientRect(), mid = r.left + r.width / 2;
+      const left = [], right = [];
+      for (const c of cards) {
+        const cr = c.el.getBoundingClientRect();
+        (cr.left + cr.width / 2 < mid ? left : right).push(c);
+      }
+      if (right.length) return left;   // มีของฝั่งขวาจริง = สองคอลัมน์ → ซ้ายคือกระเป๋า (ว่างก็คือว่างจริง)
+    }
+    const byL = cards.filter((c) => c.el.closest('[class*="border-l"]'));
+    if (byL.length) return cards.filter((c) => !byL.includes(c));   // เจอคอลัมน์คลัง = ที่เหลือคือกระเป๋า
+    return cards;
+  };
   const npcDismissCatchPopup = () => { const c = [...document.querySelectorAll('button')].find((b) => /^ตกต่อ/.test((b.textContent || '').trim())); if (c) fireClick(c); };   // ปิด popup ผลตกปลาที่ค้างบัง
   // 🧪 ยายแก่น (v6.151 ยืนยันสด): คลิกแถวปลา (เลือก) → กด "สกัดเลย!" → ได้แก่น · ทีละตัวจนไม่มีปลาเข้าเกณฑ์ (rare+/ตาม config)
   async function npcDoEssence() {
@@ -7374,7 +7404,7 @@
       const ft = findUiTab('ปลา') || [...document.querySelectorAll('button')].find((b) => /🐟\s*ปลา/.test(b.textContent || '') && npcVisible(b));
       if (ft) { fireClick(ft); }
       // ⏳ รอ "การ์ดปลาโผล่จริง" (ไม่ใช่หน่วงคงที่) — ต้นเหตุ "ฝาก 0" ที่ผู้ใช้เจอ
-      const gotCards = await waitFor(() => readBag().some((c) => c.rarity != null && npcVisible(c.el)), 4000, 200);
+      const gotCards = await waitFor(() => storageBagCards().some((c) => c.rarity != null), 4000, 200);   // v6.426: นับเฉพาะฝั่งกระเป๋า (ของในคลังไม่ใช่สัญญาณว่าแผงพร้อม)
       if (!gotCards) { say('🏬 เปิดคลังแล้วแต่การ์ดปลาไม่โผล่ — ข้ามรอบนี้'); return 0; }
       const stoMin = rarityRank(cfg.npcStorageRarity);
       let fullSig = 0;   // 🏬 v6.223: กด "ฝาก →" ไม่ได้กี่ใบติด (คลังเต็ม = ปุ่มถูก disable/เกมขึ้น "เต็ม")
@@ -7385,7 +7415,7 @@
       const skipCards = new Set();
       const cardKey = (c) => `${c.shiny ? '✨' : ''}${c.species}`;
       for (let round = 0; round < 40; round++) {
-      const card = readBag().find((c) => c.rarity != null && rarityRank(c.rarity) >= stoMin && (c.count - c.lockedCount) > 0 && npcVisible(c.el) && !skipCards.has(cardKey(c)));
+      const card = storageBagCards().find((c) => c.rarity != null && rarityRank(c.rarity) >= stoMin && (c.count - c.lockedCount) > 0 && !skipCards.has(cardKey(c)));   // v6.426: เฉพาะฝั่งกระเป๋า — เดิมไปโดนใบฝั่งคลังแล้วเหมาว่า "ล็อก"
       if (!card) break;
       fireClick(card.el); await sleep(400);                  // เปิด popup เลือกจำนวน
       // 🏬 v6.223: เกมขึ้นข้อความ "คลังเต็ม" (ผู้ใช้เจอจริง: ของเต็ม บอทมีปัญหาทันที) → เลิกทันที ไม่วนเปล่า
