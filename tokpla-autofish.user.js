@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.426
+// @version      6.427
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -58,7 +58,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.426';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.427';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -7235,7 +7235,7 @@
       if (!(await openBagUI())) return res;   // v6.167: มีคีย์ลัด B เป็นทางสำรองในตัว
       if (!(await waitFor(() => readBagCount(), 3000))) { await closeMenu(); return res; }
       await sleep(250);
-      const bc = readBagCount(); if (bc && bc.slots > 0) { res.bagPct = bc.count / bc.slots * 100; lastBagPct = res.bagPct; bagSlotsCache = bc.slots; }   // 🛡️ C: ความเต็มกระเป๋า (v6.165: จำไว้ให้ npcErrandCheck ตัดสินว่า "วิกฤต" ไหม)
+      const bc = readBagCount(); if (bc && bc.slots > 0) { res.bagPct = bagFillPct(bc); lastBagPct = res.bagPct; bagSlotsCache = bc.slots; }   // 🛡️ C: ความเต็มกระเป๋า (v6.165: จำไว้ให้ npcErrandCheck ตัดสินว่า "วิกฤต" ไหม · v6.427: max(ช่อง, น้ำหนัก))
       const stoMin = rarityRank(cfg.npcStorageRarity), essMin = rarityRank(cfg.npcEssenceRarity);
       for (const c of readBag()) {
         if (c.rarity == null) continue;                       // อ่านสีไม่ออก = ข้าม (กันฝาก/แลกผิดตัว)
@@ -8445,6 +8445,19 @@
     return null;
   }
 
+  // ⚖️ v6.427 — **กระเป๋าตันด้วย "น้ำหนัก" ไม่ใช่ "ช่อง"** (อีกครึ่งของเหตุบอทหยุด 16 ส.ค.)
+  //   ค่าจริงจากเกมสด: `176/535 ช่อง (33%)` แต่ **`5.5k/5.8k กก. (95%)`** — เกมห้ามเหวี่ยงเมื่อน้ำหนักเกิน
+  //   ⇒ เกณฑ์ที่วัดด้วย %ช่องอย่างเดียว (`sellAtPct` 75 · `npcStorageBagPct` 80) **ไม่มีวันทริกเกอร์**
+  //     จากปลาใหญ่ (ปลาปฐมเกลือ 294 กก./ตัว · อสูรสมุทรลึก 138 กก. — 35 ตัว ≈ 5,000 กก.)
+  //     → v6.348 จับได้แค่ตอนเกม**ประกาศเตือน**แล้ว (80%/ตัน) ซึ่งคือตอนที่โดนหักความเร็วไปแล้ว
+  //   ⚠️ ใช้ `bagWeight()` ของ v6.348 ตัวเดิม — **อย่าเขียน parser น้ำหนักตัวที่สอง** (เคยพลาดตอนร่าง v6.427)
+  //   %เต็มที่ "เกมใช้ตัดสินจริง" = มิติไหนตันก่อนกัน · อ่านน้ำหนักไม่ได้ = ตกกลับไปใช้ %ช่องเหมือนเดิม
+  function bagFillPct(bc) {
+    const bySlot = (bc && bc.slots > 0) ? (bc.count / bc.slots) * 100 : 0;
+    const w = bagWeight();
+    return Math.max(bySlot, (w && w.cap > 0) ? (w.kg / w.cap) * 100 : 0);
+  }
+
   // 🐛 v6.267: อ่านยอดขายได้ 0 ตลอด (log จริง: "ขายปลาทั้งหมด 9 ชนิด (0 🪙)" ทั้งที่ขายสำเร็จและมีเงินซื้อเหยื่อ)
   //   ต้นตอเดิม: ผูกกับอิโมจิ 🪙 ตัวเดียว — แต่เกมใช้สัญลักษณ์เงินไม่คงที่ (เห็น 💰 ในข้อความรางวัลบอส 25/7 แล้ว)
   //   📌 บทเรียนซ้ำรอบที่ 7: ห้ามผูก selector กับอิโมจิ (เหมือน 🪱→🐛 ที่พังมาแล้ว)
@@ -8653,13 +8666,23 @@
   const BAG_HEAVY_BLOCK_RE = /หนักเกินพิกัด|น้ำหนักเกิน|too heavy/i;
   const BAG_HEAVY_WARN_RE = /กระเป๋าหนักมาก|เดินช้าลง/;
   // อ่านตัวเลขน้ำหนักถ้าเกมโชว์อยู่ (tooltip กระเป๋า/แผงกระเป๋า) — คืน null ถ้าอ่านไม่ได้ (ไม่เดา ไม่เปลี่ยนพฤติกรรม)
+  // 🐛 v6.427: เกมย่อหลักพันเป็น "k" — DOM จริง 16 ส.ค.: **"น้ำหนัก5.5k/5.8k กก."**
+  //   `parseFloat('5.5k')` = **5.5** ⇒ ตัวเลขในข้อความเตือน/`/why` ผิดไป 1,000 เท่ามาตั้งแต่ v6.348
+  //   (`pct` ถูกมาตลอดโดยบังเอิญ เพราะเศษกับส่วนย่อเหมือนกัน — บั๊กเลยซ่อนอยู่)
+  //   ⇒ ตอนนี้ค่านี้ถูกใช้ตัดสินใจจริงใน `bagFillPct` แล้ว หน่วยต้องถูกด้วย
+  const parseKg = (s) => {
+    const m = /^([\d.,]+)\s*(k)?$/i.exec(String(s).trim());
+    if (!m) return null;
+    const n = parseFloat(m[1].replace(/,/g, ''));
+    return isFinite(n) ? (m[2] ? n * 1000 : n) : null;
+  };
   function bagWeight() {
     try {
-      const m = gameTextMatch(/น้ำหนัก\s*([\d.,]+)\s*\/\s*([\d.,]+)\s*กก/)
-        || gameTextMatch(/([\d.,]+)\s*\/\s*([\d.,]+)\s*กก\./);
+      const m = gameTextMatch(/น้ำหนัก\s*([\d.,]+\s*k?)\s*\/\s*([\d.,]+\s*k?)\s*กก/i)
+        || gameTextMatch(/([\d.,]+\s*k?)\s*\/\s*([\d.,]+\s*k?)\s*กก\./i);
       if (!m) return null;
-      const kg = parseFloat(String(m[1]).replace(/,/g, '')), cap = parseFloat(String(m[2]).replace(/,/g, ''));
-      if (!(cap > 0) || !(kg >= 0)) return null;
+      const kg = parseKg(m[1]), cap = parseKg(m[2]);
+      if (kg == null || cap == null || !(cap > 0) || !(kg >= 0)) return null;
       return { kg, cap, pct: Math.round(kg / cap * 100) };
     } catch { return null; }
   }
@@ -12389,7 +12412,7 @@
 
       // ---- เงื่อนไขว่าถึงเวลาขายหรือยัง (คิดจากปลาในกระเป๋า) ----
       // เกณฑ์ % คิดจาก bagSlots จริง เผื่อผู้เล่นอัปเกรดกระเป๋า (50 -> สูงสุด 200 ช่อง)
-      const pctNow = bag.slots > 0 ? (bag.count / bag.slots) * 100 : 0;
+      const pctNow = bagFillPct(bag);   // v6.427: ตันน้ำหนักก่อนช่องเต็มได้ — ใช้มิติที่ตันก่อน
       lastBagPct = pctNow;   // v6.268: ค่าจริงจากรอบนี้ → sellEveryNow() ย่นระยะเช็คเมื่อจ่อเกณฑ์
       const byPct = cfg.sellAtPct > 0 && pctNow >= cfg.sellAtPct;
       const byCount = cfg.sellAtCount > 0 && bag.count >= cfg.sellAtCount;
