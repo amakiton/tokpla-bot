@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.429
+// @version      6.430
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -58,7 +58,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.429';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.430';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -12714,6 +12714,7 @@
     try {
       W.localStorage.setItem(ENABLED_KEY, enabled ? '1' : '0');
       if (enabled) {
+        W.localStorage.removeItem('tokpla_stop_reason'); W.localStorage.removeItem('tokpla_stop_at');   // 🔔 v6.430: เปิดอยู่ = ไม่มีเหตุหยุดค้าง (จุดเดียวครอบทุกทางที่เปิดบอท: Alt+B / /on / auto-resume)
         W.localStorage.setItem(ENABLED_AT_KEY, String(Date.now()));   // heartbeat เวลาล่าสุดที่ยังรันอยู่
         W.localStorage.setItem('tokpla_bot_resume', '1');             // 🔄 v6.147: ธง "ตั้งใจให้เปิด" — คงไว้ตลอดที่เปิด → reload/เปิดใหม่แบบไหนก็ auto-resume (แม้ browser ค้าง/ปิดนานเช่น RDP หลุด, crash, กด F5 เอง) · ไม่พึ่ง freshness 5 นาทีที่พังถ้าค้างนาน
       } else {
@@ -12721,6 +12722,17 @@
       }
     } catch {}
   }
+
+  // 🔁 v6.430 — **เหตุไหน "กู้เองได้"**: เปลี่ยนจาก allowlist เป็น blocklist
+  //   v6.413 กู้เฉพาะ reason ที่มีคำว่า "กดตกปลาไม่ติด" — แต่เหตุที่เกิดจริงบ่อยที่สุดคือ
+  //   **"เกมค้าง (ไม่มีความคืบหน้านาน) — รีโหลดหลายครั้งแล้วยังไม่หาย"** ซึ่งไม่เข้าเงื่อนไข
+  //   ⇒ `recover_at` ถูกลบทิ้งทุกครั้ง ⇒ **ระบบกู้ไม่เคยทำงานเลยสักหน** (`recover_tries` = null เสมอ)
+  //   หลักฐาน: 16 ส.ค. ตาย 2.5 ชม. · 17 ส.ค. **ตาย 10.9 ชม.** — ข้อความหยุดเหมือนกันเป๊ะทั้งคู่
+  //   ⇒ กลับ default เป็น "กู้ก่อน" แล้วระบุเฉพาะเหตุที่ **รีโหลดไม่ช่วยแน่ ๆ** (ต้องมีคนมาแก้)
+  //   · เหตุใหม่ที่เพิ่มในอนาคตจะได้สิทธิ์กู้อัตโนมัติ ไม่ต้องมาไล่เติมรายชื่อทีหลัง (ซึ่งคือบั๊กนี้)
+  //   · ความเสี่ยงของการกู้เกินจำเป็นมีเพดานคุมอยู่แล้ว (RECOVER_MAX) — เทียบกับ downtime หลายชั่วโมงถือว่าคุ้มมาก
+  const NO_RECOVER_RE = /login|ล็อกอิน|ครบ ?\d* ?ครั้ง|ครบเวลาเล่น|ทดสอบเหยื่อครบ|เงินไม่พอ|คลังลุงคลังเต็ม|เหยื่อหมดทุกขั้น/;
+  const recoverable = (reason) => !NO_RECOVER_RE.test(String(reason || ''));
 
   function stopBot(reason) {
     enabled = false;
@@ -12744,7 +12756,12 @@
     //   เหตุอื่น (เงินหมด/กระเป๋าเต็ม/login/ครบลิมิต/ครบเวลา/ทดสอบจบ) = รีโหลดไม่ช่วย → ล้าง episode ทิ้ง
     //   ตั้งเวลาเริ่มเฉพาะครั้งแรกของ episode (ไม่ทับ) เพื่อให้เว้นจังหวะ ~15 นาทีถึงลองครั้งแรก
     try {
-      if (/กดตกปลาไม่ติด/.test(reason || '')) {
+      // 🔔 v6.430: จำ "เหตุ + เวลาที่หยุด" ลง localStorage — เดิมเก็บแค่ตัวแปรในหน่วยความจำ
+      //   ⇒ หน้าเกมโหลดใหม่ทีไร ข้อมูลหายหมด → nag เงียบ + ชันสูตรย้อนหลังไม่ได้
+      //   (กด Alt+B ปิดเอง = `persistEnabled` ล้าง marker นี้ ⇒ ไม่โดนเตือน ไม่โดนกู้)
+      W.localStorage.setItem('tokpla_stop_reason', reason || '');
+      W.localStorage.setItem('tokpla_stop_at', String(Date.now()));
+      if (recoverable(reason)) {
         if (!+(W.localStorage.getItem('tokpla_recover_tries') || 0) && !+(W.localStorage.getItem('tokpla_recover_at') || 0))
           W.localStorage.setItem('tokpla_recover_at', String(Date.now()));
       } else {
@@ -15729,7 +15746,10 @@ ${esc(reason)}
   //   เหตุจริง 10 ส.ค.: หยุดเอง 19:37 หลังไฟต์บอส charge → ดับยาว 15.6 ชม. · การรีโหลดตอน 00:04 เคลียร์อาการแล้ว
   //   แต่บอทไม่กลับมาเพราะ self-stop ล้างธง resume (หยุดตั้งใจ = ไม่ auto-resume) ⇒ ต้องรอคนมากดเอง
   //   ⇒ ให้ heartbeatWatch ลองรีโหลด+เปิดใหม่เป็นระยะ (มีเพดาน) แล้วค่อยยอมแพ้ · ยังหยุดจริงถ้าเหตุอื่น (login/เงินหมด)
-  const RECOVER_MAX = 5, RECOVER_EVERY_MS = 15 * 60000;   // สูงสุด 5 ครั้ง เว้น ~15 นาที (~75 นาที) แล้วเลิกกู้ รอคนเช็ค
+  // 🔁 v6.430: 8 ครั้ง × 20 นาที ≈ 2.7 ชม./ชุด · ครบแล้ว **ไม่เลิกถาวร** — พัก 3 ชม. แล้วลองชุดใหม่
+  //   เหตุผล: 17 ส.ค. บอทหยุด 02:13 แล้วเงียบถึง 13:00 (10.9 ชม.) — ถ้ายอมแพ้ถาวรก็ตายข้ามคืนอยู่ดี
+  //   ต่อให้กู้ไม่สำเร็จ การลองใหม่ทุก 3 ชม. ก็แค่รีโหลดหน้าเว็บ ไม่มีต้นทุนอะไร เทียบกับเสียทั้งคืน
+  const RECOVER_MAX = 8, RECOVER_EVERY_MS = 20 * 60000, RECOVER_RESET_MS = 3 * 3600000;
   let offSince = 0, offNagAt = 0;
   function heartbeatWatch() {
     const t = Date.now();
@@ -15751,20 +15771,33 @@ ${esc(reason)}
           setTimeout(() => { try { W.location.reload(); } catch {} }, 1500);
           return;
         }
-        if (rat && rtries >= RECOVER_MAX) {   // ครบเพดานแล้วยังไม่ฟื้น = เลิกกู้ ปล่อยให้ nag เตือนคนแทน (tries ล้างเมื่อตกได้จริง)
-          W.localStorage.removeItem('tokpla_recover_at');
-          logWarn(`🔁 กู้บอทอัตโนมัติครบ ${RECOVER_MAX} ครั้งแล้วยังไม่ฟื้น — เลิกกู้ รอเช็คเอง (Alt+B / /on)`);
-          if (isOn('tgOn')) void tgSend(`🔴 <b>กู้บอทอัตโนมัติไม่สำเร็จ</b> (${RECOVER_MAX} ครั้ง) — ต้องเช็คเอง`);
+        // 🔁 v6.430: ครบเพดานชุดนี้ — **พักแล้วลองใหม่** แทนการเลิกถาวร (เดิม removeItem = ยอมแพ้ตลอดกาล)
+        if (rat && rtries >= RECOVER_MAX) {
+          if (t - rat >= RECOVER_RESET_MS) {
+            W.localStorage.setItem('tokpla_recover_tries', '0');
+            W.localStorage.setItem('tokpla_recover_at', String(t - RECOVER_EVERY_MS));   // ให้ชุดใหม่เริ่มลองทันที
+            logWarn(`🔁 พักกู้ครบ 3 ชม. — เริ่มกู้ชุดใหม่ (บอทยังปิดอยู่)`);
+          } else if (rtries === RECOVER_MAX) {   // เพิ่งครบพอดี = เตือนครั้งเดียว แล้วขยับตัวนับกันเตือนซ้ำ
+            W.localStorage.setItem('tokpla_recover_tries', String(RECOVER_MAX + 1));
+            logWarn(`🔁 กู้บอทอัตโนมัติครบ ${RECOVER_MAX} ครั้งแล้วยังไม่ฟื้น — พัก 3 ชม. แล้วจะลองใหม่เอง (หรือกด Alt+B / /on)`);
+            if (isOn('tgOn')) void tgSend(`🔴 <b>กู้บอทอัตโนมัติไม่สำเร็จ</b> (${RECOVER_MAX} ครั้ง) — พัก 3 ชม. แล้วลองใหม่ · กดเปิดเองได้ (Alt+B)`);
+          }
         }
       } catch {}
-      if (everEnabled) {                       // ปิดตั้งแต่ยังไม่เคยเปิด = ไม่ใช่เรื่องผิดปกติ
-        if (!offSince) { offSince = stopAt || t; offNagAt = t; }
+      // 🔔 v6.430 — **เดิมผูกกับ `everEnabled` (ตัวแปรในหน่วยความจำ) ⇒ หน้าโหลดใหม่ = false = เงียบสนิท**
+      //   17 ส.ค.: บอทหยุด 02:13 · หน้าเกมโหลดใหม่เองทุก 10 นาที (สคริปต์บูตใหม่ทุกครั้ง)
+      //   ⇒ `everEnabled` เป็นเท็จตลอด ⇒ **ไม่มีเสียงเตือนเลยสักครั้งใน 10.9 ชม.** ทั้ง log และ Telegram
+      //   ⇒ อ่าน "เหตุ+เวลาที่หยุด" จาก localStorage แทน — รอดข้ามรีโหลด · กด Alt+B ปิดเอง = marker ถูกล้าง ⇒ ไม่กวน
+      let sReason = '', sAt = 0;
+      try { sReason = W.localStorage.getItem('tokpla_stop_reason') || ''; sAt = +(W.localStorage.getItem('tokpla_stop_at') || 0); } catch {}
+      if (everEnabled || sAt) {                // เคยเปิดในหน้านี้ **หรือ** มีเหตุหยุดค้างจากหน้าก่อน
+        if (!offSince) { offSince = stopAt || sAt || t; offNagAt = t; }
         if (t - offSince >= OFF_NAG_MS && t - offNagAt >= OFF_NAG_MS) {
           offNagAt = t;
           const min = Math.round((t - offSince) / 60000);
           const missed = bossRoundsBetween(offSince, t);
           const miss = missed.length ? ` · 🔴 พลาดรอบบอส ${missed.join(', ')}` : '';
-          const why = stopReason ? ` (${stopReason})` : '';
+          const why = (stopReason || sReason) ? ` (${stopReason || sReason})` : '';
           logWarn(`🔔 บอทยังปิดอยู่ ${min} นาทีแล้ว${why}${miss}`);
           if (isOn('tgOn')) void tgSend(`🔔 <b>บอทยังปิดอยู่ ${min} นาทีแล้ว</b>${esc(why)}${esc(miss)}\nกดเปิด (Alt+B) หรือสั่ง /on`);
         }
