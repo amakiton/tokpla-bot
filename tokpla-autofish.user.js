@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.430
+// @version      6.431
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -58,7 +58,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.430';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.431';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -7431,7 +7431,7 @@
       logInfo(`🔍 คลัง: เห็นการ์ด ${_all.length} ใบ · ฝั่งกระเป๋า ${_bag.length} · เข้าเกณฑ์ฝาก(${cfg.npcStorageRarity}+) ${_elig.length}`
         + ` · แยกโดย=${stoSplitHow} · ปุ่มฝาก=${_depAny ? (_depAny.disabled ? 'เจอ/กดไม่ได้' : 'เจอ/กดได้') : 'ไม่เจอ'}`
         + (_elig.length ? ` · ใบแรก="${_elig[0].species}" ×${_elig[0].count} [${_elig[0].rarity}]` : ''));
-      let stoFailSaid = false;   // 🔍 v6.428: log รายละเอียด "ฝากไม่ได้" ใบแรกครั้งเดียว (กันท่วม ring)
+      let stoFailSaid = false, stoSnapSaid = false;   // 🔍 v6.428/6.431: log รายละเอียดครั้งเดียวต่อทริป (กันท่วม ring)
       let fullSig = 0;   // 🏬 v6.223: กด "ฝาก →" ไม่ได้กี่ใบติด (คลังเต็ม = ปุ่มถูก disable/เกมขึ้น "เต็ม")
       // 🐛 v6.256 (ผู้ใช้เจอสด 20:27 — กระเป๋าเต็ม 345/350 ระบายไม่ออก): ลูปนี้หยิบ "การ์ดใบแรกที่เข้าเงื่อนไข"
       //   ใหม่ทุกรอบ · ถ้าใบนั้นกด "ฝาก →" ไม่ได้ (ปลาล็อก/ปุ่มไม่เรนเดอร์) → continue แล้ว **เจอใบเดิมซ้ำ**
@@ -7442,7 +7442,18 @@
       for (let round = 0; round < 40; round++) {
       const card = storageBagCards().find((c) => c.rarity != null && rarityRank(c.rarity) >= stoMin && (c.count - c.lockedCount) > 0 && !skipCards.has(cardKey(c)));   // v6.426: เฉพาะฝั่งกระเป๋า — เดิมไปโดนใบฝั่งคลังแล้วเหมาว่า "ล็อก"
       if (!card) break;
+      // 🔍 v6.431: จับ "ปุ่มที่โผล่มาใหม่หลังแตะการ์ด" — ปุ่มฝากในจอแคบน่าจะเป็นปุ่มที่โผล่ตอนเลือกของ
+      //   (รายชื่อปุ่มตอนยังไม่เลือกไม่มีคำว่า "ฝาก" เลยสักตัว — ยืนยันจาก log จริง 13:23)
+      const _snap = stoSnapSaid ? null : new Set([...document.querySelectorAll('button')]
+        .filter((b) => npcVisible(b) && !isBotUI(b)).map((b) => (b.textContent || '').trim()));
       fireClick(card.el); await sleep(400);                  // เปิด popup เลือกจำนวน
+      if (_snap) {
+        stoSnapSaid = true;
+        const fresh = [...document.querySelectorAll('button')].filter((b) => npcVisible(b) && !isBotUI(b))
+          .map((b) => (b.textContent || '').trim()).filter((t) => !_snap.has(t));
+        logInfo(`🔍 หลังแตะการ์ด "${card.species}" → ปุ่มใหม่ ${fresh.length} ตัว: `
+          + (fresh.slice(0, 12).map((t) => t.replace(/\s+/g, ' ').slice(0, 16) || '(ว่าง)').join(' | ') || '(ไม่มีปุ่มใหม่เลย — แตะแล้วเกมไม่ตอบสนอง?)'));
+      }
       // 🏬 v6.223: เกมขึ้นข้อความ "คลังเต็ม" (ผู้ใช้เจอจริง: ของเต็ม บอทมีปัญหาทันที) → เลิกทันที ไม่วนเปล่า
       // 🐛 v6.237 (ผู้ใช้เจอสด "บอทบอกคลังเต็ม แต่เปิดดูไม่เต็ม"): regex เดิมจับคำว่า "คลังเต็ม"
       //   ในประโยค **"คลังเต็มขั้นสูงสุดแล้ว 🏆"** ซึ่งแปลว่า *อัปเกรดคลังถึงระดับสูงสุด* ไม่ใช่ของเต็ม
@@ -7456,9 +7467,21 @@
       //   ผลเดิม: บอทวนเปล่าครบ 40 รอบแล้วเลิก โดยไม่ได้ฝากอะไรเลย (กระเป๋าเต็มต่อ → หยุดบอท)
       //   แก้: กอง >100 กด "ครึ่ง" แทน (≤100 เสมอสำหรับกอง ≤200 · กองใหญ่กว่านั้นรอบถัดไปจะเล็กลงเรื่อยๆ จนฝากหมด)
       const stack = Math.max(0, card.count - card.lockedCount);
+      // 🔴 v6.431 — **"ทั้งหมด" ที่บอทกดมาตลอด คือ "ตัวกรองระดับ" ไม่ใช่ปุ่มเลือกจำนวน**
+      //   log จริง 13:23 (จอแคบ): `ทั้งหมด | บรรพกาล 77 | เทพ 96 | เทพนิยาย 219 | หายาก 2 | ไม่ธรรมดา 143 | ทั่วไป 1`
+      //   ⇒ เรียงติดกันเป็นแถวกรองมุมมอง · บอทกดทุกทริป = ไปเปลี่ยนตัวกรองของผู้เล่นเปล่า ๆ
+      //   ⇒ และทำให้ log รายงาน `popupจำนวน=มี` ผิด ๆ (false positive) จนวินิจฉัยหลงทาง
+      //   กัน: ถ้าปุ่มนั้นอยู่ในกล่องเดียวกับปุ่มกรองระดับ (เช่น "บรรพกาล 77") = ตัวกรอง ไม่ใช่ popup
+      const RARITY_CHIP_RE = /^(บรรพกาล|เทพนิยาย|เทพ|ตำนาน|สุดยอด|หายาก|ไม่ธรรมดา|ทั่วไป|จิ๋ว)\s*[\d,]+$/;
+      const inFilterRow = (b) => {
+        try {
+          const p = b.parentElement;
+          return !!p && [...p.querySelectorAll('button')].some((x) => RARITY_CHIP_RE.test((x.textContent || '').trim()));
+        } catch { return false; }
+      };
       const pick = stack > 100
-        ? [...document.querySelectorAll('button')].find((b) => /^ครึ่ง$/.test((b.textContent || '').trim()) && npcVisible(b))
-        : [...document.querySelectorAll('button')].find((b) => /^ทั้งหมด$/.test((b.textContent || '').trim()) && npcVisible(b));
+        ? [...document.querySelectorAll('button')].find((b) => /^ครึ่ง$/.test((b.textContent || '').trim()) && npcVisible(b) && !inFilterRow(b))
+        : [...document.querySelectorAll('button')].find((b) => /^ทั้งหมด$/.test((b.textContent || '').trim()) && npcVisible(b) && !inFilterRow(b));
       if (pick) { fireClick(pick); await sleep(250); }
       const sel = [...document.querySelectorAll('button')].find((b) => /^เลือก\s*\d+\s*(ตัว|ชิ้น)/.test((b.textContent || '').trim()) && npcVisible(b)); if (sel) { fireClick(sel); await sleep(400); }
       const dep = findDepositBtn(false);
@@ -7482,11 +7505,11 @@
           //   ⇒ แท็บบอทเรนเดอร์เป็น layout จอแคบ (ตัวที่ `sm:hidden` ซ่อนบนจอกว้าง) = คนละ flow คนละชื่อปุ่ม
           //   ⇒ v6.426 (แยกซ้าย/ขวา) จึงไม่มีผลอะไรเลย — โหมดนี้ไม่มีสองคอลัมน์ให้แยกตั้งแต่ต้น
           //   📌 บทเรียน: "ดู DOM สด" ต้องดู**จากเครื่องที่บอทรันจริง** — ขนาดหน้าต่างเปลี่ยน = คนละ DOM
-          const btns = [...document.querySelectorAll('button')]
-            .filter((b) => npcVisible(b) && !isBotUI(b))
-            .map((b) => `${(b.textContent || '').trim().slice(0, 18) || '(ว่าง)'}${b.disabled ? '✖' : ''}`)
-            .slice(0, 18);
-          logInfo(`🔍 ปุ่มที่เห็นตอนนี้ (${btns.length}): ${btns.join(' | ')}`);
+          //   🐛 v6.431: รอบก่อนตัดไว้ 18 แล้วพิมพ์ `btns.length` **หลังตัด** ⇒ ไม่รู้ว่าปุ่มจริงมีกี่ตัว
+          //     และปุ่ม "ฝาก" อาจถูกตัดทิ้งพอดี — log วินิจฉัยที่ตัวเองบิดข้อมูลคือกับดักซ้ำรอย v6.428
+          const allBtns = [...document.querySelectorAll('button')].filter((b) => npcVisible(b) && !isBotUI(b));
+          const names = allBtns.map((b) => `${(b.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 14) || '(ว่าง)'}${b.disabled ? '✖' : ''}`);
+          logInfo(`🔍 ปุ่มทั้งหมด ${allBtns.length} ตัว: ${names.slice(0, 34).join(' | ')}${names.length > 34 ? ` …อีก ${names.length - 34}` : ''}`);
         }
         npcCloseQtyPopup(); await sleep(250);
         skipCards.add(cardKey(card));   // 🐛 v6.256: ข้ามใบนี้ไปเลย ไม่งั้นรอบหน้าเจอใบเดิมซ้ำจนเลิกทั้งทริป
