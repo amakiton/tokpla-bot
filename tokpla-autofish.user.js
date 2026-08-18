@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.432
+// @version      6.433
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -58,7 +58,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.432';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.433';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -5722,11 +5722,17 @@
       const settleGap = lastSettleAt ? now() - lastSettleAt : 0;
       lastSettleAt = now();
       if (fb || settleGap > TAP_BLIND_GAP_MS) tapNoneRun = 0;   // v6.395: ไปทำอย่างอื่นมา = ไม่นับเป็น "ตาบอด"
-      else if (++tapNoneRun >= TAP_BLIND_RUN && !tapBlindDumped) {
+      // 🔇 v6.433 — **โหมด melee ไม่มีป้ายจังหวะให้อ่านตั้งแต่แรก** (ยืนยันสด 18 ส.ค.: หมึกยักษ์ท่าเรือ)
+      //   ป้าย "เป๊ะ!/ดี/หลุดจังหวะ" เป็นของระบบ **เกจ** (cast) — melee = เดินเข้าประชิดแล้วฟาด ไม่มีเกจให้จับจังหวะ
+      //   หลักฐานจาก dump ที่ตัวเองยิงออกมา: ไม่มีคำพวกนั้นเลยสักตัว มีแต่ "หลบทัน!" (ผลของการกระโดดหลบ คนละระบบ)
+      //   และไฟต์นั้นทำดาเมจ **33,122 (6.5%) — สูงสุดใน 4 ไฟต์ล่าสุด** ⇒ ไม่มีอะไรผิดปกติเลยแม้แต่นิดเดียว
+      //   ⇒ ปล่อยไว้ = ทุกไฟต์ melee เด้ง Telegram หาเจ้าของฟรี ๆ · สัญญาณขยะกลบสัญญาณจริง (คลาสเดียวกับ v6.395)
+      //   ⚠️ ยังเตือนโหมดอื่นอยู่ + ใส่ชื่อโหมดในข้อความ — เผื่อ charge ไม่มีป้ายเหมือนกัน จะได้รู้จาก log รอบเดียว
+      else if (++tapNoneRun >= TAP_BLIND_RUN && !tapBlindDumped && bossHitMode !== 'melee') {
         tapBlindDumped = true;
         const dump = shortTextDump(45);
-        logWarn(`📸 อ่านป้ายจังหวะไม่เจอ ${TAP_BLIND_RUN} ครั้งติด — ข้อความสั้นบนจอตอนนี้:\n${dump}`);
-        if (isOn('tgOn')) void tgSend(`📸 <b>อ่านป้ายจังหวะไม่เจอ ${TAP_BLIND_RUN} ครั้งติด</b> (${esc(snapBossName || 'บอส')})\n<code>${esc(dump)}</code>`);
+        logWarn(`📸 อ่านป้ายจังหวะไม่เจอ ${TAP_BLIND_RUN} ครั้งติด (โหมด ${bossHitMode || '?'}) — ข้อความสั้นบนจอตอนนี้:\n${dump}`);
+        if (isOn('tgOn')) void tgSend(`📸 <b>อ่านป้ายจังหวะไม่เจอ ${TAP_BLIND_RUN} ครั้งติด</b> (${esc(snapBossName || 'บอส')} · โหมด ${esc(bossHitMode || '?')})\n<code>${esc(dump)}</code>`);
       }
       tapWait = null;
       // 🥁 v6.285 — **ล็อกจังหวะแบบ "จับสมอ" แทนการสะสมสถิติ 24 ตัวอย่าง**
