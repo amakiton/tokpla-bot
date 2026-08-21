@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Tokpla Auto-Fisher — Fishbone Cast 🎣
 // @namespace    tokpla.bot
-// @version      6.433
+// @version      6.434
 // @description  ตกปลาอัตโนมัติ + ความแม่นปรับได้ + ขาย/ซื้อ/ล็อกปลาอัตโนมัติ + เลือกเบ็ด + แจ้งเตือน Telegram + โหมดมนุษย์ + คำนวณกำไร + เลือกเหยื่อจากกำไร/ชม.จริง + บริดจ์แชทโลก
 // @match        *://tokpla.vercel.app/*
 // @match        *://fishbonecast.com/*
@@ -58,7 +58,7 @@
 
   const MAX_JUMP_PX = 60;      // เข็มขยับเกินนี้ใน 1 เฟรม = เกมรีเซ็ตรอบ ไม่ใช่การวิ่งจริง
   const CFG_KEY = 'tokpla_bot_cfg';
-  const BOT_VER = '6.433';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
+  const BOT_VER = '6.434';   // ⚠️ ให้ตรงกับ @version เสมอ — ใช้ใน statsExport/diagReport/console (จุดเดียว กันเลขค้าง)
 
   // สูตรคะแนนของเกม (แกะจากโค้ด) — ใช้คำนวณย้อนกลับว่าต้องกดห่างจากกึ่งกลางเท่าไร
   //   เกจตวัด : diff<=.09   -> 100 - diff/.09*40      (คะแนน 60..100)
@@ -693,6 +693,7 @@
     try { W.localStorage.setItem(SFULL_KEY, String(storageFullUntil)); } catch {}
   };
   const storagePaused = () => Date.now() < storageFullUntil;
+  let storageFullWaits = 0;   // 🏬 v6.434: รอคลังว่างมากี่รอบติด (รีเซ็ตเมื่อเหวี่ยงได้อีกครั้ง = ปัญหาจบแล้ว)
   let forceRodStoodDown = false;   // 🎣 v6.228: แจ้งครั้งเดียวว่า forceRod หลีกทางให้ rodSwitchOn แล้ว
   let catchNotified = false;   // แจ้ง popup ปลาตัวนี้ไปแล้วหรือยัง (popup เดียวอยู่หลายเฟรม)
   let pauseNotified = false;   // แจ้งเรื่องพักพลังไปแล้วหรือยัง
@@ -12736,6 +12737,8 @@
   // จำสถานะ "เปิดอยู่" + เวลาล่าสุด ลง localStorage — ให้บอทกลับมารันเองหลังเกมรีเฟรช/รีโหลด
   // freshness: ถ้าหน้าถูกปิดไว้นานเกิน (เปิดเกมเองวันหลัง) จะไม่สตาร์ทเอง กันบอทเผลอตกโดยไม่ตั้งใจ
   const ENABLED_KEY = 'tokpla_bot_enabled', ENABLED_AT_KEY = 'tokpla_bot_enabled_at';
+  // 🔔 v6.434: นาฬิกาของ "เสียงเตือนตอนบอทปิดอยู่" — ต้องอยู่ข้ามรีโหลด ไม่งั้นถูกรีเซ็ตทุก ~10 นาทีจนไม่มีวันดัง
+  const OFF_NAG_KEY = 'tokpla_off_nag_at', SILENT_NAG_KEY = 'tokpla_silent_nag_at';
   const RESUME_FRESH_MS = 12 * 3600000;   // v6.147: 12 ชม. (เดิม 5 นาที สั้นไป — RDP หลุด/browser ค้างนานกว่านั้นแล้วเปิดใหม่ = ไม่ resume) · เป็น fallback ของธง tokpla_bot_resume ที่คุมโดย persistEnabled
   // 🛡️ v6.397 (กันชั้นสอง): หน้าที่ **ไม่เคยเปิดบอทเลย** ห้ามเขียนทับสถานะของแท็บที่กำลังรันอยู่
   //   `beforeunload`/`pagehide` เรียก `persistEnabled()` แบบไม่มีเงื่อนไข ⇒ แท็บไหนก็ตามที่โหลดสคริปต์
@@ -12750,6 +12753,7 @@
       W.localStorage.setItem(ENABLED_KEY, enabled ? '1' : '0');
       if (enabled) {
         W.localStorage.removeItem('tokpla_stop_reason'); W.localStorage.removeItem('tokpla_stop_at');   // 🔔 v6.430: เปิดอยู่ = ไม่มีเหตุหยุดค้าง (จุดเดียวครอบทุกทางที่เปิดบอท: Alt+B / /on / auto-resume)
+        W.localStorage.removeItem(OFF_NAG_KEY); W.localStorage.removeItem(SILENT_NAG_KEY);   // 🔔 v6.434: เปิดแล้ว = ล้างนาฬิกาเตือน (รอบหน้าเริ่มนับใหม่ ไม่ค้างจากรอบก่อน)
         W.localStorage.setItem(ENABLED_AT_KEY, String(Date.now()));   // heartbeat เวลาล่าสุดที่ยังรันอยู่
         W.localStorage.setItem('tokpla_bot_resume', '1');             // 🔄 v6.147: ธง "ตั้งใจให้เปิด" — คงไว้ตลอดที่เปิด → reload/เปิดใหม่แบบไหนก็ auto-resume (แม้ browser ค้าง/ปิดนานเช่น RDP หลุด, crash, กด F5 เอง) · ไม่พึ่ง freshness 5 นาทีที่พังถ้าค้างนาน
       } else {
@@ -12766,7 +12770,11 @@
   //   ⇒ กลับ default เป็น "กู้ก่อน" แล้วระบุเฉพาะเหตุที่ **รีโหลดไม่ช่วยแน่ ๆ** (ต้องมีคนมาแก้)
   //   · เหตุใหม่ที่เพิ่มในอนาคตจะได้สิทธิ์กู้อัตโนมัติ ไม่ต้องมาไล่เติมรายชื่อทีหลัง (ซึ่งคือบั๊กนี้)
   //   · ความเสี่ยงของการกู้เกินจำเป็นมีเพดานคุมอยู่แล้ว (RECOVER_MAX) — เทียบกับ downtime หลายชั่วโมงถือว่าคุ้มมาก
-  const NO_RECOVER_RE = /login|ล็อกอิน|ครบ ?\d* ?ครั้ง|ครบเวลาเล่น|ทดสอบเหยื่อครบ|เงินไม่พอ|คลังลุงคลังเต็ม|เหยื่อหมดทุกขั้น/;
+  //   🐛 v6.434: `คลังลุงคลังเต็ม` **ไม่ควรอยู่ในรายชื่อนี้ตั้งแต่แรก** — มันคือการพัก 30 นาทีที่หมดอายุเอง
+  //     หลักฐาน 21 ส.ค.: หยุด 09:25 เพราะเหตุนี้ ⇒ `recover_at` ถูกลบ ⇒ ระบบกู้ไม่ติด (recover_tries = null)
+  //     ⇒ ตายยาวถึง 19:12 (~9.5 ชม. จาก 13 ชม.ที่ควรฟาร์ม) พลาดบอส 10:30 · 13:30 · 16:30
+  //     ตอนนี้เหตุนี้ไม่สั่ง stopBot แล้ว (ดูสาขา "รอคลังว่าง" ใน tick) แต่ถอดออกไว้กันพลาดซ้ำจากทางอื่น
+  const NO_RECOVER_RE = /login|ล็อกอิน|ครบ ?\d* ?ครั้ง|ครบเวลาเล่น|ทดสอบเหยื่อครบ|เงินไม่พอ|เหยื่อหมดทุกขั้น/;
   const recoverable = (reason) => !NO_RECOVER_RE.test(String(reason || ''));
 
   function stopBot(reason) {
@@ -12942,6 +12950,7 @@ ${esc(reason)}
         pendingCast = 0;
         failedCasts = 0;
         bagFullTries = 0;   // เหวี่ยงติดแล้ว = กระเป๋าไม่เต็มแล้ว
+        storageFullWaits = 0;   // 🏬 v6.434: เหวี่ยงได้ = พ้นวงจร "คลังเต็ม" แล้ว เริ่มนับใหม่รอบหน้า
         bagHeavySaid = false;   // ⚖️ v6.348: เหวี่ยงได้แล้ว = พ้นเพดานน้ำหนัก (พร้อมเตือนใหม่รอบหน้า)
         casts++;
         exploreTick(currentBait()?.tier ?? lastKnownBaitTier);   // 🔬 v6.207/6.212: นับเฉพาะครั้งที่ตกด้วยขั้นสำรวจจริง
@@ -13397,8 +13406,25 @@ ${esc(reason)}
                 if (isOn('tgOn') && isOn('tgWarn')) void tgSend('⚠️ <b>กระเป๋าเต็ม + ปลาถูกล็อกขายไม่ได้</b> — บอทกำลังไประบายเข้าคลังลุงคลัง/ยายแก่นเอง · ถ้าเกิดบ่อย ให้เช็คว่า "ระดับที่ฝาก/แลก" ครอบคลุมระดับที่ล็อกไม่ขายหรือยัง');
                 void runTownErrands({ storage: canStorage, essence: canEssence });
               } else if (isOn('npcStorageOn') && storagePaused() && !canEssence) {
-                // คลังเต็ม + ไม่มีทางระบายอื่น → หยุด + บอกให้ชัด (แทนวนไปเมืองฝากไม่ได้ไม่จบ)
-                stopBot('กระเป๋าเต็ม + คลังลุงคลังเต็ม 🔒 ปลาที่เหลือขายไม่ได้ (ถูกล็อก) — แก้ได้ด้วย: ขยายคลัง / ปรับ "ระดับที่ฝาก" ให้แคบลง / เปิดแลกยายแก่น / หรือปลดล็อกปลาบางระดับให้ขายได้');
+                // 🏬 v6.434 — **"คลังลุงคลังเต็ม" คือการพัก 30 นาที ไม่ใช่ความตาย** แต่เดิมสั่ง stopBot ทิ้งทั้งวัน
+                //   หลักฐานสด 21 ส.ค.: หยุด 09:25 · หน้าเกมโหลดใหม่เอง 62 ครั้ง · **ไม่กลับมาเลยจนถึง 19:12**
+                //   `storagePaused()` มาจาก `setStorageFull(30)` = หมดอายุเองใน 30 นาที ⇒ แค่ "รอแล้วลองฝากใหม่"
+                //   ก็กู้ได้เองโดยไม่ต้องมีคนมากด · ยิ่งกว่านั้น "คลังเต็ม" มักเป็น false positive
+                //   (`storageFreeSlots()` อ่านไม่ได้ = null ก็นับว่าเต็ม + ปุ่มฝากเพิ่งอ่านได้ถูกตอน v6.432)
+                //   ⇒ ใช้ beginBreak: อยู่ข้ามรีโหลด + นับเป็น `held` ⇒ recoveryWatch ไม่รีโหลดวนเพราะ "ไม่คืบหน้า"
+                //   ⛔ ห้ามกลับไปใช้ stopBot ตรงนี้อีก — เหตุนี้หายเองได้เสมอ การหยุดบอทมีแต่เสีย
+                if (breakUntil <= now()) {
+                  const waitMs = clamp(storageFullUntil - Date.now() + 20000, 60000, MAX_BREAK_MS);
+                  storageFullWaits++;
+                  beginBreak(waitMs, 'รอคลังลุงคลังว่าง');
+                  say(`🏬 คลังลุงคลังเต็ม + กระเป๋าเต็ม — พัก ${Math.ceil(waitMs / 60000)} นาทีแล้วลองไปฝากใหม่เอง (รอบที่ ${storageFullWaits}) · บอทยังเปิดอยู่ ไม่ได้หยุด`);
+                  // รอเฉย ๆ ไม่ได้แก้ต้นเหตุ — ถ้าวนซ้ำหลายรอบต้องมีคนขยายคลัง จึงย้ำทุก 3 รอบ (~1.5 ชม.) ไม่ใช่ทุกรอบ
+                  if (isOn('tgOn') && (storageFullWaits === 1 || storageFullWaits % 3 === 0)) {
+                    void tgSend(`🏬 <b>คลังลุงคลังเต็ม + กระเป๋าเต็ม</b> (รอบที่ ${storageFullWaits})\n`
+                      + `บอท<b>ยังเปิดอยู่</b> — พัก ${Math.ceil(waitMs / 60000)} นาทีแล้วลองฝากใหม่เอง\n`
+                      + `ถ้าเจอซ้ำหลายรอบ = ต้องแก้ที่ต้นทาง: ขยายคลัง / ปรับ "ระดับที่ฝาก" ให้แคบลง / เปิดแลกยายแก่น / ปลดล็อกปลาบางระดับให้ขายได้`);
+                  }
+                }
               } else {
                 stopBot('กระเป๋าเต็มแต่ขายไม่ออก — ปลาในกระเป๋าถูกล็อกไว้หมด 🔒 (เปิดฝากลุงคลัง/แลกยายแก่น เพื่อให้บอทระบายเองได้)');
               }
@@ -15826,9 +15852,17 @@ ${esc(reason)}
       let sReason = '', sAt = 0;
       try { sReason = W.localStorage.getItem('tokpla_stop_reason') || ''; sAt = +(W.localStorage.getItem('tokpla_stop_at') || 0); } catch {}
       if (everEnabled || sAt) {                // เคยเปิดในหน้านี้ **หรือ** มีเหตุหยุดค้างจากหน้าก่อน
-        if (!offSince) { offSince = stopAt || sAt || t; offNagAt = t; }
+        // 🔔 v6.434 — **`offNagAt` เดิมเป็นตัวแปรในหน่วยความจำ และถูกตั้งเป็น "เดี๋ยวนี้" ทุกครั้งที่หน้าโหลด**
+        //   หน้าเกมโหลดใหม่เองทุก ~10 นาที ⇒ เงื่อนไข `t - offNagAt >= 30 นาที` **ไม่มีวันเป็นจริง**
+        //   หลักฐาน 21 ส.ค.: บอทปิด 9.5 ชม. · บูต 62 ครั้ง · เสียงเตือน 🔔 ดัง **0 ครั้ง**
+        //   (บั๊กชนิดเดียวกับ `everEnabled` ที่ v6.430 เพิ่งแก้ — ตัวจับเวลาที่ไม่รอดรีโหลด = ตัวจับเวลาที่ไม่มีอยู่จริง)
+        if (!offSince) {
+          offSince = stopAt || sAt || t;
+          try { offNagAt = +(W.localStorage.getItem(OFF_NAG_KEY) || 0) || offSince; } catch { offNagAt = offSince; }
+        }
         if (t - offSince >= OFF_NAG_MS && t - offNagAt >= OFF_NAG_MS) {
           offNagAt = t;
+          try { W.localStorage.setItem(OFF_NAG_KEY, String(t)); } catch {}
           const min = Math.round((t - offSince) / 60000);
           const missed = bossRoundsBetween(offSince, t);
           const miss = missed.length ? ` · 🔴 พลาดรอบบอส ${missed.join(', ')}` : '';
@@ -15907,6 +15941,9 @@ ${esc(reason)}
     try {
       if (!enabled || cfg.fishMode === 'off') return;
       if (!lastProgressAt) return;                       // ยังไม่เคยตกได้เลยตั้งแต่เปิด (เพิ่งบูต)
+      // 😌 v6.434: กำลังพักตามที่สั่งไว้ (พักย่อย/ใหญ่/รอคลังว่าง) = ไม่ใช่อาการค้าง — ป้ายบนจอบอกอยู่แล้วว่าพักอะไร
+      //   (ไม่งั้นการพัก "รอคลังลุงคลังว่าง" 30 นาที จะยิง 🩺 ซ้ำ 6 ครั้งทั้งที่ทุกอย่างปกติ)
+      if (breakUntil > now()) return;
       const idleMs = now() - lastProgressAt;
       // ล่าบอยู่ = ไม่ตกปลาเป็นเรื่องปกติ → ใช้เกณฑ์ยาวกว่า (ทริปเต็มๆ ~12-15 นาที)
       const onTrip = orchestrating || bossPhase !== 'idle';
@@ -15955,16 +15992,44 @@ ${esc(reason)}
     //   ผลคือตอนไล่เหตุการณ์ 106 นาที เห็น reload_log ว่าง แล้วผมสรุปผิดว่า "แท็บถูกแช่แข็ง"
     //   ทั้งที่ความจริงคือหน้าโหลดใหม่จริง แต่บอทไม่ได้เปิดต่อ — คนละอาการ คนละวิธีแก้
     trackPageReload();   // 📉 v6.241: จดว่าหน้าโหลดใหม่ — แยก "บอทสั่ง" กับ "เกม/เบราว์เซอร์รีโหลดเอง"
+    // 🔁 v6.434 — **หน้าโหลดใหม่ + มีเหตุหยุดที่กู้เองได้ค้างอยู่ = จังหวะกู้ฟรี ที่เดิมถูกทิ้งทุกครั้ง**
+    //   เดิมต้องรอ heartbeatWatch ครบ 20 นาที แล้วให้มัน **สั่งรีโหลดซ้ำอีกรอบ** ทั้งที่หน้าเพิ่งโหลดมาหยก ๆ
+    //   หน้าเกมรีโหลดตัวเองทุก ~10 นาทีอยู่แล้ว ⇒ ของฟรีที่ทิ้งไปวันละหลายสิบครั้ง
+    //   นับเข้าโควตาเดียวกับระบบกู้ (RECOVER_MAX + คูลดาวน์ 3 ชม.) จึงวนรัวไม่ได้ · ตกได้ 1 ครั้ง = ล้างตัวนับทันที
+    if (!resume) {
+      try {
+        const sAt2 = +(W.localStorage.getItem('tokpla_stop_at') || 0);
+        const sWhy = W.localStorage.getItem('tokpla_stop_reason') || '';
+        const rt = +(W.localStorage.getItem('tokpla_recover_tries') || 0);
+        if (sAt2 && Date.now() - sAt2 > 60000 && recoverable(sWhy) && rt < RECOVER_MAX) {
+          W.localStorage.setItem('tokpla_recover_tries', String(rt + 1));
+          W.localStorage.setItem('tokpla_recover_at', String(Date.now()));
+          resume = true;
+          logWarn(`🔁 หน้าโหลดใหม่ + ยังมีเหตุหยุดที่กู้เองได้ค้างอยู่ → เปิดบอทต่อเลย (กู้ครั้งที่ ${rt + 1}/${RECOVER_MAX} · หยุดเพราะ: ${sWhy.slice(0, 90)})`);
+          if (isOn('tgOn')) void tgSend(`🔁 <b>กู้บอทเองหลังหน้าโหลดใหม่</b> (ครั้งที่ ${rt + 1}/${RECOVER_MAX})\n${esc(sWhy.slice(0, 140))}`);
+        }
+      } catch {}
+    }
     if (!resume) {
       // 🔇 v6.397: **"ตายเงียบ"** — หน้าโหลดใหม่ แต่บอทไม่เปิดต่อ ทั้งที่เพิ่งรันอยู่หยก ๆ
       //   เดิมไม่มีใครรู้เลยจนกว่าจะมีคนไปเปิดจอดู · ต้องส่งออกไปให้รู้ทันที
       let at = 0;
       try { at = +(W.localStorage.getItem(ENABLED_AT_KEY) || 0); } catch {}
       const minAgo = at ? Math.round((Date.now() - at) / 60000) : null;
-      if (at && Date.now() - at < 6 * 3600000) {
+      // 🔇 v6.434 — เดิมตัดเสียงหลัง 6 ชม. = **เงียบตอนที่อาการหนักที่สุดพอดี** (21 ส.ค. เงียบตั้งแต่ชั่วโมงที่ 6)
+      //   ขยายเป็น 24 ชม. แต่คุมความถี่ TG ไว้ 30 นาที/ครั้ง (เดิมยิงทุกการรีโหลด = ทุก ~10 นาที ทั้งวัน)
+      if (at && Date.now() - at < 24 * 3600000) {
         const msg = `🔇 หน้าเกมโหลดใหม่ แต่บอท "ไม่ได้เปิดต่อ" — ครั้งสุดท้ายที่รันอยู่คือ ${minAgo} นาทีที่แล้ว · ต้องกดเปิดเอง (Alt+B)`;
         logWarn(msg);
-        if (isOn('tgOn')) void tgSend(`🔇 <b>บอทไม่ได้เปิดต่อหลังหน้าโหลดใหม่</b>\nรันอยู่ล่าสุดเมื่อ ${minAgo} นาทีที่แล้ว — กดเปิดเอง (Alt+B) หรือสั่ง /on`);
+        // 💾 บรรทัดนี้เกิดตอนบูต แล้วไม่มีอะไรมาทริกให้เซฟอีกเลยจนหน้าโหลดใหม่ → ต้อง flush เอง
+        //   (21 ส.ค. บูต 62 ครั้ง แต่ log เก็บ 🔇 ไว้แค่ 3 บรรทัด — หลักฐานหายไปเกือบหมด)
+        try { saveLog(true); } catch {}
+        let nagAt = 0;
+        try { nagAt = +(W.localStorage.getItem(SILENT_NAG_KEY) || 0); } catch {}
+        if (isOn('tgOn') && Date.now() - nagAt > OFF_NAG_MS) {
+          try { W.localStorage.setItem(SILENT_NAG_KEY, String(Date.now())); } catch {}
+          void tgSend(`🔇 <b>บอทไม่ได้เปิดต่อหลังหน้าโหลดใหม่</b>\nรันอยู่ล่าสุดเมื่อ ${minAgo} นาทีที่แล้ว — กดเปิดเอง (Alt+B) หรือสั่ง /on`);
+        }
       }
       return;
     }
